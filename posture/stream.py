@@ -210,7 +210,14 @@ def stream_tick(
         if not rec:
             stats["skipped"] += 1
             continue
-        skel = _skeleton(rec, policy_version, fetched_at)
+        try:
+            skel = _skeleton(rec, policy_version, fetched_at)
+        except Exception:
+            # defense in depth: a malformed record that slips past
+            # mitre_record's guards (a non-dict field we did not anticipate)
+            # skips, never sinks the tick — the single-bad-record invariant.
+            stats["skipped"] += 1
+            continue
         if not skel:
             stats["skipped"] += 1
             continue
