@@ -185,7 +185,7 @@ jobs:
 
   # --- Credentialed lane scaffold --------------------------------------------
   # Runs gated vendor witnesses (SAP/Snyk/Tenable/Qualys/Cisco/VMware) into a
-  # SEPARATE PRIVATE repo (rohankhanna/posture-spine-cred), never into this repo's
+  # SEPARATE PRIVATE repo (rohankhanna/posture-cred), never into this repo's
   # history — so the later public flip of this repo can't leak credentialed
   # content (some of which, e.g. SAP, is non-redistributable).
   #
@@ -219,18 +219,18 @@ jobs:
       # TODO(future): run credentialed vendor witnesses here (none wired yet).
       # Each adds: a new Witness declaring its key_kind + a repo secret for its
       # credential + provenance stamp 'credentialed'. Non-redistributable output
-      # stays in posture-spine-cred (this job), never in the public repo.
+      # stays in posture-cred (this job), never in the public repo.
       - name: Export credentialed spine (empty until witnesses wired)
         run: |
           mkdir -p spine
           posture spine export --db "$DB_PATH" --out .
 
-      - name: Check out private posture-spine-cred
+      - name: Check out private posture-cred
         uses: actions/checkout@v4
         with:
-          repository: rohankhanna/posture-spine-cred
+          repository: rohankhanna/posture-cred
           path: spine-cred
-          ssh-key: ${{ secrets.POSTURE_SPINE_CRED_DEPLOY_KEY }}
+          ssh-key: ${{ secrets.POSTURE_CRED_DEPLOY_KEY }}
       - name: Commit + push credentialed spine
         run: |
           rm -rf spine-cred/spine
