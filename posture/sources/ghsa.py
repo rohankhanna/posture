@@ -221,7 +221,13 @@ def ghsa_ingest_tick(
             if not rec:
                 stats["skipped"] += 1
                 continue
-            parsed = osv_skeleton(rec, "ghsa", "ghsa", policy_version, fetched_at)
+            try:
+                parsed = osv_skeleton(rec, "ghsa", "ghsa", policy_version, fetched_at)
+            except Exception:
+                # defense in depth: a malformed incremental advisory that slips
+                # past osv_record's guards skips, never sinks the tick.
+                stats["skipped"] += 1
+                continue
             if not parsed:
                 stats["skipped"] += 1
                 continue

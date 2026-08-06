@@ -78,7 +78,16 @@ def _parse_score(raw: Any) -> tuple[float | None, str | None]:
 def osv_record(rec: dict) -> dict | None:
     """Normalize one OSV-schema record. Returns the fields a peer tick needs, or
     None if the record has no usable ``id`` (a malformed record must not sink the
-    tick). Pure function — no DB, no network."""
+    tick). Pure function — no DB, no network.
+
+    Every ``.get`` receiver is guarded against a non-dict field (a record where
+    ``severity`` holds a string, or the whole record is a JSON array) returning
+    the empty default rather than raising — mirroring the hardening of
+    :func:`posture.mitre.mitre_record`. A single malformed record must not sink
+    the GHSA/OSV tick.
+    """
+    if not isinstance(rec, dict):
+        return None
     rid = rec.get("id")
     if not rid:
         return None
@@ -87,10 +96,16 @@ def osv_record(rec: dict) -> dict | None:
     sev_list = rec.get("severity") or []
     if isinstance(sev_list, dict):
         sev_list = [sev_list]
+    if not isinstance(sev_list, list):
+        sev_list = []
     score: float | None = None
     vector: str | None = None
     rank = {"CVSS_V3_1": 0, "CVSS_V3": 1, "CVSS_V4_0": 2, "CVSS_V2": 3}
-    entries = sorted(sev_list, key=lambda e: rank.get(e.get("type", ""), 9))
+    # sort key must not call .get on a non-dict entry (a string severity entry
+    # would crash before the isinstance guard in the loop) — rank it last.
+    entries = sorted(sev_list,
+                     key=lambda e: rank.get(e.get("type", ""), 9)
+                                   if isinstance(e, dict) else 9)
     for e in entries:
         if not isinstance(e, dict):
             continue
@@ -106,10 +121,14 @@ def osv_record(rec: dict) -> dict | None:
     severity = _severity_label(score)
 
     # description: prefer summary (OSV's short title), fall back to details, then
-    # the first affected[].ecosystem-specific note. Empty is allowed.
-    desc = (rec.get("summary") or "").strip()
+    # the first affected[].ecosystem-specific note. Empty is allowed. Both
+    # fields are str-guarded (a non-str summary/details would crash .strip()).
+    _sum = rec.get("summary")
+    desc = (_sum.strip() if isinstance(_sum, str) else "")
     if not desc:
-        desc = (rec.get("details") or "").strip()
+        _det = rec.get("details")
+        desc = (_det.strip() if isinstance(_det, str) else "")
+    summary = _sum.strip() if isinstance(_sum, str) else ""
 
     # references: list of {type, url} -> [url, ...]
     refs = [r.get("url") for r in (rec.get("references") or [])
@@ -145,11 +164,15 @@ def osv_record(rec: dict) -> dict | None:
         if cid.startswith("CWE-") and cid not in cwes:
             cwes.append(cid)
 
+    # published/modified: only a string carries a meaningful date prefix; a
+    # non-str value yields None rather than a sliced list.
+    _pub = rec.get("published")
+    _mod = rec.get("modified")
     return {
         "id": rid,
-        "published": (rec.get("published") or "")[:10] or None,
-        "modified": (rec.get("modified") or "")[:10] or None,
-        "summary": (rec.get("summary") or "").strip(),
+        "published": (_pub[:10] if isinstance(_pub, str) else None) or None,
+        "modified": (_mod[:10] if isinstance(_mod, str) else None) or None,
+        "summary": summary,
         "description": desc,
         "cvss": score,
         "severity": severity,

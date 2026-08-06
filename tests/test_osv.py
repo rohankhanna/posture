@@ -19,6 +19,7 @@ import pytest
 from posture import store
 from posture.sources import osv as _osv
 from posture.sources import _net
+from posture.sources import osv_schema as _osv_schema
 
 
 # --- fixtures + helpers -----------------------------------------------------
@@ -327,3 +328,67 @@ def test_fetch_failure_is_noop(conn, monkeypatch):
     assert stats["error"] is not None
     assert stats["upserted"] == 0
     assert conn.execute("SELECT COUNT(*) FROM cves").fetchone()[0] == 0
+
+
+# --- 8. malformed records never crash the parser (mirror of mitre hardening) -
+# A single record where a normally-dict/list field is the wrong type must not
+# raise — osv_record returns None (no id) or a minimal dict, and the ingest
+# loop skips it. The 'list' object has no attribute 'get' class of bug.
+
+@pytest.mark.parametrize("bad", [
+    # rec itself is a list, not a dict.
+    [{"id": "OSV-1"}],
+    # severity holds a non-dict entry (a string) — the sort key must not crash.
+    {"id": "OSV-2", "severity": ["CVSS:3.1/AV:N"]},
+    # severity is a dict (not a list).
+    {"id": "OSV-3", "severity": {"type": "CVSS_V3_1", "score": 7.0}},
+    # severity is a string.
+    {"id": "OSV-4", "severity": "high"},
+    # summary is a list (must not crash .strip()).
+    {"id": "OSV-5", "summary": ["a", "b"]},
+    # published is a list (must yield None, not a sliced list).
+    {"id": "OSV-6", "published": ["2026-01-01"]},
+    # references element is a string.
+    {"id": "OSV-7", "references": ["https://x"]},
+    # affected element is a list.
+    {"id": "OSV-8", "affected": [["pkg"]]},
+])
+def test_osv_record_tolerates_non_dict_fields(bad):
+    rec = _osv_schema.osv_record(bad)
+    # must not raise; either None (no id) or a dict.
+    assert rec is None or isinstance(rec, dict)
+
+
+def test_osv_backfill_skips_malformed_record(conn, tmp_path, monkeypatch):
+    # A zip with three records: one good, one malformed-but-valid-id (severity is
+    # a string — would have crashed the old sort key), and one with NO id (a dict
+    # with no ``id`` field). The good + malformed-valid-id land (the latter as a
+    # minimal row — graceful degrade, not a crash); the id-less one is skipped
+    # (osv_record returns None). The tick completes with no error. The zip is
+    # built manually (not via _build_zip, which assumes every record has an id
+    # for its filename) so the no-id record can carry an arbitrary filename.
+    eco = "PySEC"
+    _write_ecosystems(tmp_path, [eco])
+    good = _osv_json("OSV-GOOD", cve_alias="CVE-2026-1")
+    malformed_valid = {"id": "OSV-BAD", "severity": "high",
+                       "affected": [{"package": {"ecosystem": "PySEC", "name": "p"}}]}
+    no_id = {"summary": "no id here"}  # dict with no id -> osv_record returns None
+    eco_dir = tmp_path / eco
+    eco_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(eco_dir / "all.zip", "w") as zf:
+        zf.writestr("OSV-GOOD.json", json.dumps(good))
+        zf.writestr("OSV-BAD.json", json.dumps(malformed_valid))
+        zf.writestr("NOID.json", json.dumps(no_id))
+    _patch_fetch(monkeypatch, tmp_path)
+
+    stats = _osv.osv_ingest_tick(conn, cap=100, now="t", base_url=str(tmp_path))
+    assert stats["error"] is None
+    assert stats["upserted"] == 2  # good + malformed-valid-id (id-less skipped)
+    assert stats["skipped"] == 1
+    good_row = store.get_cve(conn, "OSV-GOOD")
+    assert good_row is not None and good_row["flaw_type"] == "osv"
+    # the malformed-valid-id record degraded to a minimal row (no crash): no
+    # vector, no cvss — but it IS anchored. The invariant is "no crash", not
+    # "skip records with a valid id".
+    bad = store.get_cve(conn, "OSV-BAD")
+    assert bad is not None and bad["cvss_vector"] is None
