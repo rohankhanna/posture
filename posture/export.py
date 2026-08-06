@@ -141,9 +141,12 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
     #     write. Makes export idempotent w.r.t. format renames (a prior run's
     #     spine/cves/*.jsonl or seen_cves.jsonl is removed instead of lingering
     #     beside the new spine/flaws/*.jsonl). manifest.json is regenerated below.
+    #     Materialize the rglob FIRST: it is a generator, and unlinking/rmtree-ing
+    #     shards mid-iteration removes a directory rglob still intends to descend
+    #     into -> FileNotFoundError on the old shard dir (e.g. 'spine/cves').
     written = {entry["path"] for entry in files}
     import shutil as _shutil
-    for path in root.rglob("*.jsonl"):
+    for path in list(root.rglob("*.jsonl")):
         rel = path.relative_to(root).as_posix()
         if rel not in written:
             path.unlink()
