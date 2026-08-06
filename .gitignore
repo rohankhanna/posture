@@ -34,6 +34,9 @@ dist/
 .idea/
 .DS_Store
 
+# --- Claude Code session state (local only; never committed) ---
+.claude/
+
 # --- IMPORTANT: spine/ is NOT ignored ---------------------------------------
 # spine/ is the committed, cosign-signed output — the whole point of the CI-spine.
 # Do NOT add it here.

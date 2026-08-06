@@ -61,18 +61,29 @@ jobs:
 
       # --- persistent state across runs (else the stream cursor resets and
       #     stream would re-bootstrap every run, producing nothing) ---
-      - name: Restore cvelistV5 clone cache
+      # cvelist: fixed key — a blobless base clone; `git fetch` updates it each
+      # run on the runner, so an exact-hit-skip-save is fine (the cached base is
+      # refreshed in-place; daily restore access keeps the 7-day retention alive).
+      - name: Cache cvelistV5 clone (restore + save)
         uses: actions/cache@v4
         with:
           path: ${{ env.CLONE_DIR }}
           key: cvelist-blobless-v1
           restore-keys: cvelist-blobless-
 
-      - name: Restore posture.db cache
+      # posture.db: run-id-unique key so the post-run save ALWAYS writes a fresh
+      # entry (a fixed key would exact-hit-skip-save and the stream cursor —
+      # which lives in posture.db via store.set_state — would revert every run,
+      # making stream re-bootstrap forever and the spine stay empty). restore-keys
+      # prefix-restores the most recent prior db. `if: always()` so a failed run
+      # still caches its partial db (no-wipe: next run resumes, not restarts).
+      - name: Cache posture.db (restore + save)
+        if: always()
         uses: actions/cache@v4
         with:
           path: ${{ env.DB_PATH }}
-          key: posture-db-v1
+          key: posture-db-v1-${{ github.run_id }}
+          restore-keys: posture-db-v1-
           enableCrossOsArchive: true
 
       - name: Stream (MITRE detect — skeletons only, only-adds)
@@ -160,7 +171,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.DB_PATH }}
-          key: posture-db-v1
+          key: posture-db-v1-cred   # never saved by this job; forces a prefix restore
+          restore-keys: posture-db-v1-
           enableCrossOsArchive: true
 
       # TODO(future): run credentialed vendor witnesses here (none wired yet).
