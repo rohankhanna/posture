@@ -31,13 +31,15 @@ def test_known_axes_seeded_to_six_returns_axis_enum():
     assert all(isinstance(a, Axis) for a in axes)  # seed axes are enum values
 
 
-def test_resolve_role_cve_is_the_spine():
+def test_resolve_roles_map_to_seed_terms():
     conn = _conn()
-    t = G.resolve_role(conn, "vulnerability_join_key")
-    assert t is not None and t.id == "cve"
-    # other roles resolve to their seed terms
+    # the spine role (vulnerability_join_key) is retired; the generic role
+    # mechanism still resolves the remaining roles to their seed terms.
     assert G.resolve_role(conn, "severity_coordinate").id == "cvss"
     assert G.resolve_role(conn, "exploitability_signal").id in {"epss", "kev", "ssvc"}
+    # and vulnerability_join_key is no longer a role at all
+    assert "vulnerability_join_key" not in G.ROLES
+    assert G.resolve_role(conn, "vulnerability_join_key") is None
 
 
 def test_known_kinds_excludes_axes_and_includes_schemes():

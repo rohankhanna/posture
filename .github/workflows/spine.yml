@@ -42,6 +42,10 @@ env:
   # ~/.local/share/posture/cvelist -> cvelistV5/). The cache holds this parent.
   CLONE_DIR: ${{ github.workspace }}/cache/cvelist
   POSTURE_CVELIST_DIR: ${{ github.workspace }}/cache/cvelist
+  # POSTURE_GHSA_DIR is the PARENT of the advisory-database clone (mirrors the
+  # default ~/.local/share/posture/ghsa -> advisory-database/).
+  GHSA_DIR: ${{ github.workspace }}/cache/ghsa
+  POSTURE_GHSA_DIR: ${{ github.workspace }}/cache/ghsa
 
 jobs:
   ingest:
@@ -71,6 +75,15 @@ jobs:
           key: cvelist-blobless-v1
           restore-keys: cvelist-blobless-
 
+      # advisory-database: fixed-key blobless clone for the GHSA peer (same
+      # pattern as cvelist — `git fetch` refreshes it in place each run).
+      - name: Cache advisory-database clone (restore + save)
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.GHSA_DIR }}
+          key: ghsa-blobless-v1
+          restore-keys: ghsa-blobless-
+
       # posture.db: run-id-unique key so the post-run save ALWAYS writes a fresh
       # entry (a fixed key would exact-hit-skip-save and the stream cursor —
       # which lives in posture.db via store.set_state — would revert every run,
@@ -90,6 +103,34 @@ jobs:
         run: |
           mkdir -p cache
           posture stream --db "$DB_PATH"
+
+      # --- aggregator peers (the spine is ALL flaws, cve one peer among many) -
+      # Back-fill the cvelistV5 back-catalog (history the forward-only stream
+      # can't take). Self-disables after the first full run (BACKFILL_DONE_KEY),
+      # so daily CI calls it cheaply as a no-op thereafter. Only-adds skeletons
+      # (enrich_state='mitre') -> they join the refresh's pending pool below.
+      - name: Backfill (cvelistV5 back-catalog — skeletons, self-disables when done)
+        run: |
+          mkdir -p cache
+          posture backfill --cap 5000 --db "$DB_PATH"
+
+      # GHSA peer (self-enriched OSV rows; cap-resumed backfill then incremental).
+      # No secret — github/advisory-database is public (CC-BY 4.0).
+      - name: Ingest GHSA (GitHub Advisory Database peer)
+        run: |
+          posture ingest ghsa --cap 5000 --db "$DB_PATH"
+
+      # OSV peer (the GCS hub; many ecosystems emit OSV schema — highest leverage).
+      # No secret — osv-vulnerabilities GCS is public, rate-friendly.
+      - name: Ingest OSV (osv.dev hub peer)
+        run: |
+          posture ingest osv --cap 5000 --db "$DB_PATH"
+
+      # CISA KEV overlay (exploitability_signal; CVE-keyed full refresh, ~1,660
+      # rows). No secret — the static catalog JSON is public.
+      - name: Ingest KEV (CISA Known Exploited Vulnerabilities overlay)
+        run: |
+          posture ingest kev --db "$DB_PATH"
 
       - name: Refresh (catalog-only; NO devices, NO verdicts)
         if: github.event_name != 'pull_request'

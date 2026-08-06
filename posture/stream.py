@@ -50,6 +50,12 @@ from . import store as _store
 CURSOR_KEY = "stream:mitre_cursor"
 LAST_TICK_KEY = "stream:last_tick"
 LAST_SUMMARY_KEY = "stream:last_summary"
+# The back-fill path cursor (a repo-relative CVE JSON path) + done flag. The
+# stream is forward-only ("from now on", O(1) bootstrap -> no history); this is
+# the SEPARATE one-shot enumeration of the cvelistV5 back-catalog that populates
+# CVE-peer history. Cap-resumed across ticks; self-disables when exhausted.
+BACKFILL_CURSOR_KEY = "stream:backfill_cursor"
+BACKFILL_DONE_KEY = "stream:backfill_done"
 # A local ref that retains the cursor commit so git GC can't delete it
 # (otherwise a later ``diff cursor..new`` fails). Points at the last-processed
 # tip; updated after each successful tick. Best-effort — the state cursor is
@@ -234,3 +240,85 @@ def _set_cursor(conn, repo: Path, sha: str, fetched_at: str) -> None:
         _git(repo, "update-ref", CURSOR_REF, sha)
     except RuntimeError:
         pass  # ref update is best-effort retention; the state cursor is authoritative
+
+
+# ---------------------------------------------------------------------------
+# Back-fill — the one-shot CVE back-catalog enumeration
+# ---------------------------------------------------------------------------
+
+def backfill_tick(
+    conn,
+    repo_path: str | os.PathLike | None = None,
+    cap: int = 1000,
+    policy_version: str = "",
+    now: str | None = None,
+) -> dict:
+    """One back-fill tick: enumerate the cvelistV5 ``cves/`` back-catalog past a
+    path cursor and upsert skeletons (the same shape as ``stream_tick``) for
+    ``cap`` records. Returns a stats dict.
+
+    The stream is forward-only — it bootstraps O(1) and detects CVEs published
+    *after* go-live, never the history. This tick is the SEPARATE one-shot
+    enumeration of the historical catalog: cap-resumed across ticks (the cursor
+    lives in ``posture.db``), it only-adds skeletons (no verdicts, no wipe), and
+    it self-disables once exhausted (``BACKFILL_DONE_KEY``) so CI can call it
+    every run cheaply after that.
+
+    Skeletons carry the same provenance as the stream (``source='mitre'``,
+    ``enrich_state='mitre'``, ``fixed_raw`` pending-nvd marker); the incremental
+    refresh promotes them to NVD-enriched rows just like stream-sighted ones.
+    """
+    from . import git_ingest as _gi
+    repo = Path(repo_path) if repo_path else _mitre.mitre_repo_path()
+    fetched_at = now or _now()
+    stats = {"fetched_tip": None, "upserted": 0, "skipped": 0,
+             "done": False, "error": None}
+
+    # self-disable: once the back-catalog is exhausted, never re-enumerate it
+    # (the stream owns new CVEs from go-live; history doesn't change).
+    if _store.get_state(conn, BACKFILL_DONE_KEY) == "1":
+        stats["done"] = True
+        return stats
+
+    try:
+        _ensure_clone(repo)
+        _git(repo, "fetch", "origin", "--filter=blob:none")
+        tip = _git(repo, "rev-parse", "FETCH_HEAD").strip()
+    except Exception as exc:  # network / git failure — don't touch the cursor
+        stats["error"] = f"fetch failed: {exc}"
+        return stats
+    stats["fetched_tip"] = tip
+
+    cursor = _store.get_state(conn, BACKFILL_CURSOR_KEY)
+
+    def parse(text: str):
+        try:
+            rec = json.loads(text)
+        except (ValueError, TypeError):
+            return None
+        return _skeleton(rec, policy_version, fetched_at)
+
+    try:
+        records, new_cursor, done = _gi.git_backfill_slice(
+            repo, tip, "cves/", cursor, cap, parse,
+        )
+    except Exception as exc:
+        stats["error"] = f"backfill slice failed: {exc}"
+        return stats
+
+    for skel in records:
+        if not skel:
+            stats["skipped"] += 1
+            continue
+        _store.upsert_cve(conn, skel)
+        _store.set_enrich_state(conn, skel["id"], "mitre")
+        _store.mark_seen(conn, [skel["id"]])
+        stats["upserted"] += 1
+        conn.commit()  # release the write lock per CVE (mirrors stream/refresh)
+
+    if new_cursor:
+        _store.set_state(conn, BACKFILL_CURSOR_KEY, new_cursor)
+    if done:
+        _store.set_state(conn, BACKFILL_DONE_KEY, "1")
+        stats["done"] = True
+    return stats

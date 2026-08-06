@@ -1,5 +1,5 @@
 """Repair tests — reconcile raises proposals; apply is human-gated + no-wipe."""
-from posture import store, glossary as G, repair as R, spine
+from posture import store, glossary as G, repair as R
 from posture.policy import Policy, default_policy_path
 
 
@@ -11,34 +11,6 @@ def _conn():
 
 def _pol():
     return Policy.from_file(default_policy_path())
-
-
-def test_deprecated_bound_term_raises_rebind_proposal():
-    conn = _conn()
-    G.add_term(conn, G.Term(id="X", kind="identifier_scheme",
-                            roles=["vulnerability_join_key"]))
-    G.promote_term(conn, "X")
-    G.deprecate_term(conn, "cve", successor="X")
-    props = R.reconcile(conn, _pol())
-    kinds = [p.kind for p in props]
-    assert "spine_rebind_needed" in kinds
-
-
-def test_apply_rebinds_and_resolves_to_successor():
-    conn = _conn()
-    G.add_term(conn, G.Term(id="X", kind="identifier_scheme",
-                            roles=["vulnerability_join_key"]))
-    G.promote_term(conn, "X")
-    G.deprecate_term(conn, "cve", successor="X")
-    props = R.reconcile(conn, _pol())
-    rebind = next(p for p in props if p.kind == "spine_rebind_needed")
-    summary = R.apply(conn, rebind.id, actor="tester")
-    assert "rebound" in summary["done"][0]
-    # the spine now resolves to X
-    assert spine.primary_key(_pol(), conn) == "X"
-    # the proposal is marked applied; reconcile won't re-raise it
-    again = R.reconcile(conn, _pol())
-    assert all(p.id != rebind.id for p in again)
 
 
 def test_orphan_distrusted_witness_raises_proposal():

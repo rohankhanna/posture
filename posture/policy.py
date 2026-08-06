@@ -62,8 +62,11 @@ class DegradationRule:
 
 @dataclass
 class SpinePolicy:
-    primary_key: str = "cve"
-    role: str = "vulnerability_join_key"   # resolved via the glossary (rebindable)
+    # The spine is the alias↔alias graph (see spine.py) — there is no single
+    # primary join key and no rebindable role. `crosswalk` is advisory only: the
+    # alias-kind pairs the operator declares they maintain (e.g. [(cve,ghsa),
+    # (cve,usn)]). It documents intent; the engine resolves aliases from the
+    # crosswalk graph itself, not from this list.
     crosswalk: list[tuple[str, str]] = field(default_factory=list)  # (kind_a, kind_b)
 
 
@@ -165,9 +168,10 @@ class Policy:
                                               fallback=fallback)
 
         spine_cfg = data.get("spine") or {}
+        # legacy `primary_key`/`role` keys (the retired swappable-spine fields)
+        # are tolerated if present in older policy YAML but ignored — the spine
+        # is the alias graph now, not a rebindable word.
         spine = SpinePolicy(
-            primary_key=spine_cfg.get("primary_key", "cve"),
-            role=spine_cfg.get("role", "vulnerability_join_key"),
             crosswalk=[tuple(pair) for pair in spine_cfg.get("crosswalk", [])],
         )
 
@@ -193,9 +197,7 @@ class Policy:
                       "fallback": d.fallback}
                 for wid, d in self.degradation.items()
             },
-            "spine": {"primary_key": self.spine.primary_key,
-                      "role": self.spine.role,
-                      "crosswalk": [list(p) for p in self.spine.crosswalk]},
+            "spine": {"crosswalk": [list(p) for p in self.spine.crosswalk]},
         }
 
 

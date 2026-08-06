@@ -17,6 +17,14 @@ ATTRIBUTIONS: dict[str, str] = {
     # mitre_cve: MITRE's CVE program is US-gov-funded; no formal ToU attribution
     # required for the ids themselves, but noting sponsorship is honest.
     "mitre_cve": "CVE ids are assigned under the MITRE CVE program (US CISA-sponsored).",
+    # kev: CISA's Known Exploited Vulnerabilities catalog — public domain US-gov
+    # data; no formal ToU attribution required, but noting the source is honest.
+    "kev": "KEV overlay data from the CISA Known Exploited Vulnerabilities catalog.",
+    # ghsa: GitHub Advisory Database — CC-BY 4.0; attribution per the license.
+    "ghsa": "Advisory data from the GitHub Advisory Database (CC-BY 4.0).",
+    # osv: OSV.dev / GCS export — aggregate of many ecosystem DBs; the hub itself
+    # is CC-BY 4.0 (OSV.dev), with per-ecosystem licenses varying.
+    "osv": "Vulnerability data from OSV.dev (aggregated ecosystem advisories).",
 }
 
 

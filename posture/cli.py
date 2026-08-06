@@ -41,6 +41,9 @@ from . import refresh as _refresh
 from . import export as _export
 from .sources import build_default_registry
 from .sources.nvd_cve import NvdCveWitness
+from .sources import kev as _kev_mod
+from .sources import ghsa as _ghsa_mod
+from .sources import osv as _osv_mod
 from .sources.ubuntu_tracker import UbuntuTrackerWitness
 from .sources.debian_tracker import DebianTrackerWitness
 from .sources.apple_advisory import AppleAdvisoryWitness
@@ -272,16 +275,16 @@ def _cmd_audit(args) -> int:
 def _cmd_crosswalk(args) -> int:
     with _open_db(args.db) as conn:
         if args.sub == "add":
-            _spine.register(conn, args.cve, args.alias, args.kind)
+            _spine.register(conn, args.flaw_id, args.alias, args.kind)
             conn.commit()
-            print(f"crosswalk: {args.cve} = {args.alias} ({args.kind})")
+            print(f"crosswalk: {args.flaw_id} = {args.alias} ({args.kind})")
             return 0
         if args.sub == "show":
-            aliases = _spine.resolve(conn, args.cve)
+            aliases = _spine.resolve(conn, args.flaw_id)
             if not aliases:
-                print(f"{args.cve}: no aliases recorded")
+                print(f"{args.flaw_id}: no aliases recorded")
             else:
-                print(f"{args.cve}:")
+                print(f"{args.flaw_id}:")
                 for a in aliases:
                     print(f"  {a['alias']}  ({a['kind']})")
             return 0
@@ -458,18 +461,19 @@ def _cmd_spine(args) -> int:
         _glossary.ensure_seeded(conn)
         conn.commit()
         if args.sub == "show":
-            print(f"spine primary key: {_spine.primary_key(_load_policy(args.policy), conn)}")
-            print("role bindings:")
-            for b in _store.all_spine_bindings(conn):
-                t = _glossary.get(conn, b["term_id"])
-                st = f" [{t.status}]" if t else " [missing]"
-                print(f"  {b['role']} -> {b['term_id']}{st}  (bound {b['bound_at']})")
-            return 0
-        if args.sub == "rebind":
-            _spine.rebind(conn, args.role, args.term, actor="cli",
-                          now=_engine._now())
-            conn.commit()
-            print(f"rebound role {args.role} -> {args.term} (TRUST change recorded)")
+            # the spine is the alias graph: show the peer registry (flaw_type
+            # counts) + crosswalk edge counts, not a rebindable primary key.
+            counts = _store.flaw_type_counts(conn)
+            n_flaws = sum(r["n"] for r in counts)
+            n_edges = len(_store.crosswalk_all(conn))
+            print(f"spine: alias↔alias graph  ({n_flaws} flaw(s), {n_edges} crosswalk edge(s))")
+            print("flaw-type registry (peer counts):")
+            if counts:
+                for r in counts:
+                    print(f"  {(r['flaw_type'] or '-'):12} {r['n']}")
+            else:
+                print("  (catalog empty)")
+            print(f"crosswalk edges: {n_edges}")
             return 0
     return 2
 
@@ -510,6 +514,88 @@ def _cmd_stream(args) -> int:
               f"{stats['skipped']} skipped · tip {stats['fetched_tip']}")
     # MITRE attribution: the stream consumes the foreign-authored MITRE map.
     line = _attr.attribution_for("mitre_cve")
+    if line:
+        print(f"  {line}")
+    return 0
+
+
+def _cmd_backfill(args) -> int:
+    policy = _load_policy(args.policy)
+    with _open_db(args.db) as conn:
+        _install_policy_if_needed(conn, policy)
+        stats = _stream.backfill_tick(conn, repo_path=args.repo,
+                                       cap=args.cap, policy_version=policy.version)
+        conn.commit()
+    if stats["error"]:
+        print(f"backfill: no-op ({stats['error']})")
+    elif stats["done"] and not stats["upserted"]:
+        print(f"backfill: done (back-catalog exhausted; {stats['upserted']} upserted this tick)")
+    else:
+        print(f"backfill: {stats['upserted']} skeleton(s) upserted · "
+              f"{stats['skipped']} skipped · tip {stats['fetched_tip']}"
+              f"{' · DONE (back-catalog exhausted)' if stats['done'] else ''}")
+    line = _attr.attribution_for("mitre_cve")
+    if line:
+        print(f"  {line}")
+    return 0
+
+
+def _cmd_ingest_kev(args) -> int:
+    policy = _load_policy(args.policy)
+    with _open_db(args.db) as conn:
+        _install_policy_if_needed(conn, policy)
+        stats = _kev_mod.kev_ingest_tick(conn, now=_engine._now())
+        conn.commit()
+    if stats["error"]:
+        print(f"ingest kev: no-op ({stats['error']})")
+        return 1
+    print(f"ingest kev: {stats['upserted']} overlay row(s) upserted · "
+          f"catalog {stats['catalog_version']} ({stats['date_released']})")
+    line = _attr.attribution_for("kev")
+    if line:
+        print(f"  {line}")
+    return 0
+
+
+def _cmd_ingest_ghsa(args) -> int:
+    policy = _load_policy(args.policy)
+    with _open_db(args.db) as conn:
+        _install_policy_if_needed(conn, policy)
+        stats = _ghsa_mod.ghsa_ingest_tick(
+            conn, repo_path=args.repo, cap=args.cap,
+            policy_version=policy.version, now=_engine._now())
+        conn.commit()
+    if stats["error"]:
+        print(f"ingest ghsa: no-op ({stats['error']})")
+        return 1
+    phase = "incremental" if stats["incremental"] else "backfill"
+    print(f"ingest ghsa: {stats['upserted']} advisory(ies) upserted · "
+          f"{stats['skipped']} skipped · {phase} · tip {stats['fetched_tip']}"
+          f"{' · DONE (back-catalog exhausted; incremental from here)' if stats['done'] and not stats['incremental'] else ''}")
+    line = _attr.attribution_for("ghsa")
+    if line:
+        print(f"  {line}")
+    return 0
+
+
+def _cmd_ingest_osv(args) -> int:
+    policy = _load_policy(args.policy)
+    with _open_db(args.db) as conn:
+        _install_policy_if_needed(conn, policy)
+        stats = _osv_mod.osv_ingest_tick(conn, cap=args.cap,
+                                         policy_version=policy.version,
+                                         now=_engine._now())
+        conn.commit()
+    if stats["error"]:
+        print(f"ingest osv: no-op ({stats['error']})")
+        return 1
+    phase = "incremental" if stats["incremental"] else "backfill"
+    eco = stats["fetched_ecosystem"] or "-"
+    print(f"ingest osv: {stats['upserted']} record(s) upserted · "
+          f"{stats['skipped']} skipped · {phase} · ecosystem {eco}"
+          f"{' · all ecosystems backfilled' if stats['ecosystems_done'] else ''}"
+          f"{' · DONE (no incremental changes)' if stats['done'] else ''}")
+    line = _attr.attribution_for("osv")
     if line:
         print(f"  {line}")
     return 0
@@ -568,23 +654,24 @@ def _cmd_catalog(args) -> int:
             first = _store.seen_first_seen(conn, args.cve)
             if first:
                 print(f"first seen by stream: {first}")
-            # emit NVD attribution when the row rests on NVD enrichment
-            if row.get("source") == "nvd" or row.get("enrich_state") == "nvd":
-                line = _attr.attribution_for("nvd")
-                if line:
-                    print(f"  {line}")
-            elif row.get("source") == "mitre" or row.get("enrich_state") == "mitre":
-                line = _attr.attribution_for("mitre_cve")
-                if line:
-                    print(f"  {line}")
+            # emit the required attribution for whichever foreign source
+            # authored this row. mitre's source maps to the mitre_cve attribution
+            # id; the peer sources (ghsa/osv) + nvd map directly.
+            src = row.get("source") or row.get("enrich_state") or ""
+            attr_id = "mitre_cve" if src == "mitre" else src
+            line = _attr.attribution_for(attr_id)
+            if line:
+                print(f"  {line}")
             return 0
         if args.sub == "list":
             rows = _store.catalog_list(conn, enrich_state=args.state,
                                        limit=args.limit, offset=args.offset)
-            print(f"{'id':16} {'enrich':6} {'published':12} {'cvss':5} {'sev':9} src")
-            print("-" * 72)
+            print(f"{'id':22} {'type':5} {'enrich':6} {'published':12} "
+                  f"{'cvss':5} {'sev':9} src")
+            print("-" * 84)
             for r in rows:
-                print(f"{r['id']:16} {(r['enrich_state'] or '-'):6} "
+                print(f"{r['id']:22} {(r['flaw_type'] or '-'):5} "
+                      f"{(r['enrich_state'] or '-'):6} "
                       f"{(r['published'] or '-'):12} "
                       f"{(str(r['cvss']) if r['cvss'] is not None else '-'):5} "
                       f"{(r['severity'] or '-'):9} {r['source'] or '-'}")
@@ -647,9 +734,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("audit", help="list verdicts resting on a witness")
     sp.add_argument("witness"); db_arg(sp); sp.set_defaults(func=_cmd_audit)
 
-    sp = sub.add_parser("crosswalk", help="spine crosswalk: add | show")
+    sp = sub.add_parser("crosswalk", help="spine alias graph: add | show")
     sp.add_argument("sub", choices=["add", "show"])
-    sp.add_argument("cve"); sp.add_argument("alias", nargs="?", default=None); sp.add_argument("kind", nargs="?", default="ghsa")
+    sp.add_argument("flaw_id"); sp.add_argument("alias", nargs="?", default=None); sp.add_argument("kind", nargs="?", default="ghsa")
     db_arg(sp); sp.set_defaults(func=_cmd_crosswalk)
 
     sp = sub.add_parser("discover", help="horizon scan: surface candidate sources for review")
@@ -674,10 +761,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("proposal_id", nargs="?", default=None)
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_repair)
 
-    sp = sub.add_parser("spine", help="spine: show | rebind <role> <term> | export | import")
-    sp.add_argument("sub", choices=["show", "rebind", "export", "import"])
-    sp.add_argument("role", nargs="?", default=None)
-    sp.add_argument("term", nargs="?", default=None)
+    sp = sub.add_parser("spine", help="spine: show | export | import")
+    sp.add_argument("sub", choices=["show", "export", "import"])
     sp.add_argument("--out", default=".", help="export output dir (default: cwd)")
     sp.add_argument("--from", dest="from_dir", default=".", help="import source dir (default: cwd)")
     sp.add_argument("--no-verify", action="store_true", help="import: skip manifest sha256 check")
@@ -688,6 +773,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--repo", default=None, help="cvelistV5 clone path (default: ~/.local/share/posture/cvelist/cvelistV5)")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_stream)
 
+    sp = sub.add_parser("backfill", help="one cvelistV5 back-catalog tick (cap-resumed; populates CVE-peer history; skeletons only)")
+    sp.add_argument("--repo", default=None, help="cvelistV5 clone path (default: ~/.local/share/posture/cvelist/cvelistV5)")
+    sp.add_argument("--cap", type=int, default=1000, help="max records to back-fill this tick (<=0 = unlimited)")
+    db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_backfill)
+
+    # -- ingestion: aggregator peers (KEV overlay first; OSV/GHSA to follow) ----
+    sp = sub.add_parser("ingest", help="ingest an aggregator peer into the catalog (kev | osv | ghsa)")
+    psub = sp.add_subparsers(dest="peer", required=True)
+    spk = psub.add_parser("kev", help="CISA KEV overlay refresh (exploitability_signal; CVE-keyed, full refresh)")
+    db_arg(spk); pol_arg(spk); spk.set_defaults(func=_cmd_ingest_kev)
+    spg = psub.add_parser("ghsa", help="GitHub Advisory Database tick (self-enriched OSV peer; cap-resumed backfill + incremental diff)")
+    spg.add_argument("--repo", default=None, help="advisory-database clone path (default: ~/.local/share/posture/ghsa/advisory-database; env POSTURE_GHSA_DIR)")
+    spg.add_argument("--cap", type=int, default=1000, help="max advisories to back-fill this tick (<=0 = unlimited)")
+    db_arg(spg); pol_arg(spg); spg.set_defaults(func=_cmd_ingest_ghsa)
+    spo = psub.add_parser("osv", help="osv.dev hub tick (self-enriched OSV peer; per-ecosystem all.zip backfill + modified_id.csv incremental)")
+    spo.add_argument("--cap", type=int, default=1000, help="max records to ingest this tick (<=0 = unlimited)")
+    db_arg(spo); pol_arg(spo); spo.set_defaults(func=_cmd_ingest_osv)
+
     sp = sub.add_parser("refresh", help="incremental NVD enrichment + per-CVE re-decide (wipe-proof; never a bulk re-pull)")
     sp.add_argument("--devices", default=DEFAULT_DEVICES, help="fleet YAML (list of device dicts)")
     sp.add_argument("--cap", type=int, default=_refresh.DEFAULT_CAP, help="max NVD enrichments this tick")
@@ -695,10 +798,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="catalog-only enrichment: no fleet, no verdicts, no vendor trackers (for CI)")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_refresh)
 
-    sp = sub.add_parser("catalog", help="CVE catalog: show <cve> | list | pending")
+    sp = sub.add_parser("catalog", help="flaw catalog: show <flaw_id> | list | pending")
     sp.add_argument("sub", choices=["show", "list", "pending"])
-    sp.add_argument("cve", nargs="?", default=None, help="CVE id (show)")
-    sp.add_argument("--state", choices=["mitre", "nvd"], default=None, help="filter list by enrich state")
+    sp.add_argument("cve", nargs="?", default=None, help="flaw id (show)")
+    sp.add_argument("--state", choices=["mitre", "nvd", "ghsa", "osv"], default=None, help="filter list by enrich state")
     sp.add_argument("--limit", type=int, default=100)
     sp.add_argument("--offset", type=int, default=0)
     db_arg(sp); sp.set_defaults(func=_cmd_catalog)

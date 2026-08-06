@@ -26,7 +26,8 @@ def test_load_valid_policy():
     assert p.witness_order("nvd") == 10
     assert p.witness_bias("nvd") == "false-alarm"
     assert p.degradation_for("nvd").if_silent_for_days == 14
-    assert p.spine.primary_key == "cve"
+    # the spine is the alias graph now: no primary_key/role, crosswalk is advisory
+    assert not hasattr(p.spine, "primary_key")
     assert ("cve", "ghsa") in p.spine.crosswalk
 
 
@@ -56,7 +57,7 @@ def test_missing_dated_rejected():
 
 def test_bundled_default_policy_loads():
     p = Policy.from_file(default_policy_path())
-    assert p.version == "2026-08-06.1"
+    assert p.version == "2026-08-06.2"
     # all six axes are covered by the bundled witness entries
     covered = {a for wp in p.witnesses.values() for a in wp.axes}
     assert covered == {"vulnerability", "configuration", "exposure",
