@@ -316,9 +316,24 @@ posture distrust nvd --reason "audit test"   # retroactive distrust
 posture audit nvd
 posture crosswalk add CVE-2026-31589 GHSA-xxxx ghsa
 posture crosswalk show CVE-2026-31589
-posture discover          # horizon scan: candidate sources for review
+posture discover          # horizon scan: surface NEW aggregator candidates for review (delta)
+posture discover --fetch  # opt-in live: fetch each new aggregator page (LLM, if wired, only drafts)
 posture spine show        # flaw-type registry + crosswalk edge counts (the alias graph)
 ```
+
+**Discovery (horizon scan).** `posture discover` surfaces NEW sources — the
+*delta* against what's already recorded, not the whole registry. An aggregator
+is surfaced only if its url isn't already in the candidates table (any status —
+so a human's adopted/rejected decision stops it resurfacing), and re-surfacing
+is idempotent on url (a re-scan refreshes an aggregator's metadata but never
+wipes a prior review decision). It is offline by default (the CI daily mode);
+`--fetch` is the opt-in live path. The daily cadence lives in CI (`spine.yml`
+runs `posture discover`), not a local timer — no feeding or enrichment from a
+local machine. An LLM, if wired via the `POSTURE_LLM` env hook, only *drafts*
+candidate feeds parsed out of a fetched page; it never decides trust — the
+machine notices, the human decides (mirrors `llm_classifier`). No provider is
+chosen by default; the system is complete and model-free until an operator
+wires one (sovereignty).
 
 Move the catalog (the spine) to/from sharded JSONL — the signed-directory
 interface (see *CI spine* below):

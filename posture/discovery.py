@@ -60,12 +60,52 @@ class Candidate:
     status: str = "review"
 
 
-def horizon_scan() -> list[Candidate]:
-    """Return the starter set of candidate sources to consider adopting.
-    In a full impl this would diff against already-registered witnesses and
-    fetch each aggregator for genuinely-new feeds; here it returns the static
-    registry so the surface-for-review contract is concrete and testable."""
-    return [Candidate(**a) for a in AGGREGATORS]
+def horizon_scan(conn: sqlite3.Connection | None = None) -> list[Candidate]:
+    """Return the candidate sources to surface for human review — the DELTA
+    against what's already recorded, not the whole registry.
+
+    Offline by default (this is what CI runs daily via spine.yml): an
+    aggregator is surfaced only if its url is not already in the candidates
+    table (any status — so a human's adopted/rejected decision stops it
+    resurfacing). No network, no LLM. When the static AGGREGATORS list is
+    extended as the field grows, the next scan surfaces just the new entries.
+
+    Pass conn=None for the raw registry (introspection / tests). The live
+    `--fetch` path is `horizon_scan_live` (opt-in, never the CI default): a
+    local machine does not feed or enrich — the daily cadence lives in CI."""
+    base = [Candidate(**a) for a in AGGREGATORS]
+    if conn is None:
+        return base
+    from . import store as _store
+    known = {row["url"] for row in _store.candidates(conn)}
+    return [c for c in base if c.url not in known]
+
+
+def fetch_aggregator(url: str) -> str:
+    """Fetch one aggregator page (the opt-in `--fetch` path). Returns the raw
+    body or '' on failure. Reuses the shared curl helper (header-only auth,
+    max-time) — no new network surface, no new dependency."""
+    from .sources import _net
+    _json, _code, body = _net.curl_get(url, max_time=60)
+    return body or ""
+
+
+def horizon_scan_live(conn: sqlite3.Connection) -> list[Candidate]:
+    """Opt-in live horizon scan (the `posture discover --fetch` manual path,
+    NEVER the CI default — feeding/enrichment runs in CI, not from a local
+    machine). For each aggregator not already recorded, fetch its page and,
+    IF an LLM is wired (POSTURE_LLM), draft candidate feeds parsed out of it;
+    otherwise surface the aggregator itself as a single review candidate.
+
+    The LLM only DRAFTS candidates (status="review"); it never decides trust —
+    the same boundary as `llm_classifier`. A human still promotes or rejects."""
+    from . import llm_horizon as _llm
+    surfaced: list[Candidate] = []
+    for c in horizon_scan(conn):               # start from the offline delta
+        body = fetch_aggregator(c.url)
+        parsed = _llm.parse_horizon(body, c) if _llm.is_enabled() else None
+        surfaced.extend(parsed if parsed else [c])
+    return surfaced
 
 
 def register_candidate(conn: sqlite3.Connection, c: Candidate) -> None:
