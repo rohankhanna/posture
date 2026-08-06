@@ -1,0 +1,38 @@
+{
+  "counts": {
+    "candidates": 9,
+    "crosswalk": 0,
+    "cves": 0,
+    "distrust_marks": 0,
+    "seen_cves": 0
+  },
+  "files": [
+    {
+      "count": 0,
+      "path": "crosswalk.jsonl",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "count": 9,
+      "path": "candidates.jsonl",
+      "sha256": "1feda967a8af82fa0e6a05ac57064163848cfba375f405183032dddfd3c36ee8"
+    },
+    {
+      "count": 0,
+      "path": "distrust_marks.jsonl",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "count": 0,
+      "path": "seen_cves.jsonl",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "generated_at": "2026-08-06T10:02:54+00:00",
+  "manifest_version": "1",
+  "policy_version": "2026-08-06.1",
+  "source_version": {
+    "cvelist_tip": "bf513d363f62b0bf97e0ff2db204316f3de74c35",
+    "stream_last_tick": "2026-08-06T10:02:22+00:00"
+  }
+}
