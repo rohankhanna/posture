@@ -329,6 +329,25 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA user_version = 2")
         conn.commit()
 
+    if version < 3:
+        # v2 -> v3: discovery candidates become idempotent on url.
+        #   `posture discover` runs DAILY in CI (spine.yml) and re-surfaces the
+        #   static AGGREGATORS every run; a bare INSERT accumulated duplicate
+        #   rows that then bloated the exported spine (candidates ARE part of
+        #   the signed spine export). Dedup any existing dups first — keep the
+        #   lowest id (oldest), so a human's adopted/rejected status survives —
+        #   then enforce url uniqueness so `add_candidate` can upsert.
+        if _has_table(conn, "candidates"):
+            conn.execute(
+                "DELETE FROM candidates WHERE id NOT IN "
+                "(SELECT MIN(id) FROM candidates GROUP BY url)"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS candidates_url_uq ON candidates(url)"
+            )
+        conn.execute("PRAGMA user_version = 3")
+        conn.commit()
+
 
 def connect(path: str, readonly: bool = False) -> sqlite3.Connection:
     """Open (and migrate) the posture DB. Creates the file if missing.
@@ -609,9 +628,17 @@ def flaw_type_counts(conn) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def add_candidate(conn, url: str, fmt: str, axis: str, note: str = "") -> None:
+    """Idempotent on url (the v3 migration enforces candidates_url_uq).
+    Re-surfacing the same aggregator refreshes its fmt/axis/note from the
+    latest definition but PRESERVES status + added_at — a human's
+    adopted/rejected review decision is never wiped by a re-scan (which is
+    why CI can run `posture discover` daily without spamming the table or
+    resetting prior decisions)."""
     conn.execute(
         """INSERT INTO candidates (url, fmt, axis, status, note, added_at)
-           VALUES (?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(url) DO UPDATE SET
+               fmt=excluded.fmt, axis=excluded.axis, note=excluded.note""",
         (url, fmt, axis, "review", note, _now()),
     )
 

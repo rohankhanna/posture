@@ -292,10 +292,11 @@ def _cmd_crosswalk(args) -> int:
 
 
 def _cmd_discover(args) -> int:
-    cands = _discovery.horizon_scan()
     with _open_db(args.db) as conn:
+        cands = (_discovery.horizon_scan_live(conn) if getattr(args, "fetch", False)
+                 else _discovery.horizon_scan(conn))
         for c in cands:
-            _discovery.register_candidate(conn, c)
+            _discovery.register_candidate(conn, c)   # idempotent on url (v3)
         conn.commit()
     print(f"horizon scan — {len(cands)} candidate source(s) surfaced for review:")
     print("(the machine notices; the human decides to trust. NOT auto-adopted.)")
@@ -304,6 +305,8 @@ def _cmd_discover(args) -> int:
         print(f"  [{c.axis:14}] {c.name:32} fmt={c.fmt:10} ({std})")
         print(f"      {c.url}")
         print(f"      {c.note}")
+    if not cands:
+        print("  (no new aggregators since the last scan — the delta is empty.)")
     print("\nReview each, then `posture` (future) to adopt — record the decision in")
     print("the source-alignment repo with evidence before trusting.")
     return 0
@@ -740,7 +743,13 @@ def build_parser() -> argparse.ArgumentParser:
     db_arg(sp); sp.set_defaults(func=_cmd_crosswalk)
 
     sp = sub.add_parser("discover", help="horizon scan: surface candidate sources for review")
-    db_arg(sp); sp.set_defaults(func=_cmd_discover)
+    db_arg(sp)
+    sp.add_argument("--fetch", action="store_true",
+                    help="live: fetch each new aggregator page (opt-in; default is an "
+                         "offline delta vs already-recorded candidates). An LLM, if wired "
+                         "via POSTURE_LLM, only drafts candidates -- never decides trust. "
+                         "The daily cadence runs in CI (spine.yml), not locally.")
+    sp.set_defaults(func=_cmd_discover)
 
     # -- the growing vocabulary ------------------------------------------------
     sp = sub.add_parser("glossary", help="the vocabulary as data: list | show | add | promote | deprecate | roles")
