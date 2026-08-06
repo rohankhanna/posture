@@ -245,7 +245,7 @@ data ever leaves your machine; the committed `spine/` is data-only.
 
 **Credentialed lane:** a second, dormant job pushes gated-vendor output
 (SAP/Snyk/Tenable/Qualys/Cisco/VMware — to be wired as you obtain credentials)
-to a *separate private* repo `posture-spine-cred`, never into this repo's
+to a *separate private* repo `posture-cred`, never into this repo's
 history — so the eventual public flip can't leak non-redistributable content.
 
 **Consume on a client:**
