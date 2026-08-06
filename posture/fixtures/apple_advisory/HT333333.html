@@ -1,0 +1,24 @@
+<!-- Offline advisory fixture for the Apple security-advisory witness.
+     The macOS Tahoe 26.5 advisory. Exercising the macos product path: a
+     macOS row in the index + an og:title whose _MACOS_VER regex extracts the
+     numeric version (with the one-word marketing name "Taheco" -> here
+     "Tahoe" between the product token and the version). CVE-2026-99920 is
+     fixed here. A device on macOS 26.5 (>= 26.5) is patched. -->
+<html>
+<head>
+  <meta property="og:title"
+        content="About the security content of macOS Tahoe 26.5 - Apple Support">
+</head>
+<body>
+  <h1>About the security content of macOS Tahoe 26.5</h1>
+  <p>This document describes the security content of macOS Tahoe 26.5.</p>
+  <h2>Entries</h2>
+  <ul>
+    <li>FontParser
+      <p>Impact: processing a maliciously crafted font file may lead to arbitrary code execution.</p>
+      <p>Description: a memory corruption issue was addressed with improved memory handling.</p>
+      <p>CVE-2026-99920: Apple</p>
+    </li>
+  </ul>
+</body>
+</html>

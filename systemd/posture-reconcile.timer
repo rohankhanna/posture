@@ -1,0 +1,37 @@
+[Unit]
+Description=Run the posture self-course-correction sweep at non-deterministic intervals (~daily)
+
+[Timer]
+# Non-deterministic cadence: each tick fires 20-24h AFTER the previous tick
+# finished, with a random delay. This is deliberately not pinned to the wall
+# clock — the interval drifts and never lands on a fixed daily time, so the
+# vocab/repair sweep isn't predictable or synchronized with anyone else's
+# nightly job (or with GitHub Actions cron, which is the documented CI
+# counterpart in the retcon node for the horizon-scan).
+#
+#   OnUnitInactiveSec=20h  base gap measured from when the last tick FINISHED
+#                          (so sweeps can never overlap themselves)
+#   RandomizedDelaySec=4h  add uniform random 0-4h -> interval in [20,24]h
+#   OnBootSec=5min         first tick after boot (also jittered), so the
+#                          sweep is live shortly after startup
+#
+# Cadence choice (20-24h, daily-ish): the vocab monitor surfaces NEW scheme/
+# format names from a static known-set diff, and repair reconcile raises
+# drift flags (deprecated-term-referenced, source-drifted, stale-policy,
+# orphan-distrusted). Drift accumulates on the order of days, not minutes —
+# a stream tick at 10-17min would be wasteful noise here, and a wall-clock
+# daily pin would synchronize with every other nightly job. [20,24]h matches
+# the horizon-scan cadence documented in the retcon node (f31ca1a137f2) and
+# keeps the self-course-correction never-pinned, mirroring posture-stream.
+#
+# Persistent= is OnCalendar-only and omitted. A reconcile sweep is a
+# point-in-time sample of drift, not a job to catch up: if the machine was
+# asleep, the next tick after wake is fine (the stream still owns the
+# short-horizon detection; nothing is lost by skipping a sweep).
+OnBootSec=5min
+OnUnitInactiveSec=20h
+RandomizedDelaySec=4h
+Unit=posture-reconcile.service
+
+[Install]
+WantedBy=default.target

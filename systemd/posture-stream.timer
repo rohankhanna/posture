@@ -1,0 +1,26 @@
+[Unit]
+Description=Run the posture CVE stream at non-deterministic intervals (~10-17 min)
+
+[Timer]
+# Non-deterministic cadence: each tick fires 10-17 min AFTER the previous
+# tick finished, with a random delay. This is deliberately not pinned to the
+# wall clock — the interval drifts and never lands on round minutes, so the
+# git-fetch / per-CVE pattern isn't predictable or synchronized with anyone
+# else polling on a fixed schedule.
+#
+#   OnUnitInactiveSec=10min  base gap measured from when the last tick FINISHED
+#                            (so ticks can never overlap themselves)
+#   RandomizedDelaySec=7min  add uniform random 0-7 min -> interval in [10,17]m
+#   OnBootSec=3min           first tick after boot (also jittered), so the
+#                            stream is live shortly after startup
+#
+# Persistent= is OnCalendar-only and omitted. A stream is a point-in-time
+# sample, not a job to catch up: if the machine was asleep, the next tick
+# after wake is fine (the daily refresh/assess still owns the back-catalog).
+OnBootSec=3min
+OnUnitInactiveSec=10min
+RandomizedDelaySec=7min
+Unit=posture-stream.service
+
+[Install]
+WantedBy=default.target

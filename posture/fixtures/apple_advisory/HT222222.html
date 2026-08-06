@@ -1,0 +1,28 @@
+<!-- Offline advisory fixture for the Apple security-advisory witness.
+     The iOS 17.1 / iPadOS 17.1 advisory. It re-mentions CVE-2026-99910 (also
+     fixed in 16.7.15) and lists CVE-2026-99912 (only fixed here). Because the
+     donor walks advisories oldest -> newest and the FIRST sighting wins, the
+     witness must resolve CVE-2026-99910 to 16.7.15 (earliest), not 17.1. -->
+<html>
+<head>
+  <meta property="og:title"
+        content="About the security content of iOS 17.1 and iPadOS 17.1 - Apple Support">
+</head>
+<body>
+  <h1>About the security content of iOS 17.1 and iPadOS 17.1</h1>
+  <p>This document describes the security content of iOS 17.1 and iPadOS 17.1.</p>
+  <h2>Entries</h2>
+  <ul>
+    <li>AppleMobileFileIntegrity
+      <p>Impact: an app may be able to read sensitive information.</p>
+      <p>Description: an out-of-bounds read was addressed with improved bounds checking.</p>
+      <p>CVE-2026-99910: Apple</p>
+    </li>
+    <li>WebKit
+      <p>Impact: processing web content may lead to arbitrary code execution.</p>
+      <p>Description: a memory corruption issue was addressed with improved memory handling.</p>
+      <p>CVE-2026-99912: Apple</p>
+    </li>
+  </ul>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "id": "cis-sample-host",
+  "name": "Demo Linux host (CIS config snapshot)",
+  "os": "linux",
+  "config": {
+    "sshd_permit_root_login": "no",
+    "tmp_nosuid": "no",
+    "audit_log_files": "yes",
+    "password_min_len": 8,
+    "world_writable_files": "none",
+    "password_max_days": 60
+  },
+  "cis_checks": ["CIS-6.2.1", "CIS-1.1.2", "CIS-5.4.1"]
+}

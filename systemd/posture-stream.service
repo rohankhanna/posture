@@ -1,0 +1,27 @@
+[Unit]
+Description=posture — CVE stream (MITRE cvelistV5 diff + skeleton upsert, ~10-17 min)
+Documentation=man:posture(1)
+
+[Service]
+Type=oneshot
+# A stream tick git-fetches the local cvelistV5 clone (rate-limit-free) and
+# upserts skeleton rows for CVEs MITRE published since the last tick — so a
+# newly-published CVE lands in the catalog within ~10-17 min instead of waiting
+# for a full reconciliation. Phase 1: detection only (no NVD, no verdict
+# writes), so it is cheap and can never wipe stored verdicts.
+TimeoutStartSec=10min
+Environment=PYTHONUNBUFFERED=1
+# systemd user services don't inherit your shell PATH (mise/PiP bin dirs are
+# missing), so add the dir that holds `posture`. %h is your home.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Source secrets (NVD_API_KEY) from a perms-locked file, not the unit itself.
+# Phase 1 doesn't hit NVD, but the key is loaded so the Phase 2 refresh (which
+# does) is ready without a service edit.
+EnvironmentFile=%h/.config/posture/env
+# DNS-readiness gate: the stream does `git fetch` from github.com (the MITRE
+# clone is local, but fetching new commits needs the resolver). Poll up to
+# 60s, abort if still down (defer to the next tick).
+ExecStartPre=/usr/bin/bash -c 'for i in $(seq 1 12); do getent hosts github.com >/dev/null 2>&1 && exit 0; sleep 5; done; echo "posture-stream: DNS not ready after 60s, aborting" >&2; exit 1'
+ExecStart=/usr/bin/env posture stream
+StandardOutput=journal
+StandardError=journal

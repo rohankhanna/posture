@@ -1,0 +1,115 @@
+{
+  "totalResults": 4,
+  "vulnerabilities": [
+    {
+      "cve": {
+        "id": "CVE-2026-99901",
+        "published": "2026-02-01T00:00:00.000",
+        "descriptions": [
+          {"lang": "en", "value": "Demo: a network-reachable kernel flaw fixed in 6.18.5. Device on 6.18 is vulnerable."}
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {"cvssData": {"baseScore": 9.8, "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}, "baseSeverity": "CRITICAL"}
+          ]
+        },
+        "references": [
+          {"url": "https://nvd.nist.gov/vuln/detail/CVE-2026-99901"}
+        ],
+        "configurations": [
+          {"nodes": [{"cpeMatch": [
+            {"vulnerable": true, "criteria": "cpe:2.3:o:linux:linux_kernel:6.18", "versionEndExcluding": "6.18.5"}
+          ]}]}
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-99902",
+        "published": "2026-03-01T00:00:00.000",
+        "descriptions": [
+          {"lang": "en", "value": "Demo: a flaw fixed at 6.17. Device on 6.18 already has the fix -> patched."}
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {"cvssData": {"baseScore": 7.5, "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"}, "baseSeverity": "HIGH"}
+          ]
+        },
+        "references": [
+          {"url": "https://nvd.nist.gov/vuln/detail/CVE-2026-99902"}
+        ],
+        "configurations": [
+          {"nodes": [{"cpeMatch": [
+            {"vulnerable": true, "criteria": "cpe:2.3:o:linux:linux_kernel:6.16", "versionStartIncluding": "6.16", "versionEndExcluding": "6.17"}
+          ]}]}
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-99903",
+        "published": "2026-04-01T00:00:00.000",
+        "descriptions": [
+          {"lang": "en", "value": "Demo: a flaw bounded to 6.18 inclusive. Device exactly on 6.18 is vulnerable; fix at 6.18 inclusive (so 6.18.1+ is clear)."}
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {"cvssData": {"baseScore": 8.1, "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:L"}, "baseSeverity": "HIGH"}
+          ]
+        },
+        "references": [
+          {"url": "https://nvd.nist.gov/vuln/detail/CVE-2026-99903"}
+        ],
+        "configurations": [
+          {"nodes": [{"cpeMatch": [
+            {"vulnerable": true, "criteria": "cpe:2.3:o:linux:linux_kernel:6.18", "versionStartIncluding": "6.18", "versionEndIncluding": "6.18"}
+          ]}]}
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-99904",
+        "published": "2026-05-01T00:00:00.000",
+        "descriptions": [
+          {"lang": "en", "value": "Demo: a future-series flaw (start 6.19). Device on 6.18 is NOT affected."}
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {"cvssData": {"baseScore": 6.5, "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"}, "baseSeverity": "MEDIUM"}
+          ]
+        },
+        "references": [
+          {"url": "https://nvd.nist.gov/vuln/detail/CVE-2026-99904"}
+        ],
+        "configurations": [
+          {"nodes": [{"cpeMatch": [
+            {"vulnerable": true, "criteria": "cpe:2.3:o:linux:linux_kernel:6.19", "versionStartIncluding": "6.19", "versionEndExcluding": "6.20"}
+          ]}]}
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-99905",
+        "published": "2026-06-01T00:00:00.000",
+        "descriptions": [
+          {"lang": "en", "value": "Demo: an iPhone-only flaw (different CPE head). Must be filtered out for the linux device."}
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {"cvssData": {"baseScore": 7.0, "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"}, "baseSeverity": "HIGH"}
+          ]
+        },
+        "references": [
+          {"url": "https://nvd.nist.gov/vuln/detail/CVE-2026-99905"}
+        ],
+        "configurations": [
+          {"nodes": [{"cpeMatch": [
+            {"vulnerable": true, "criteria": "cpe:2.3:o:apple:iphone_os:18.0", "versionEndExcluding": "18.5"}
+          ]}]}
+        ]
+      }
+    }
+  ]
+}
