@@ -1,4 +1,4 @@
-"""CVE catalog store tests — cves/seen_cves/state + the no-wipe per-key
+"""Flaw catalog store tests — flaws/seen_flaws/state + the no-wipe per-key
 upsert_verdict path. In-memory sqlite via store.connect (runs the full SCHEMA).
 """
 from __future__ import annotations
@@ -15,63 +15,63 @@ def conn():
     return store.connect(":memory:")
 
 
-# --- cves catalog + provenance ----------------------------------------------
+# --- flaws catalog + provenance ---------------------------------------------
 
-def test_upsert_cve_inserts_with_provenance_and_discovered_at(conn):
-    store.upsert_cve(conn, {
+def test_upsert_flaw_inserts_with_provenance_and_discovered_at(conn):
+    store.upsert_flaw(conn, {
         "id": "CVE-2026-1", "published": "2026-08-01", "description": "t",
         "fixed_raw": {"source": "mitre", "pending_nvd": True, "reason": "r"},
         "refs": ["https://e/1"], "source": "mitre", "fetched_at": "now",
         "policy_version": "v", "complete": 1,
     })
-    row = store.get_cve(conn, "CVE-2026-1")
-    assert row["enrich_state"] is None  # upsert_cve does NOT set enrich_state
+    row = store.get_flaw(conn, "CVE-2026-1")
+    assert row["enrich_state"] is None  # upsert_flaw does NOT set enrich_state
     assert row["source"] == "mitre"
     assert row["discovered_at"] == "now" or row["discovered_at"]  # first sighting stamped
     assert row["fixed_raw"]["source"] == "mitre"
     assert row["refs"] == ["https://e/1"]
 
 
-def test_upsert_cve_preserves_enrich_state_and_discovered_at_on_re_upsert(conn):
-    store.upsert_cve(conn, {"id": "CVE-2026-1", "published": "2026-08-01",
+def test_upsert_flaw_preserves_enrich_state_and_discovered_at_on_re_upsert(conn):
+    store.upsert_flaw(conn, {"id": "CVE-2026-1", "published": "2026-08-01",
                             "description": "skeleton", "fixed_raw": {"source": "mitre"},
                             "refs": [], "source": "mitre", "fetched_at": "t1",
                             "policy_version": "v", "complete": 1})
     store.set_enrich_state(conn, "CVE-2026-1", "mitre")
-    first_seen = store.get_cve(conn, "CVE-2026-1")["discovered_at"]
+    first_seen = store.get_flaw(conn, "CVE-2026-1")["discovered_at"]
     # NVD enrichment re-upserts the same id with full data.
-    store.upsert_cve(conn, {"id": "CVE-2026-1", "published": "2026-08-01",
+    store.upsert_flaw(conn, {"id": "CVE-2026-1", "published": "2026-08-01",
                             "cvss": 9.8, "severity": "CRITICAL", "description": "enriched",
                             "fixed_raw": {"source": "nvd"}, "refs": [],
                             "source": "nvd", "fetched_at": "t2",
                             "policy_version": "v", "complete": 1})
-    row = store.get_cve(conn, "CVE-2026-1")
-    # enrich_state preserved (upsert_cve does NOT touch it) — set_enrich_state must.
+    row = store.get_flaw(conn, "CVE-2026-1")
+    # enrich_state preserved (upsert_flaw does NOT touch it) — set_enrich_state must.
     assert row["enrich_state"] == "mitre"
     assert row["cvss"] == 9.8 and row["source"] == "nvd"  # data updated
     assert row["discovered_at"] == first_seen  # first sighting never clobbered
 
 
-def test_set_enrich_state_and_pending_mitre_ids(conn):
+def test_set_enrich_state_and_pending_enrichment_ids(conn):
     for i in range(3):
-        store.upsert_cve(conn, {"id": f"CVE-2026-{i}", "published": f"2026-08-0{i}",
+        store.upsert_flaw(conn, {"id": f"CVE-2026-{i}", "published": f"2026-08-0{i}",
                                 "description": "", "fixed_raw": {"source": "mitre"},
                                 "refs": [], "source": "mitre", "fetched_at": "t",
                                 "policy_version": "v", "complete": 1})
         store.set_enrich_state(conn, f"CVE-2026-{i}", "mitre")
-    assert store.pending_mitre_ids(conn) == ["CVE-2026-2", "CVE-2026-1", "CVE-2026-0"]
-    assert store.pending_mitre_ids(conn, limit=2) == ["CVE-2026-2", "CVE-2026-1"]
+    assert store.pending_enrichment_ids(conn) == ["CVE-2026-2", "CVE-2026-1", "CVE-2026-0"]
+    assert store.pending_enrichment_ids(conn, limit=2) == ["CVE-2026-2", "CVE-2026-1"]
     # Promote one to nvd -> it leaves the pending pool.
     store.set_enrich_state(conn, "CVE-2026-1", "nvd")
-    assert "CVE-2026-1" not in store.pending_mitre_ids(conn)
+    assert "CVE-2026-1" not in store.pending_enrichment_ids(conn)
 
 
 def test_catalog_list_filters_by_enrich_state(conn):
-    store.upsert_cve(conn, {"id": "CVE-A", "published": "2026-08-01", "description": "",
+    store.upsert_flaw(conn, {"id": "CVE-A", "published": "2026-08-01", "description": "",
                             "fixed_raw": {}, "refs": [], "source": "mitre",
                             "fetched_at": "t", "policy_version": "v", "complete": 1})
     store.set_enrich_state(conn, "CVE-A", "mitre")
-    store.upsert_cve(conn, {"id": "CVE-B", "published": "2026-08-02", "description": "",
+    store.upsert_flaw(conn, {"id": "CVE-B", "published": "2026-08-02", "description": "",
                             "fixed_raw": {}, "refs": [], "source": "nvd",
                             "fetched_at": "t", "policy_version": "v", "complete": 1})
     store.set_enrich_state(conn, "CVE-B", "nvd")
@@ -83,22 +83,22 @@ def test_catalog_list_filters_by_enrich_state(conn):
     assert [r["id"] for r in store.catalog_list(conn)] == ["CVE-B", "CVE-A"]
 
 
-def test_mark_cve_distrust_marks_not_deletes(conn):
-    store.upsert_cve(conn, {"id": "CVE-X", "published": "2026-08-01", "description": "",
+def test_mark_flaw_distrust_marks_not_deletes(conn):
+    store.upsert_flaw(conn, {"id": "CVE-X", "published": "2026-08-01", "description": "",
                             "fixed_raw": {}, "refs": [], "source": "nvd",
                             "fetched_at": "t", "policy_version": "v", "complete": 1})
-    assert store.mark_cve_distrust(conn, "CVE-X", "audit") is True
-    row = store.get_cve(conn, "CVE-X")
+    assert store.mark_flaw_distrust(conn, "CVE-X", "audit") is True
+    row = store.get_flaw(conn, "CVE-X")
     assert row["distrusted"] == 1 and row["distrust_reason"] == "audit"
     # row retained (not deleted), re-mark is a no-op
-    assert store.mark_cve_distrust(conn, "CVE-X", "again") is False
-    assert store.get_cve(conn, "CVE-X") is not None
+    assert store.mark_flaw_distrust(conn, "CVE-X", "again") is False
+    assert store.get_flaw(conn, "CVE-X") is not None
 
 
-# --- seen_cves --------------------------------------------------------------
+# --- seen_flaws --------------------------------------------------------------
 
 def test_mark_seen_returns_only_newly_seen(conn):
-    store.upsert_cve(conn, {"id": "CVE-1", "published": "2026-08-01", "description": "",
+    store.upsert_flaw(conn, {"id": "CVE-1", "published": "2026-08-01", "description": "",
                             "fixed_raw": {}, "refs": [], "source": "mitre",
                             "fetched_at": "t", "policy_version": "v", "complete": 1})
     store.mark_seen(conn, ["CVE-1"])

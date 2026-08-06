@@ -105,13 +105,13 @@ def osv_ingest_tick(conn, cap: int = 1000, policy_version: str = "",
     ``modified_id.csv`` and re-fetch+upsert records whose ``modified`` is past
     the cursor. Advances the cursor to the max ``modified`` seen.
 
-    Per record: ``store.upsert_cve``, ``store.set_enrich_state(., ., "osv")``,
+    Per record: ``store.upsert_flaw``, ``store.set_enrich_state(., ., "osv")``,
     ``store.add_flaw_alias`` for each alias (symmetric, so a cve-less OSV record
     anchors as a first-class peer), ``store.mark_seen``, and ``conn.commit()``
     (mirrors stream/refresh per-record commit).
 
     Idempotent + only-adds + no-wipe: writes only ``cves`` catalog rows +
-    ``crosswalk`` alias edges + ``seen_cves``; never touches ``verdicts`` (the
+    ``crosswalk`` alias edges + ``seen_flaws``; never touches ``verdicts`` (the
     map is not the territory). On fetch failure returns ``error`` and touches
     nothing.
 
@@ -230,7 +230,7 @@ def _backfill_tick(conn, ecosystems, done_set, base, cap, policy_version,
                 count += 1
                 continue
             row, aliases = skel
-            _store.upsert_cve(conn, row)
+            _store.upsert_flaw(conn, row)
             _store.set_enrich_state(conn, row["id"], "osv")
             for alias in aliases:
                 _store.add_flaw_alias(conn, row["id"], "osv", alias,
@@ -310,7 +310,7 @@ def _incremental_tick(conn, ecosystems, base, cap, policy_version, fetched_at,
                 count += 1
                 continue
             row_data, aliases = skel
-            _store.upsert_cve(conn, row_data)
+            _store.upsert_flaw(conn, row_data)
             _store.set_enrich_state(conn, row_data["id"], "osv")
             for alias in aliases:
                 _store.add_flaw_alias(conn, row_data["id"], "osv", alias,

@@ -646,12 +646,12 @@ def _cmd_refresh(args) -> int:
 def _cmd_catalog(args) -> int:
     with _open_db(args.db, readonly=True) as conn:
         if args.sub == "show":
-            row = _store.get_cve(conn, args.cve)
+            row = _store.get_flaw(conn, args.flaw_id)
             if not row:
-                print(f"{args.cve}: not in catalog")
+                print(f"{args.flaw_id}: not in catalog")
                 return 1
             print(json.dumps(row, indent=2, default=str))
-            first = _store.seen_first_seen(conn, args.cve)
+            first = _store.seen_first_seen(conn, args.flaw_id)
             if first:
                 print(f"first seen by stream: {first}")
             # emit the required attribution for whichever foreign source
@@ -678,7 +678,7 @@ def _cmd_catalog(args) -> int:
             print(f"({len(rows)} row(s))")
             return 0
         if args.sub == "pending":
-            ids = _store.pending_mitre_ids(conn, limit=args.limit)
+            ids = _store.pending_enrichment_ids(conn, limit=args.limit)
             print(f"{len(ids)} MITRE skeleton(s) awaiting NVD enrichment:")
             for cid in ids:
                 print(f"  {cid}")
@@ -800,7 +800,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("catalog", help="flaw catalog: show <flaw_id> | list | pending")
     sp.add_argument("sub", choices=["show", "list", "pending"])
-    sp.add_argument("cve", nargs="?", default=None, help="flaw id (show)")
+    sp.add_argument("flaw_id", nargs="?", default=None, help="flaw id (show)")
     sp.add_argument("--state", choices=["mitre", "nvd", "ghsa", "osv"], default=None, help="filter list by enrich state")
     sp.add_argument("--limit", type=int, default=100)
     sp.add_argument("--offset", type=int, default=0)

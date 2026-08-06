@@ -171,7 +171,7 @@ jobs:
         run: |
           git config user.name  "posture-ci[bot]"
           git config user.email "actions@github.com"
-          git add spine/
+          git add -A spine/
           if git diff --cached --quiet; then
             echo "no spine changes — keepalive commit only (resets 60-day auto-disable)"
             git commit --allow-empty -m "spine: keepalive $(date -u +%FT%TZ)"
@@ -238,6 +238,6 @@ jobs:
           cd spine-cred
           git config user.name  "posture-ci[bot]"
           git config user.email "actions@github.com"
-          git add spine/
+          git add -A spine/
           git commit -m "credentialed spine: $(date -u +%FT%TZ)" || true
           git push || echo "nothing to push"

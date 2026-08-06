@@ -143,7 +143,7 @@ def _upsert_one(conn, row: dict, aliases: list[str]) -> None:
     self-enriched (``enrich_state='ghsa'``); each alias becomes a symmetric
     crosswalk edge via :func:`posture.store.add_flaw_alias` so resolve works in
     both directions. Marks the flaw seen (drives the "new since tick" signal)."""
-    _store.upsert_cve(conn, row)
+    _store.upsert_flaw(conn, row)
     _store.set_enrich_state(conn, row["id"], "ghsa")
     for alias in aliases:
         _store.add_flaw_alias(conn, row["id"], "ghsa", alias, _alias_kind(alias))
@@ -161,11 +161,11 @@ def ghsa_ingest_tick(
     (cap-resumed across ticks) and then incrementally diffs new/changed
     advisories on subsequent ticks. Returns a stats dict.
 
-    Idempotent + only-adds + no-wipe: it ``upsert_cve`` / ``set_enrich_state`` /
+    Idempotent + only-adds + no-wipe: it ``upsert_flaw`` / ``set_enrich_state`` /
     ``add_flaw_alias`` / ``mark_seen`` per advisory and never touches
     ``verdicts``. The cursor advances only after a sweep succeeds, so a tick
     killed mid-sweep retries the same range idempotently next time (re-upserts
-    are harmless — ``upsert_cve`` is keyed on id and ``mark_seen`` is idempotent).
+    are harmless — ``upsert_flaw`` is keyed on id and ``mark_seen`` is idempotent).
 
     Two phases:
 

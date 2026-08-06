@@ -92,12 +92,12 @@ def test_ghsa_backfill_populates_rows_and_crosswalk(conn, tmp_path):
     assert stats["done"] is True
     assert stats["incremental"] is False
 
-    ids = {r[0] for r in conn.execute("SELECT id FROM cves")}
+    ids = {r[0] for r in conn.execute("SELECT id FROM flaws")}
     ghsa_ids = {f"GHSA-{i:04d}-{i:04d}-{i:04d}" for i in range(3)}
     assert ids == ghsa_ids
 
     gid = "GHSA-0000-0000-0000"
-    row = store.get_cve(conn, gid)
+    row = store.get_flaw(conn, gid)
     assert row["flaw_type"] == "ghsa"
     assert row["enrich_state"] == "ghsa"          # self-enriched, NOT pending mitre
     assert row["source"] == "ghsa"
@@ -129,7 +129,7 @@ def test_ghsa_backfill_cap_resumed_across_ticks(conn, tmp_path):
     assert s2["upserted"] == 2 and s2["done"] is False
     s3 = _tick(conn, work, cap=2)
     assert s3["upserted"] == 1 and s3["done"] is True  # only 1 left
-    assert conn.execute("SELECT COUNT(*) FROM cves").fetchone()[0] == 5
+    assert conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0] == 5
     assert store.get_state(conn, ghsa.GHSA_DONE_KEY) == "1"
     assert store.get_state(conn, ghsa.GHSA_TIP_KEY) is not None
 
@@ -159,12 +159,12 @@ def test_ghsa_incremental_after_backfill(conn, tmp_path):
     assert store.get_state(conn, ghsa.GHSA_TIP_KEY) != tip_after_backfill
 
     # both advisories present, the new one too
-    row = store.get_cve(conn, new_id)
+    row = store.get_flaw(conn, new_id)
     assert row is not None and row["flaw_type"] == "ghsa"
     assert store.resolve_crosswalk(conn, new_id) == [
         {"alias": "CVE-2026-99999", "kind": "cve"}]
     # 3 total catalog rows (2 backfill + 1 new)
-    assert conn.execute("SELECT COUNT(*) FROM cves").fetchone()[0] == 3
+    assert conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0] == 3
 
 
 # --- idempotent on re-diff ---------------------------------------------------
@@ -179,7 +179,7 @@ def test_ghsa_incremental_idempotent_on_re_diff(conn, tmp_path):
     }, "c2")
     s1 = _tick(conn, work, cap=1000)  # incremental: 1 change
     assert s1["upserted"] == 1
-    count_after = conn.execute("SELECT COUNT(*) FROM cves").fetchone()[0]
+    count_after = conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0]
 
     # rewind the tip cursor (simulate a tick killed mid-sweep retrying the range)
     old_tip = subprocess.run(["git", "-C", str(seed), "rev-parse", "HEAD~1"],
@@ -188,7 +188,7 @@ def test_ghsa_incremental_idempotent_on_re_diff(conn, tmp_path):
     s2 = _tick(conn, work, cap=1000)
     # re-diffed the same range — upsert is keyed on id, mark_seen idempotent
     assert s2["incremental"] is True
-    assert count_after == conn.execute("SELECT COUNT(*) FROM cves").fetchone()[0]
+    assert count_after == conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0]
     assert store.seen_first_seen(conn, new_id) is not None  # still seen, not re-counted
 
 
@@ -219,7 +219,7 @@ def test_ghsa_cve_less_advisory_anchors(conn, tmp_path):
     assert stats["upserted"] == 1
 
     gid = "GHSA-0000-0000-0000"
-    row = store.get_cve(conn, gid)
+    row = store.get_flaw(conn, gid)
     assert row is not None
     assert row["flaw_type"] == "ghsa"
     assert row["enrich_state"] == "ghsa"

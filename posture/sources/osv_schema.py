@@ -23,7 +23,7 @@ A record::
     }
 
 ``osv_record`` returns the normalized fields; ``osv_skeleton`` builds the
-``upsert_cve`` row + the alias list a peer tick should register. OSV/GHSA rows
+``upsert_flaw`` row + the alias list a peer tick should register. OSV/GHSA rows
 are **self-enriched on ingest** (they carry cvss + ranges), so they land with
 ``enrich_state = source`` (NOT ``'mitre'`` pending) and the incremental refresh
 leaves them alone — only cvelistV5 skeletons stay ``'mitre'`` for NVD enrichment.
@@ -186,7 +186,7 @@ def osv_record(rec: dict) -> dict | None:
 
 def osv_skeleton(rec: dict, source: str, flaw_type: str,
                  policy_version: str, fetched_at: str) -> tuple[dict, list[str]] | None:
-    """Build ``(upsert_cve_row, aliases_to_register)`` from an OSV-schema record.
+    """Build ``(upsert_flaw_row, aliases_to_register)`` from an OSV-schema record.
 
     The row is **self-enriched**: ``source``/``flaw_type``/``enrich_state`` all
     record the peer scheme, and ``fixed_raw`` carries the affected ranges (the
