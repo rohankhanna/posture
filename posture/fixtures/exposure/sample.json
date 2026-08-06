@@ -1,0 +1,5 @@
+[
+  {"proto": "tcp", "port": 22, "bind": "0.0.0.0", "service": "ssh"},
+  {"proto": "tcp", "port": 5432, "bind": "127.0.0.1", "service": "postgres"},
+  {"proto": "tcp", "port": 8080, "bind": "::1", "service": "app"}
+]

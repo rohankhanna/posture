@@ -25,11 +25,11 @@ class Axis(StrEnum):
     value in policy YAML, the store, and CLI output."""
 
     VULNERABILITY = "vulnerability"   # what's broken      — CVE spine (REAL today)
-    CONFIGURATION = "configuration"   # what's misconfigured — CIS/STIG (stub)
-    EXPOSURE = "exposure"             # what's reachable    — Shodan/local (stub)
-    INVENTORY = "inventory"            # what's installed    — SBOM (stub)
-    THREAT = "threat"                  # what's being attacked — KEV/IOC (stub)
-    TRUST = "trust"                    # can you trust what's installed — SLSA/Sigstore (stub)
+    CONFIGURATION = "configuration"   # what's misconfigured — CIS benchmark
+    EXPOSURE = "exposure"             # what's reachable    — local surface
+    INVENTORY = "inventory"            # what's installed    — CycloneDX SBOM
+    THREAT = "threat"                  # what's being attacked — CISA KEV overlay
+    TRUST = "trust"                    # can you trust what's installed — signature verification
 
 
 # Metadata: one-line plain-English meaning + the kind of "key" each axis's

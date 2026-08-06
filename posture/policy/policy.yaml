@@ -7,8 +7,8 @@
 # Produced / re-evaluated by the `source-alignment` repo against evidence on a
 # cadence. Initial values are conservative working assumptions, not verdicts.
 
-version: "2026-08-06.2"
-supersedes: "2026-08-06.1"
+version: "2026-08-06.3"
+supersedes: "2026-08-06.2"
 dated: 2026-08-06
 rationale: |
   Initial skeleton policy (2026-08-01.1): NVD is the CVE spine today — a
@@ -51,6 +51,22 @@ rationale: |
   flaw with no cve anchors as a first-class peer. Ingestion peers (cvelistV5
   back-fill + OSV + GHSA + CISA KEV) are being wired on this foundation. No
   witness order/bias changes; the witness layer is unaffected.
+  2026-08-06.3: the last three stubbed axes are now wired with REAL witnesses —
+  local_exposure (exposure: reads a local socket capture the device supplies,
+  emits exposed/closed per proto/port; loopback bind = closed, wildcard or
+  non-loopback or missing bind = exposed; false-safe), kev (threat: overlays
+  the device's cve_candidates against a CISA KEV cve_id set the device supplies,
+  emits targeted/clear per CVE; no KEV overlay supplied = honest no-op, NOT
+  all-clear; an empty set = all-clear), and sigverify (trust: verifies a
+  supplied signature against a supplied public key per artifact via the
+  cryptography lib, emits trusted/untrusted; unverifiable = untrusted, never
+  skipped). Each turns its axis from loud UNKNOWN into a real status when the
+  device supplies input, and is an honest no-op (UNKNOWN) otherwise. The three
+  stub registrations + stubs.py are gone. No axis is left at a stub. Heavier
+  credentialed variants (real Shodan external view, MISP/STIX IOC feeds,
+  SLSA/cosign keyless attestation) are future, separately-id'd witnesses, not
+  replacements. No witness order changes; each new witness is order 10 (no
+  override partner on its axis).
 
 witnesses:
   nvd:
@@ -89,27 +105,37 @@ witnesses:
       - "Apple hosts only: device supplies cve_candidates + apple_product + os_version"
       - "CVE not in Apple's feed -> no verdict (NVD stands)"
       - "candidate CVEs are a device input (the fan-out is pure; no peeking at NVD's verdicts)"
-  # The three stubbed axes — no witness implemented yet. Listed so the policy
-  # records the intended authority + bias for when each is wired, and so the
-  # engine reports UNKNOWN (not "clean") for these axes.
-  shodan:
+  local_exposure:
     axes: [exposure]
     weight: medium
-    bias: neutral
+    bias: false-safe           # a missing bind is assumed exposed, not closed
     order: 10
-    conditions: []
+    conditions:
+      - "LOCAL only: reads device['exposure'] (inline list of {proto,port,bind,service?}) or device['exposure_path'] (local JSON file); no network"
+      - "loopback bind (127/8, ::1, localhost) -> closed; wildcard / non-loopback / missing bind -> exposed (false-safe)"
+      - "no exposure surface supplied -> honest no-op (zero verdicts); axis falls to UNKNOWN via loud degradation"
+      - "one Verdict per socket keyed proto/port; severity HIGH on a dangerous exposed port (ssh/rdp/telnet + common DBs), else MEDIUM; closed -> None"
   kev:
     axes: [threat]
     weight: high
     bias: false-safe           # CISA lists only confirmed-exploited -> may miss some
     order: 10
-    conditions: []
-  slsa:
+    conditions:
+      - "device supplies cve_candidates + a KEV cve_id set (device['kev'] inline list or device['kev_path'] local JSON file); the client gets the set from the imported spine's kev.jsonl"
+      - "CVE in KEV set -> targeted (HIGH); not in set -> clear"
+      - "no cve candidates, OR candidates with NO KEV overlay supplied -> honest no-op (axis UNKNOWN); an explicitly-empty KEV set -> all clear"
+      - "this is the territory device-assessment witness (emits verdicts); distinct from the CI ingest overlay sources/kev.py (populates store.kev, never emits verdicts)"
+  sigverify:
     axes: [trust]
-    weight: medium
-    bias: neutral
+    weight: high
+    bias: false-safe           # an unverifiable artifact is untrusted, never skipped
     order: 10
-    conditions: []
+    conditions:
+      - "LOCAL only: reads device['artifacts'] (inline list of {id,payload,signature,public_key,algorithm?}) or device['artifacts_path'] (local JSON file); no network"
+      - "verifies signature over payload under public_key via the cryptography lib; ed25519 (default) or rsa-pss; PEM or raw keys, hex/base64 signatures"
+      - "valid -> trusted; invalid or missing payload/signature/public_key or unsupported algorithm -> untrusted (HIGH; false-safe)"
+      - "no artifacts supplied -> honest no-op (zero verdicts); axis falls to UNKNOWN via loud degradation"
+      - "SLSA/cosign keyless attestation is a future separately-id'd 'slsa' witness; this is honest generic signature verification"
   # First REAL witnesses on previously-stubbed axes (turn UNKNOWN into a real
   # status when the device supplies input; honest no-op / UNKNOWN otherwise).
   cyclonedx_sbom:
