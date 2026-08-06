@@ -89,7 +89,7 @@ unaffected; a host of the wrong distro is never broken by them.
 ## Beyond the spine — the other axes
 
 The five non-vulnerability axes were honest stubs (loud `UNKNOWN`) until
-wired. Two are now real witnesses; the rest remain stubbed:
+wired. All five are now real witnesses — no axis is left at a stub:
 
 - **`cyclonedx_sbom`** (inventory) — reads a CycloneDX SBOM the device supplies
   (`device["sbom"]` inline, or `device["sbom_path"]` to a local JSON file) and
@@ -101,6 +101,27 @@ wired. Two are now real witnesses; the rest remain stubbed:
   optionally scoped via `device["cis_checks"]`), emitting `fail`/`pass` per
   check id. A missing setting is a `fail` (a missing control is not a pass);
   no config supplied is an honest no-op (axis stays `UNKNOWN`).
+- **`local_exposure`** (exposure) — reads a local socket capture the device
+  supplies (`device["exposure"]` inline, or `device["exposure_path"]` to a
+  local JSON file, e.g. `ss -tulpn` output) and emits `exposed`/`closed` per
+  socket, keyed `proto/port`. A loopback bind is `closed`; a wildcard,
+  non-loopback, or missing bind is `exposed` (false-safe — a missing control is
+  not a pass). No network — local only.
+- **`kev`** (threat) — overlays the device's `cve_candidates` against a CISA
+  KEV cve-id set the device supplies (`device["kev"]` inline, or
+  `device["kev_path"]` to a local JSON file; a client gets the set from the
+  imported spine's `kev.jsonl`) and emits `targeted`/`clear` per CVE. No KEV
+  overlay supplied is an honest no-op (NOT all-clear — claiming `clear`
+  without the catalog would be a false-safe failure); an explicitly-empty set
+  is all-clear. This is the device-assessment witness, distinct from the CI
+  ingest overlay that populates the spine's KEV map.
+- **`sigverify`** (trust) — verifies a supplied signature against a supplied
+  public key per artifact (`device["artifacts"]` inline, or
+  `device["artifacts_path"]` to a local JSON file) via the `cryptography`
+  library (ed25519 default, rsa-pss also supported) and emits `trusted`/
+  `untrusted` keyed on the artifact id. An unverifiable artifact (invalid
+  signature, missing payload/signature/key, or unsupported algorithm) is
+  `untrusted` and flagged loudly — never silently skipped.
 
 ```yaml
 id: server
@@ -110,11 +131,19 @@ sbom:
   bomFormat: CycloneDX
   specVersion: "1.4"
   components: [{name: openssl, version: "3.0.2"}, {name: nginx, version: "1.25.3"}]
+exposure:
+  - {proto: tcp, port: 22, bind: "0.0.0.0", service: ssh}
+  - {proto: tcp, port: 5432, bind: "127.0.0.1", service: postgres}
+cve_candidates: ["CVE-2026-1001", "CVE-2026-1002"]
+kev: ["CVE-2026-1001"]
 ```
 
-`exposure`, `threat`, and `trust` are still stubs (`UNKNOWN` and loud) — wiring
-them is the remaining work on the "wire real witnesses for the 5 stubbed axes"
-thread.
+Each witness turns its axis from loud `UNKNOWN` into a real status when the
+device supplies input, and is an honest no-op (axis stays `UNKNOWN`, never
+silently "clean") otherwise — the loud-degradation rule holds for every axis.
+Heavier credentialed variants (a real Shodan external view, MISP/STIX IOC
+feeds, SLSA/cosign keyless attestation) are future, separately-id'd witnesses,
+not replacements for these first cuts.
 
 ## Ingestion (a multi-peer aggregator, cve one peer among many)
 

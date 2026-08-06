@@ -40,3 +40,6 @@ dist/
 # --- IMPORTANT: spine/ is NOT ignored ---------------------------------------
 # spine/ is the committed, cosign-signed output — the whole point of the CI-spine.
 # Do NOT add it here.
+# feedback-hub integration
+feedback
+learnings

@@ -18,11 +18,6 @@ from .ubuntu_tracker import UbuntuTrackerWitness
 from .debian_tracker import DebianTrackerWitness
 from .apple_advisory import AppleAdvisoryWitness
 from .cis_checker import CisCheckerWitness
-from .stubs import (
-    ExposureStub,
-    ThreatStub,
-    TrustStub,
-)
 
 # curl helper lives in _net.py (kept dependency-free to avoid an import cycle).
 from ._net import curl_get  # noqa: F401  (re-exported for witnesses/subclasses)
@@ -69,10 +64,11 @@ class StandardFormatWitness(Witness):
 
 
 def default_registry(fresh: bool = False) -> WitnessRegistry:
-    """The shipped registry: the real CVE-spine witness + the three remaining
-    stubs (exposure/threat/trust). Inventory and configuration are now wired
-    with real witnesses (cyclonedx_sbom / cis_checker). `fresh=True` forces a
-    new instance (tests want isolation)."""
+    """The shipped registry: a real witness on every axis. vulnerability
+    (nvd + the three vendor trackers), inventory (cyclonedx_sbom),
+    configuration (cis_checker), exposure (local_exposure), threat (kev),
+    trust (sigverify). `fresh=True` forces a new instance (tests want
+    isolation)."""
     reg = WitnessRegistry()
     reg.register(NvdCveWitness())
     reg.register(UbuntuTrackerWitness())   # vendor witnesses (vuln axis) —
@@ -85,7 +81,13 @@ def default_registry(fresh: bool = False) -> WitnessRegistry:
     from .cyclonedx_sbom import CyclonedxSbomWitness
     reg.register(CyclonedxSbomWitness())     # first real witness on inventory
     reg.register(CisCheckerWitness())       # first real witness on configuration
-    reg.register(ExposureStub())             # the three still-stubbed axes —
-    reg.register(ThreatStub())               # no real witness wired yet, so
-    reg.register(TrustStub())                # they report UNKNOWN (not clean)
+    # The remaining three axes are now wired with real witnesses too (lazy
+    # imports keep top-level import cycles out: each module imports Witness
+    # + WitnessResult/Verdict from ..witness, not from this base module).
+    from .local_exposure import LocalExposureWitness
+    from .kev_witness import KevThreatWitness
+    from .sigverify import SigVerifyWitness
+    reg.register(LocalExposureWitness())     # exposure: local surface reader
+    reg.register(KevThreatWitness())         # threat: CISA KEV overlay
+    reg.register(SigVerifyWitness())         # trust: signature verification
     return reg
