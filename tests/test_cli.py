@@ -28,11 +28,9 @@ def test_spine_import_routes():
 
 
 def test_spine_show_still_routes_after_extension():
-    # the existing show/rebind surface must survive the export/import addition
+    # the show surface must survive the export/import addition (rebind is retired)
     args = _parse("spine", "show")
     assert args.sub == "show" and args.func is _cmd_spine
-    args = _parse("spine", "rebind", "join_key", "cve")
-    assert args.sub == "rebind" and args.role == "join_key" and args.term == "cve"
 
 
 def test_refresh_no_devices_flag_routes():

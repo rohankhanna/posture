@@ -1,73 +1,57 @@
-"""The join-key spine + crosswalk.
+"""The alias graph — the spine as alias↔alias, not a swappable join key.
 
-CVE is the spine today: it's the universal join key that lets you ask several
-sources about the same flaw. But the spine already nearly broke once — MITRE's
-CVE-numbering contract almost lapsed in April 2024. So the spine is kept
-*redundant*: a crosswalk table maps a cve id to its aliases in other schemes
-(ghsa, usn, dsa, rhsa, apsb, osv_id). If CVE numbering stalls, joins still
-resolve via aliases. The crosswalk is built before it's needed — you maintain
-it while CVE is healthy so it's muscle memory when it isn't.
+The spine is **all flaws**: every flaw_id is a peer, across every flaw_type,
+simultaneously. cve is one peer among many — NOT a primary key, and NOT
+rebindable. The spine entity (the equivalence class of flaw_ids that denote one
+flaw) is a LOGICAL view over the crosswalk alias graph, not a single physical
+row: a `cve` row, a `ghsa` row, and an `osv` row that all denote the same flaw
+each anchor their own catalog row, and the crosswalk edges between them are what
+joins resolve.
 
-This module is the thin store-backed API; the heavy lifting (joining across
-witnesses by alias) lives in the engine.
+This module is the thin store-backed API over that graph; the heavy lifting
+(joining across witnesses by alias) lives in the engine. Ingestion peers
+(`stream`/`osv`/`ghsa`/`kev`) write equivalence edges via :func:`register_alias`
+(the symmetric double-edge), not the old single-direction :func:`register`.
+
+There is no `primary_key` / `rebind` / `resolve_role` here anymore — the
+swappable-spine mechanism the alias graph replaces has been retired. The
+glossary's role machinery (`resolve_role`/`rebind_role`) remains for the
+*other* roles (severity_coordinate, exploitability_signal, weakness_category);
+only the `vulnerability_join_key` role — the "cve is the spine" indirection —
+is gone, because the spine is no longer a single rebindable word.
 """
 
 from __future__ import annotations
 import sqlite3
 
 
-def register(conn: sqlite3.Connection, cve: str, alias: str, kind: str) -> None:
-    """Record that `cve` is also known as `alias` under scheme `kind`
-    (ghsa/usn/dsa/rhsa/apsb/osv_id). Idempotent."""
+def register(conn: sqlite3.Connection, flaw_id: str, alias: str, kind: str) -> None:
+    """Record ONE directed edge: `flaw_id` is also known as `alias` under scheme
+    `kind` (ghsa/usn/dsa/rhsa/apsb/osv/cve/...). Idempotent. Prefer
+    :func:`register_alias` for ingestion — it writes both directions so resolve
+    is correct either way."""
     from . import store as _store
-    _store.add_crosswalk(conn, cve, alias, kind)
+    _store.add_crosswalk(conn, flaw_id, alias, kind)
 
 
-def resolve(conn: sqlite3.Connection, cve: str) -> list[dict]:
-    """All known aliases of a cve id (each {alias, kind})."""
+def register_alias(conn: sqlite3.Connection, a: str, kind_a: str,
+                   b: str, kind_b: str) -> None:
+    """Record the symmetric equivalence of two flaw_ids: `a` (scheme `kind_a`)
+    and `b` (scheme `kind_b`). Writes both directed edges so `resolve(a)` returns
+    b typed as kind_b AND `resolve(b)` returns a typed as kind_a. This is what
+    ingestion uses — a non-cve flaw with no cve anchors as a first-class peer.
+    Idempotent."""
     from . import store as _store
-    return _store.resolve_crosswalk(conn, cve)
+    _store.add_flaw_alias(conn, a, kind_a, b, kind_b)
+
+
+def resolve(conn: sqlite3.Connection, flaw_id: str) -> list[dict]:
+    """All known aliases of a flaw_id (each {alias, kind})."""
+    from . import store as _store
+    return _store.resolve_crosswalk(conn, flaw_id)
 
 
 def reverse_resolve(conn: sqlite3.Connection, alias: str) -> list[dict]:
-    """All cve ids known to share this alias (each {cve, kind})."""
+    """All flaw_ids known to share this alias (each {flaw_id, kind})."""
     from . import store as _store
     return _store.reverse_crosswalk(conn, alias)
-
-
-def primary_key(policy, conn: sqlite3.Connection | None = None) -> str:
-    """The configured spine primary join key (today: 'cve').
-
-    Resolved by ROLE via the glossary when a connection is available
-    (vulnerability_join_key -> the term currently filling it, rebindable). With
-    no connection (pure mode) it falls back to the policy's literal
-    `spine.primary_key` — so callers without a store still get 'cve'.
-    """
-    if conn is not None:
-        from . import glossary as _glossary
-        role = getattr(policy.spine, "role", None) or "vulnerability_join_key"
-        term = _glossary.resolve_role(conn, role)
-        if term is not None:
-            return term.id
-    return policy.spine.primary_key
-
-
-def resolve_role(conn: sqlite3.Connection, role: str):
-    """Resolve a spine role to its bound term (via the glossary)."""
-    from . import glossary as _glossary
-    return _glossary.resolve_role(conn, role)
-
-
-def rebind(conn: sqlite3.Connection, role: str, term_id: str,
-           actor: str = "human", version: str = "",
-           now: str | None = None) -> None:
-    """HUMAN-gated: point a spine role at a different term. The CVE-replacement
-    course-correction — the role stays, the word filling it swaps, old joins
-    resolve via the crosswalk. No code rewritten."""
-    from . import glossary as _glossary
-    _glossary.rebind_role(conn, role, term_id, actor=actor, version=version, now=now)
-
-
-def crosswalk_kinds(policy) -> list[tuple[str, str]]:
-    """The configured alias pairs to maintain (e.g. [(cve,ghsa), (cve,usa)])."""
-    return policy.spine.crosswalk

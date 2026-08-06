@@ -20,9 +20,14 @@ reusable foundation Forebode (and other portfolio tools) can migrate onto.
 
 ## The four ideas
 
-1. **Spine = CVE today, but swappable.** The join key is `cve`; a crosswalk
-   (`cve ↔ ghsa/usn/dsa`) keeps the spine redundant so a CVE-numbering freeze
-   (MITRE's 2024 near-lapse) doesn't strand the system.
+1. **Spine = an alias↔alias graph, not a key.** The spine entity is the
+   *equivalence class* of flaw_ids that denote the same flaw — a many-to-many
+   alias graph (`cve ↔ ghsa ↔ osv ↔ usn ↔ dsa`), not a single join key. CVE is
+   **one peer among many**, not a primary key and not rebindable. A cve-less
+   flaw (an OSV or GHSA record with no CVE) still anchors as a first-class peer.
+   So a CVE-numbering freeze (MITRE's 2024 near-lapse) doesn't strand the system,
+   and the spine widens as peers are wired rather than deepening the CVE/NVD
+   tunnel.
 2. **Body = six stable axes.** `vulnerability / configuration / exposure /
    inventory / threat / trust`. Sources churn *within* an axis; axes are
    stable. The system reasons about axes; a source is one *witness* to an axis.
@@ -38,11 +43,14 @@ reusable foundation Forebode (and other portfolio tools) can migrate onto.
 
 ## Vendor witnesses (real flesh on the body)
 
-NVD is the spine but it over-reports on backport distros and silently skips
-thin-coverage CVEs (Apple). Three real **vendor witnesses** now close those
-gaps, each overriding NVD **on the same CVE key by policy order** (their
-`order: 5` < NVD's `10`, so the engine runs them last and they win) — no code
-change, one YAML number each:
+NVD is no longer the spine — it is one *peer* (and increasingly an overlay, see
+*Ingestion* below: NVD stopped enriching most CVEs 2026-04-15, so cvelistV5 +
+OSV + GHSA carry the peer space and NVD is threat-prioritized for KEV/critical).
+But where NVD *is* consumed it still over-reports on backport distros and
+silently skips thin-coverage CVEs (Apple). Three real **vendor witnesses**
+close those gaps, each overriding NVD **on the same CVE key by policy order**
+(their `order: 5` < NVD's `10`, so the engine runs them last and they win) — no
+code change, one YAML number each:
 
 - **`ubuntu_tracker`** — Ubuntu security tracker (`ubuntu.com/security/<CVE>`),
   authoritative per release + kernel flavor. Fixed `<ver>` → patched if running
@@ -108,47 +116,86 @@ sbom:
 them is the remaining work on the "wire real witnesses for the 5 stubbed axes"
 thread.
 
-## Early-warning ingestion (CVE stream + wipe-proof refresh)
+## Ingestion (a multi-peer aggregator, cve one peer among many)
 
 posture earns the product name "forebode" — high signal / low noise / low LLM —
-through its ingestion engine. Two paths, one honest spine:
+through its ingestion engine. The spine is **all flaws**, fed by several
+public, rate-friendly peers (no credentialed lane needed for these). Every
+ingestion path **only adds** catalog rows + alias-graph edges and **never
+touches verdicts** — an incomplete fetch can't wipe a device's stored state.
+One honest map, many authors:
 
-1. **`posture stream` (Phase 1 — detection only).** A ~10-17 min tick
+1. **`posture stream` (MITRE detect — skeletons only).** A ~10-17 min tick
    `git fetch`es MITRE's cvelistV5 clone, diffs changed CVE JSON since a stream
-   cursor, and upserts **skeleton** catalog rows (`enrich_state='mitre'`,
-   `pending_nvd=True`, reason "MITRE-published; NVD not yet enriched"). It
-   **only adds** — it never touches verdicts, so it can't wipe a device's
-   stored state. The cursor bootstraps O(1) (first run records the tip and
-   produces nothing; the back-catalog is the daily refresh's job, not the
-   stream's). A force-push/history-rewrite resets the cursor and no-ops — it
-   never fails into a wipe path.
+   cursor, and upserts **skeleton** catalog rows (`flaw_type='cve'`,
+   `enrich_state='mitre'`, `pending_nvd=True`, reason "MITRE-published; NVD not
+   yet enriched"). The cursor bootstraps O(1) (first run records the tip and
+   produces nothing; history is the back-fill's job, not the stream's). A
+   force-push/history-rewrite resets the cursor and no-ops — it never fails
+   into a wipe path.
 
-2. **`posture refresh` (Phase 2 — wipe-proof incremental).** Takes the pending
-   MITRE skeletons, enriches each per-CVE from NVD via **curl** with a
+2. **`posture backfill` (cvelistV5 back-catalog — the history the forward-only
+   stream can't take).** Cap-resumed across ticks, it enumerates the `cves/`
+   back-catalog past a path cursor and upserts the same skeletons. It
+   **self-disables** once exhausted (a state flag), so daily CI calls it
+   cheaply as a no-op thereafter. Skeletons land `enrich_state='mitre'` and
+   join the refresh's pending pool.
+
+3. **`posture ingest ghsa` (GitHub Advisory Database — a self-enriched OSV
+   peer).** A blobless clone of `github/advisory-database` (CC-BY 4.0, OSV
+   schema); cap-resumed backfill of `advisories/github-reviewed/` then
+   incremental diff. Each GHSA id owns its own row (`flaw_type='ghsa'`,
+   `enrich_state='ghsa'` — **self-enriched on ingest**, NOT pending mitre, so
+   refresh leaves it alone); its CVE aliases become symmetric crosswalk edges.
+
+4. **`posture ingest osv` (osv.dev — the highest-leverage peer).** The OSV GCS
+   hub is the practical aggregator: RustSec, PyPA, Go, Red Hat, Debian,
+   Ubuntu, Alpine, … all emit OSV schema, so one adapter ingests a large
+   fraction of the peer space. Per-ecosystem `all.zip` backfill (cap-resumed),
+   then `modified_id.csv` incremental. OSV rows are self-enriched
+   (`flaw_type='osv'`, `enrich_state='osv'`); each alias becomes a crosswalk
+   edge. A cve-less OSV record still anchors as a first-class peer.
+
+5. **`posture ingest kev` (CISA Known Exploited Vulnerabilities — the
+   `exploitability_signal` overlay).** A CVE-keyed **overlay** (not a new
+   flaw_type — KEV entries carry only a `cveID`): an idempotent full refresh of
+   the static ~1,660-entry catalog annotates existing cve rows ("known-
+   exploited; required action X; due date Y; ransomware-linked Z") without
+   owning the flaw_id.
+
+6. **`posture refresh` (wipe-proof incremental NVD enrichment).** Takes the
+   pending MITRE skeletons, enriches each per-CVE from NVD via **curl** with a
    **header-only** `apiKey` (NEVER the query string — that was Forebode's
    run-#10 fleet-wipe root cause), promotes the row to `enrich_state='nvd'`,
    then re-decides per device CPE and upserts **one** verdict row per CVE
    through `store.upsert_verdict` (per-key `ON CONFLICT DO UPDATE`). It never
    calls the bulk `commit_device_verdicts` swap — an incomplete NVD fetch
    simply upserts fewer rows; last-known-good verdicts are never deleted. The
-   full re-pull is demoted to the rare `posture assess` reconciliation.
+   full re-pull is demoted to the rare `posture assess` reconciliation. With
+   `--no-devices` it is catalog-only enrichment (zero verdicts) — the CI mode.
 
-The CVE catalog (`cves` table) carries **provenance on every row**
-(`source`/`fetched_at`/`policy_version`/`complete`), so a catalog row, like a
-verdict, can be retroactively **distrusted** (`posture catalog` + `mark_cve_distrust`)
-— marked, never deleted. The NVD attribution line is emitted wherever NVD data
-surfaces; the MITRE CVE program sponsorship is disclosed where MITRE data
-surfaces. **The map is not the territory:** a skeleton says "MITRE published
+The catalog (`cves` table, `id` is a TEXT PK accepting any flaw_id) carries
+**provenance on every row** (`source`/`fetched_at`/`policy_version`/`complete`
++ `flaw_type`), so a catalog row, like a verdict, can be retroactively
+**distrusted** (`posture catalog` + `mark_cve_distrust`) — marked, never
+deleted. Each foreign source emits its required attribution line wherever its
+data surfaces (NVD ToU; MITRE CVE sponsorship; CISA KEV; GitHub CC-BY 4.0;
+OSV.dev). **The map is not the territory:** a skeleton says "MITRE published
 this; NVD has not enriched it" — never "this device is vulnerable."
 
 ```bash
 posture stream                          # one MITRE stream tick (skeletons only)
+posture backfill --cap 5000             # cvelistV5 back-catalog (self-disables when done)
+posture ingest ghsa --cap 5000          # GitHub Advisory Database peer (OSV schema)
+posture ingest osv --cap 5000           # osv.dev hub peer (many ecosystems)
+posture ingest kev                      # CISA KEV overlay (exploitability_signal)
 posture refresh --devices ~/.config/posture/devices.yaml   # incremental NVD + re-decide
-posture refresh --cap 200               # cap NVD enrichments this tick
-posture catalog list [--state mitre|nvd] # browse the CVE catalog
-posture catalog pending                 # skeletons awaiting NVD enrichment
-posture catalog show CVE-2026-XXXX      # one row (parsed) + attribution
-posture assess <device.yaml> --live     # full re-pull (rare reconciliation)
+posture refresh --no-devices --cap 200   # CI: catalog-only, zero verdicts
+posture catalog list [--state mitre|nvd|ghsa|osv]  # browse the catalog
+posture catalog pending                  # skeletons awaiting NVD enrichment
+posture catalog show CVE-2026-XXXX       # one row (parsed) + attribution
+posture spine show                      # flaw-type registry + crosswalk edge counts
+posture assess <device.yaml> --live      # full re-pull (rare reconciliation)
 ```
 
 A non-deterministic **systemd user timer** (`systemd/posture-stream.{service,timer}`)
@@ -177,18 +224,20 @@ signed repo, verify the signature, run `posture assess` locally over your
 private fleet (the *territory*). The map/territory split, made concrete across a
 git bus instead of an HTTP API.
 
-**Topology (first cut):** one public repo. `.github/workflows/spine.yml` runs
-daily on ephemeral GitHub-hosted runners: `posture stream` (MITRE detect) →
+**Topology:** one public repo. `.github/workflows/spine.yml` runs daily on
+ephemeral GitHub-hosted runners: `posture stream` (MITRE detect) →
+`posture backfill` (cvelistV5 back-catalog; self-disables when done) →
+`posture ingest ghsa` / `osv` / `kev` (the aggregator peers) →
 `posture refresh --no-devices` (NVD catalog enrichment, **zero verdicts**) →
 DB-only course-correction → `posture spine export` (sharded JSONL +
 `manifest.json`) → `cosign sign-blob` keyless via GitHub OIDC
-(`spine/state.sig` + `spine/state.crt`) → commit+push `spine/`. The cvelistV5
-clone + `posture.db` persist across runs in the Actions cache. Signing is
-non-negotiable — without it a shallow clone just trusts whatever GitHub serves,
-the single-org dependency posture was built to escape. (`docs/sources.md` has
-the rate/size limits this is designed against; the self-hosted /
-`posture-digest` private split is deferred until a hosted runner can't carry
-the load.)
+(`spine/state.sig` + `spine/state.crt`) → commit+push `spine/`. The cvelistV5 +
+advisory-database blobless clones + `posture.db` persist across runs in the
+Actions cache. Signing is non-negotiable — without it a shallow clone just
+trusts whatever GitHub serves, the single-org dependency posture was built to
+escape. (`docs/sources.md` has the rate/size limits this is designed against;
+the self-hosted / `posture-digest` private split is deferred until a hosted
+runner can't carry the load.)
 
 **`--no-devices` is the contract:** CI runs `posture refresh --no-devices` —
 catalog enrichment only, no fleet, no verdicts, no vendor trackers. No device
@@ -239,7 +288,7 @@ posture audit nvd
 posture crosswalk add CVE-2026-31589 GHSA-xxxx ghsa
 posture crosswalk show CVE-2026-31589
 posture discover          # horizon scan: candidate sources for review
-posture spine show        # spine role bindings (the join key)
+posture spine show        # flaw-type registry + crosswalk edge counts (the alias graph)
 ```
 
 Move the catalog (the spine) to/from sharded JSONL — the signed-directory

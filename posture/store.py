@@ -79,11 +79,17 @@ CREATE TABLE IF NOT EXISTS health_dossier (
     added_at   TEXT
 );
 
+-- The alias graph (alias↔alias). Every flaw_id — cve, ghsa, osv, rustsec, pysec,
+-- go, … — is a peer; cve is NOT a primary key. A row is ONE directed edge
+-- (flaw_id, alias, kind): "flaw_id is also known as alias under scheme kind".
+-- Ingestion uses add_flaw_alias() to write BOTH directed edges of an equivalence
+-- so resolve returns correctly-typed aliases in both directions. The spine
+-- entity (the equivalence class) is a LOGICAL view over this graph, not a row.
 CREATE TABLE IF NOT EXISTS crosswalk (
-    cve   TEXT,
-    alias TEXT,
-    kind  TEXT,
-    PRIMARY KEY (cve, alias, kind)
+    flaw_id TEXT,
+    alias   TEXT,
+    kind    TEXT,
+    PRIMARY KEY (flaw_id, alias, kind)
 );
 CREATE INDEX IF NOT EXISTS ix_crosswalk_alias ON crosswalk(alias);
 
@@ -168,16 +174,20 @@ CREATE TABLE IF NOT EXISTS repair_proposals (
     status         TEXT DEFAULT 'open'-- open | applied | dismissed
 );
 
--- The CVE catalog — the spine as a stream, not just a per-pull result. Rows
--- arrive two ways: (a) MITRE stream skeletons (enrich_state='mitre', the
--- foreign-authored map point with no verdict), and (b) NVD-enriched rows
--- (enrich_state='nvd', carrying CVSS + affected ranges). Provenance is stamped
--- on EVERY row (source/fetched_at/policy_version/complete) so a catalog row,
--- like a verdict, can be retroactively distrusted rather than deleted. The map
--- is not the territory: a skeleton says "MITRE published this; NVD has not yet
--- enriched it" — never "this device is vulnerable."
+-- The flaw catalog — the spine as a stream, not just a per-pull result. `id`
+-- is a flaw_id under any peer scheme (cve, ghsa, osv, rustsec, pysec, go, …);
+-- `flaw_type` records which. Rows arrive many ways: (a) MITRE stream skeletons
+-- (enrich_state='mitre', the foreign-authored map point with no verdict), (b)
+-- NVD-enriched CVE rows (enrich_state='nvd', CVSS + affected ranges), and (c)
+-- self-enriched peer rows (enrich_state='osv'/'ghsa', carrying their own
+-- severity + ranges on ingest). Provenance is stamped on EVERY row
+-- (source/fetched_at/policy_version/complete) so a catalog row, like a verdict,
+-- can be retroactively distrusted rather than deleted. The map is not the
+-- territory: a skeleton says "MITRE published this; NVD has not yet enriched
+-- it" — never "this device is vulnerable."
 CREATE TABLE IF NOT EXISTS cves (
     id              TEXT PRIMARY KEY,
+    flaw_type       TEXT,             -- 'cve' | 'ghsa' | 'osv' | 'rustsec' | ... (the peer scheme)
     published       TEXT,
     cvss            REAL,
     severity        TEXT,
@@ -207,6 +217,27 @@ CREATE TABLE IF NOT EXISTS seen_cves (
     first_seen TEXT
 );
 
+-- CISA KEV overlay — the exploitability_signal. KEV entries carry only a cveID,
+-- so this is a CVE-keyed OVERLAY (not a new flaw_type): it adds "this CVE is
+-- known-exploited, required-action X, due-date Y, ransomware-linked Z" to an
+-- existing cve row without owning the flaw_id. Idempotent full refresh (the
+-- static JSON is ~1,660 entries, tiny) — INSERT OR REPLACE on cve_id.
+CREATE TABLE IF NOT EXISTS kev (
+    cve_id           TEXT PRIMARY KEY,
+    date_added       TEXT,
+    vendor_project   TEXT,
+    product          TEXT,
+    name             TEXT,
+    short_description TEXT,
+    required_action  TEXT,
+    due_date         TEXT,
+    ransomware_use   TEXT,
+    cwes             TEXT,            -- JSON array
+    catalog_version  TEXT,
+    date_released    TEXT,
+    fetched_at       TEXT
+);
+
 -- Generic key/value state — the stream cursor lives here
 -- (state key "stream:mitre_cursor" = the last-processed cvelistV5 tip SHA), as
 -- do "stream:last_tick" / "stream:last_summary". A point-in-time sample, not a
@@ -227,14 +258,48 @@ def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _columns(conn, table: str) -> set[str]:
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """In-place schema migration runner, gated by `PRAGMA user_version`.
+
+    The schema is `CREATE TABLE IF NOT EXISTS` (idempotent for FRESH dbs), but
+    that cannot rename a column or add one to an EXISTING db. This runner does
+    the additive, introspection-guarded ALTERs that older dbs need, then bumps
+    `user_version`. It touches ONLY the crosswalk rename + the cves flaw_type
+    add — never verdicts / device_posture / territory, which are byte-untouched.
+    Each step is guarded so it is safe to re-run on an already-migrated db
+    (and a no-op on a fresh db created with the current SCHEMA).
+    """
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+
+    if version < 1:
+        # v0 -> v1: the spine becomes the alias graph.
+        #   (a) crosswalk: cve-centric (cve, alias, kind) -> (flaw_id, alias, kind)
+        #       so a non-cve flaw with no cve can anchor as a first-class peer.
+        #   (b) cves: add flaw_type so peer rows record their scheme; backfill
+        #       'cve' for pre-existing CVE rows.
+        if "cve" in _columns(conn, "crosswalk") and "flaw_id" not in _columns(conn, "crosswalk"):
+            conn.execute("ALTER TABLE crosswalk RENAME COLUMN cve TO flaw_id")
+        if "flaw_type" not in _columns(conn, "cves"):
+            conn.execute("ALTER TABLE cves ADD COLUMN flaw_type TEXT")
+        conn.execute("UPDATE cves SET flaw_type='cve' WHERE flaw_type IS NULL")
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+
+
 def connect(path: str, readonly: bool = False) -> sqlite3.Connection:
     """Open (and migrate) the posture DB. Creates the file if missing.
 
     The schema is all `CREATE TABLE IF NOT EXISTS`, so executing it on every
-    open is a cheap, idempotent migration. `readonly` is kept for API
-    symmetry with Forebode; read commands simply don't write. (A strict
-    read-only URI mode would error on a fresh DB on first run; the schema's
-    idempotency makes always-migrate the simpler, robust choice.)
+    open is a cheap, idempotent migration for fresh dbs; `_migrate` then applies
+    the additive ALTERs an existing (older) db needs, gated by
+    `PRAGMA user_version`. `readonly` is kept for API symmetry with Forebode;
+    read commands simply don't write. (A strict read-only URI mode would error
+    on a fresh DB on first run; the schema's idempotency makes always-migrate
+    the simpler, robust choice.)
     """
     if path != ":memory:":
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -242,6 +307,7 @@ def connect(path: str, readonly: bool = False) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
     return conn
 
@@ -437,37 +503,63 @@ def dossier(conn, witness: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Spine crosswalk
+# Spine alias graph (alias↔alias crosswalk)
 # ---------------------------------------------------------------------------
 
-def add_crosswalk(conn, cve: str, alias: str, kind: str) -> None:
+def add_crosswalk(conn, flaw_id: str, alias: str, kind: str) -> None:
+    """Record ONE directed edge: flaw_id is also known as `alias` under scheme
+    `kind`. Idempotent. Most callers want the symmetric :func:`add_flaw_alias`
+    so resolve returns correctly-typed aliases in BOTH directions."""
     conn.execute(
-        "INSERT OR IGNORE INTO crosswalk (cve, alias, kind) VALUES (?,?,?)",
-        (cve, alias, kind),
+        "INSERT OR IGNORE INTO crosswalk (flaw_id, alias, kind) VALUES (?,?,?)",
+        (flaw_id, alias, kind),
     )
 
 
-def resolve_crosswalk(conn, cve: str) -> list[dict]:
+def add_flaw_alias(conn, a: str, kind_a: str, b: str, kind_b: str) -> None:
+    """Record the symmetric equivalence of two flaw_ids: `a` (scheme `kind_a`)
+    and `b` (scheme `kind_b`). Writes BOTH directed edges
+    (a -> b@kind_b) + (b -> a@kind_a) so `resolve(a)` returns b typed as
+    kind_b AND `resolve(b)` returns a typed as kind_a. This is the correctness
+    fix a single directed edge cannot give, and the reason a non-cve flaw with
+    no cve can still anchor as a first-class peer. Idempotent."""
+    add_crosswalk(conn, a, b, kind_b)
+    add_crosswalk(conn, b, a, kind_a)
+
+
+def resolve_crosswalk(conn, flaw_id: str) -> list[dict]:
+    """All known aliases of a flaw_id (each {alias, kind})."""
     rows = conn.execute(
-        "SELECT alias, kind FROM crosswalk WHERE cve=? ORDER BY kind, alias",
-        (cve,),
+        "SELECT alias, kind FROM crosswalk WHERE flaw_id=? ORDER BY kind, alias",
+        (flaw_id,),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
 def crosswalk_all(conn) -> list[dict]:
-    """All crosswalk rows, ordered by (cve, kind, alias) — the stable shape the
-    spine export serializes and the round-trip test compares against."""
+    """All crosswalk rows, ordered by (flaw_id, kind, alias) — the stable shape
+    the spine export serializes and the round-trip test compares against."""
     rows = conn.execute(
-        "SELECT cve, alias, kind FROM crosswalk ORDER BY cve, kind, alias"
+        "SELECT flaw_id, alias, kind FROM crosswalk ORDER BY flaw_id, kind, alias"
     ).fetchall()
     return [dict(r) for r in rows]
 
 
 def reverse_crosswalk(conn, alias: str) -> list[dict]:
+    """All flaw_ids known to share this alias (each {flaw_id, kind})."""
     rows = conn.execute(
-        "SELECT cve, kind FROM crosswalk WHERE alias=? ORDER BY kind, cve",
+        "SELECT flaw_id, kind FROM crosswalk WHERE alias=? ORDER BY kind, flaw_id",
         (alias,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def flaw_type_counts(conn) -> list[dict]:
+    """Distinct flaw_type values in the catalog + their row counts — the
+    peer registry `posture spine show` renders. Ordered by flaw_type."""
+    rows = conn.execute(
+        "SELECT flaw_type, COUNT(*) AS n FROM cves "
+        "GROUP BY flaw_type ORDER BY flaw_type"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -719,19 +811,21 @@ def upsert_cve(conn, rec: dict) -> None:
     import json as _json
     conn.execute(
         """INSERT INTO cves
-             (id, published, cvss, severity, cvss_vector, description,
+             (id, flaw_type, published, cvss, severity, cvss_vector, description,
               fixed_raw, refs, cwe, ref_tags, source, fetched_at,
               policy_version, complete)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
-             published=excluded.published, cvss=excluded.cvss,
-             severity=excluded.severity, cvss_vector=excluded.cvss_vector,
-             description=excluded.description, fixed_raw=excluded.fixed_raw,
-             refs=excluded.refs, cwe=excluded.cwe, ref_tags=excluded.ref_tags,
-             source=excluded.source, fetched_at=excluded.fetched_at,
+             flaw_type=excluded.flaw_type, published=excluded.published,
+             cvss=excluded.cvss, severity=excluded.severity,
+             cvss_vector=excluded.cvss_vector, description=excluded.description,
+             fixed_raw=excluded.fixed_raw, refs=excluded.refs, cwe=excluded.cwe,
+             ref_tags=excluded.ref_tags, source=excluded.source,
+             fetched_at=excluded.fetched_at,
              policy_version=excluded.policy_version, complete=excluded.complete""",
         (
             rec["id"],
+            rec.get("flaw_type", "cve"),
             rec.get("published"),
             rec.get("cvss"),
             rec.get("severity"),
@@ -877,6 +971,61 @@ def seen_cves(conn) -> list[dict]:
     these so a client can restore the 'new since last tick' timeline."""
     rows = conn.execute("SELECT cve_id, first_seen FROM seen_cves ORDER BY cve_id").fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# CISA KEV overlay — the exploitability_signal (CVE-keyed overlay, not a flaw_type)
+# ---------------------------------------------------------------------------
+
+def upsert_kev(conn, row: dict) -> None:
+    """Upsert one KEV overlay row keyed on cve_id (idempotent full refresh)."""
+    import json as _json
+    conn.execute(
+        """INSERT OR REPLACE INTO kev
+             (cve_id, date_added, vendor_project, product, name,
+              short_description, required_action, due_date, ransomware_use,
+              cwes, catalog_version, date_released, fetched_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            row["cve_id"], row.get("date_added"), row.get("vendor_project"),
+            row.get("product"), row.get("name"), row.get("short_description"),
+            row.get("required_action"), row.get("due_date"),
+            row.get("ransomware_use"),
+            _json.dumps(row.get("cwes", [])),
+            row.get("catalog_version"), row.get("date_released"),
+            row.get("fetched_at"),
+        ),
+    )
+
+
+def kev_all(conn) -> list[dict]:
+    """All KEV overlay rows, ordered by cve_id — the stable shape the spine
+    export serializes and the round-trip test compares against."""
+    rows = conn.execute("SELECT * FROM kev ORDER BY cve_id").fetchall()
+    out = []
+    import json as _json
+    for r in rows:
+        d = dict(r)
+        try:
+            d["cwes"] = _json.loads(d["cwes"]) if d.get("cwes") else []
+        except (ValueError, TypeError):
+            d["cwes"] = []
+        out.append(d)
+    return out
+
+
+def kev_for_cve(conn, cve_id: str) -> dict | None:
+    """One KEV overlay row for a cve_id (parsed), or None."""
+    import json as _json
+    r = conn.execute("SELECT * FROM kev WHERE cve_id=?", (cve_id,)).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    try:
+        d["cwes"] = _json.loads(d["cwes"]) if d.get("cwes") else []
+    except (ValueError, TypeError):
+        d["cwes"] = []
+    return d
 
 
 # ---------------------------------------------------------------------------

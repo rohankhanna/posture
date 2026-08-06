@@ -3,15 +3,15 @@
 The single design fact this module encodes: **the words are not hardcoded.**
 CVE, CWE, KEV, EPSS, GHSA, USN, the six axes — every one of them is a row in a
 table the system reads, not a string baked into the code. New terms grow the
-system instead of breaking it; if CVEs are ever replaced, the system rebinds
-the *role* "vulnerability join key" to the new term and keeps a crosswalk to the
-old one — a config edit, not a rewrite.
+system instead of breaking it.
 
 Two layers of indirection make that possible:
 
-  - **ROLES** are functional jobs (vulnerability_join_key, severity_coordinate,
-    exploitability_signal, ...). The engine + spine resolve ROLES, not literal
-    term ids, so "what fills this job" can change without touching code.
+  - **ROLES** are functional jobs (severity_coordinate, exploitability_signal,
+    weakness_category, advisory_scheme, ...). The engine resolves ROLES, not
+    literal term ids, so "what fills this job" can change without touching code.
+    (The spine itself is NOT a role anymore: the alias↔alias graph has no
+    single rebindable join key — cve is one peer among many. See spine.py.)
   - **KINDS** are what a term *is* (identifier_scheme, coordinate_system, axis,
     ...). A witness declares the kind of the keys it emits; a kind not in the
     glossary is an emergent signal — the vocab monitor surfaces it as a
@@ -20,9 +20,9 @@ Two layers of indirection make that possible:
 The autonomy contract (user decision): **auto the MAP, human the TRUST.**
 Discovering terms, writing candidates, measuring health, graceful-unknown,
 no-wipe, fallback are AUTO. Promoting a candidate to known, deprecating a term
-with a successor, rebinding a spine role are HUMAN — each versioned, dated,
-cited, recorded in `term_changes`. A security tool that silently rewrote its
-own trust would itself be an attack surface.
+with a successor, rebinding a role are HUMAN — each versioned, dated, cited,
+recorded in `term_changes`. A security tool that silently rewrote its own trust
+would itself be an attack surface.
 
 The **deterministic term-profile / neighborhood** (`neighborhood`,
 `suggest_for_signal`) is the model-free Phase-1 classifier: it relates terms by
@@ -46,7 +46,6 @@ from .axis import Axis, AXES, AXIS_META
 # ---------------------------------------------------------------------------
 
 ROLES: set[str] = {
-    "vulnerability_join_key",   # the spine (cve today; rebindable)
     "severity_coordinate",      # cvss
     "exploitability_signal",    # kev, epss, ssvc
     "weakness_category",        # cwe, capec, attack, d3fend
@@ -75,8 +74,9 @@ class Term:
     """One entry in the glossary.
 
     `roles` is the set of functional jobs this term can fill (see ROLES). The
-    engine resolves roles, so "the spine" is *whatever term currently fills
-    `vulnerability_join_key`* — today cve, rebindable.
+    engine resolves roles (e.g. severity_coordinate -> cvss), so "what fills a
+    job" can change without code. The spine itself is not a role — it is the
+    alias↔alias graph (see spine.py); cve is one peer among many.
 
     `status`:
       - `known`      — trusted; the system reasons over it.
@@ -114,8 +114,8 @@ class Term:
 # recorded as cited terms, not as unquestioned facts.
 _SEED_TERMS: list[dict] = [
     {"id": "cve", "label": "Common Vulnerabilities and Exposures",
-     "kind": "identifier_scheme", "roles": ["vulnerability_join_key"],
-     "citation": "MITRE / NVD — https://nvd.nist.gov/ (cve id is the spine today)"},
+     "kind": "identifier_scheme", "roles": [],
+     "citation": "MITRE / NVD — https://nvd.nist.gov/ (cve is one peer of the alias graph)"},
     {"id": "ghsa", "label": "GitHub Security Advisory",
      "kind": "identifier_scheme", "roles": ["advisory_scheme"],
      "citation": "GitHub Advisory Database — https://github.com/advisories"},
@@ -210,9 +210,9 @@ def _now() -> str:
 
 def ensure_seeded(conn: sqlite3.Connection, now: str | None = None) -> int:
     """Idempotently seed the glossary on first use. Returns the count of terms
-    present after seeding. The six axes + the spine role binding
-    (vulnerability_join_key -> cve) are seeded too, so the engine resolves the
-    role out of the box."""
+    present after seeding. The six axes are seeded too. (The spine role binding
+    `vulnerability_join_key -> cve` is no longer seeded: the spine is the
+    alias↔alias graph now, not a rebindable word — see spine.py.)"""
     from . import store as _store
     ts = now or _now()
     for t in SEED():
@@ -220,9 +220,6 @@ def ensure_seeded(conn: sqlite3.Connection, now: str | None = None) -> int:
         if row is None:
             t = dict(t, discovered_at=ts)
             _store.upsert_term(conn, t)
-    # default spine binding if none exists
-    if _store.get_spine_binding(conn, "vulnerability_join_key") is None:
-        _store.set_spine_binding(conn, "vulnerability_join_key", "cve", ts)
     return len(_store.all_terms(conn))
 
 

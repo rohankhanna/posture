@@ -49,7 +49,7 @@ SPINE_DIR = "spine"
 # The MAP tables — the spine. Territory/engine-internal tables are deliberately
 # absent: verdicts, device_posture, health_*, glossary, term_signals,
 # spine_bindings, repair_proposals, policy_versions, state.
-FLAT_TABLES = ("crosswalk", "candidates", "distrust_marks", "seen_cves")
+FLAT_TABLES = ("crosswalk", "candidates", "distrust_marks", "seen_cves", "kev")
 
 
 def _now() -> str:
@@ -129,6 +129,7 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
         "candidates": _store.candidates,
         "distrust_marks": _store.distrust_marks,
         "seen_cves": _store.seen_cves,
+        "kev": _store.kev_all,
     }
     for name in FLAT_TABLES:
         rows = loaders[name](conn)
@@ -200,7 +201,7 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
     manifest = json.loads((root / "manifest.json").read_text())
 
     stats = {k: 0 for k in ("cves", "crosswalk", "candidates",
-                           "distrust_marks", "seen_cves")}
+                           "distrust_marks", "seen_cves", "kev")}
 
     # --- cves: full INSERT OR REPLACE (all columns, including enrich_state,
     #     distrusted, distrust_reason, discovered_at — a faithful mirror of
@@ -209,13 +210,14 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
         for row in _read_jsonl(shard_path):
             conn.execute(
                 """INSERT OR REPLACE INTO cves
-                     (id, published, cvss, severity, cvss_vector, description,
-                      fixed_raw, refs, cwe, ref_tags, enrich_state, source,
-                      fetched_at, policy_version, complete, distrusted,
+                     (id, flaw_type, published, cvss, severity, cvss_vector,
+                      description, fixed_raw, refs, cwe, ref_tags, enrich_state,
+                      source, fetched_at, policy_version, complete, distrusted,
                       distrust_reason, discovered_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    row["id"], row.get("published"), row.get("cvss"),
+                    row["id"], row.get("flaw_type"), row.get("published"),
+                    row.get("cvss"),
                     row.get("severity"), row.get("cvss_vector"),
                     row.get("description", ""),
                     json.dumps(row.get("fixed_raw"), default=str, sort_keys=True)
@@ -232,11 +234,11 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
             )
             stats["cves"] += 1
 
-    # --- crosswalk: INSERT OR IGNORE (PK cve,alias,kind — idempotent) ---
+    # --- crosswalk: INSERT OR IGNORE (PK flaw_id,alias,kind — idempotent) ---
     for row in _read_jsonl(root / "crosswalk.jsonl"):
         conn.execute(
-            "INSERT OR IGNORE INTO crosswalk (cve, alias, kind) VALUES (?,?,?)",
-            (row["cve"], row["alias"], row["kind"]),
+            "INSERT OR IGNORE INTO crosswalk (flaw_id, alias, kind) VALUES (?,?,?)",
+            (row["flaw_id"], row["alias"], row["kind"]),
         )
         stats["crosswalk"] += 1
 
@@ -267,6 +269,24 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
             (row["cve_id"], row.get("first_seen")),
         )
         stats["seen_cves"] += 1
+
+    # --- kev: INSERT OR REPLACE (cve_id PK) — the exploitability_signal overlay
+    for row in _read_jsonl(root / "kev.jsonl"):
+        conn.execute(
+            """INSERT OR REPLACE INTO kev
+                 (cve_id, date_added, vendor_project, product, name,
+                  short_description, required_action, due_date, ransomware_use,
+                  cwes, catalog_version, date_released, fetched_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (row["cve_id"], row.get("date_added"), row.get("vendor_project"),
+             row.get("product"), row.get("name"), row.get("short_description"),
+             row.get("required_action"), row.get("due_date"),
+             row.get("ransomware_use"),
+             json.dumps(row.get("cwes") or []),
+             row.get("catalog_version"), row.get("date_released"),
+             row.get("fetched_at")),
+        )
+        stats["kev"] += 1
 
     conn.commit()
     # surface any drift between manifest counts and what we loaded — but only

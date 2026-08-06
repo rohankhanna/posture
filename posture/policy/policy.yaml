@@ -7,8 +7,8 @@
 # Produced / re-evaluated by the `source-alignment` repo against evidence on a
 # cadence. Initial values are conservative working assumptions, not verdicts.
 
-version: "2026-08-06.1"
-supersedes: "2026-08-02.3"
+version: "2026-08-06.2"
+supersedes: "2026-08-06.1"
 dated: 2026-08-06
 rationale: |
   Initial skeleton policy (2026-08-01.1): NVD is the CVE spine today — a
@@ -43,6 +43,14 @@ rationale: |
   cyclonedx_sbom (inventory) and cis_checker (configuration) are wired real
   witnesses; the stub registrations were removed to stop duplicate axis
   entries. exposure/threat/trust remain stubbed.
+  2026-08-06.2: the spine is the alias↔alias graph, not a swappable join key.
+  cve is one peer among many (ghsa/osv/rustsec/pysec/go/…), NOT a primary key
+  and NOT rebindable. The `spine.primary_key`/`spine.role` fields (the old
+  CVE-replacement rebind mechanism) are retired; the crosswalk table is renamed
+  cve-centric (cve,alias,kind) -> alias-centric (flaw_id,alias,kind) so a non-cve
+  flaw with no cve anchors as a first-class peer. Ingestion peers (cvelistV5
+  back-fill + OSV + GHSA + CISA KEV) are being wired on this foundation. No
+  witness order/bias changes; the witness layer is unaffected.
 
 witnesses:
   nvd:
@@ -133,12 +141,11 @@ degradation:
     fallback: [ghsa, osv_id]
 
 spine:
-  # The spine is resolved by ROLE via the glossary, not by a hardcoded word.
-  # `vulnerability_join_key` is the job; `cve` is the term filling it today. If
-  # CVEs are ever replaced, `posture spine rebind vulnerability_join_key <new>`
-  # (human-gated) swaps the term; old joins still resolve via the crosswalk.
-  role: vulnerability_join_key
-  primary_key: cve           # fallback used in pure (no-store) mode
+  # The spine is the alias↔alias graph (see spine.py): every flaw_id is a peer,
+  # cve is NOT a primary key and NOT rebindable. There is no `primary_key` or
+  # `role` here anymore — the old CVE-replacement rebind mechanism is retired
+  # (the alias graph keeps old joins resolving without a rebind). `crosswalk` is
+  # advisory only: the alias-kind pairs the operator declares they maintain.
   crosswalk:
     - [cve, ghsa]
     - [cve, usn]

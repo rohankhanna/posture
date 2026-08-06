@@ -48,6 +48,17 @@ def _seed(conn) -> None:
     })
     store.set_enrich_state(conn, "CVE-2026-1003", "mitre")
 
+    # a self-enriched non-cve PEER row (GHSA) — flaw_type survives the round trip
+    store.upsert_cve(conn, {
+        "id": "GHSA-aaaa-bbbb-cccc", "flaw_type": "ghsa",
+        "published": "2026-07-20", "cvss": 7.5, "severity": "HIGH",
+        "cvss_vector": "CVSS:3.1/AV:N",
+        "description": "ghsa peer row", "fixed_raw": {"source": "ghsa"},
+        "refs": [], "cwe": ["CWE-78"], "ref_tags": [], "source": "ghsa",
+        "fetched_at": "t4", "policy_version": "v", "complete": 1,
+    })
+    store.set_enrich_state(conn, "GHSA-aaaa-bbbb-cccc", "ghsa")
+
     store.add_crosswalk(conn, "CVE-2026-1001", "GHSA-aaaa-bbbb-cccc", "ghsa")
     store.add_crosswalk(conn, "CVE-2026-1001", "UBUNTU-CVE-2026-1001", "usn")
     store.add_crosswalk(conn, "CVE-2026-1002", "OSV-2026-6", "osv_id")
@@ -59,19 +70,33 @@ def _seed(conn) -> None:
     store.mark_distrust(conn, "shodan", "stub never wired")
     store.mark_cve_distrust(conn, "CVE-2026-1002", "withdrew from NVD")
 
-    store.mark_seen(conn, ["CVE-2026-1001", "CVE-2026-1002", "CVE-2026-1003"])
+    store.mark_seen(conn, ["CVE-2026-1001", "CVE-2026-1002", "CVE-2026-1003",
+                            "GHSA-aaaa-bbbb-cccc"])
+
+    # one KEV overlay row keyed on CVE-2026-1001 (exploitability_signal overlay)
+    store.upsert_kev(conn, {
+        "cve_id": "CVE-2026-1001", "date_added": "2026-08-01",
+        "vendor_project": "Acme", "product": "Widget", "name": "Acme Widget RCE",
+        "short_description": "remote code execution",
+        "required_action": "Apply patch.", "due_date": "2026-09-01",
+        "ransomware_use": "Known", "cwes": ["CWE-78"],
+        "catalog_version": "2026.08.06", "date_released": "2026-08-06",
+        "fetched_at": "t1",
+    })
 
     conn.commit()
 
 
 def _all_tables(conn) -> dict:
-    """The five MAP tables as comparable structures (sets/lists of dicts)."""
+    """The six MAP tables (cves, crosswalk, candidates, distrust_marks,
+    seen_cves, kev) as comparable structures (sets/lists of dicts)."""
     return {
         "cves": store.catalog_all(conn),
         "crosswalk": store.crosswalk_all(conn),
         "candidates": store.candidates(conn),
         "distrust_marks": store.distrust_marks(conn),
         "seen_cves": store.seen_cves(conn),
+        "kev": store.kev_all(conn),
     }
 
 
@@ -81,8 +106,8 @@ def test_export_round_trip_identical(conn, tmp_path):
     _seed(conn)
     out = tmp_path / "out"
     manifest = export.export_spine(conn, out_dir=out, policy_version="v")
-    assert manifest["counts"] == {"cves": 3, "crosswalk": 3, "candidates": 1,
-                                   "distrust_marks": 1, "seen_cves": 3}
+    assert manifest["counts"] == {"cves": 4, "crosswalk": 3, "candidates": 1,
+                                   "distrust_marks": 1, "seen_cves": 4, "kev": 1}
 
     other = store.connect(":memory:")
     stats = export.import_spine(other, from_dir=out)
@@ -99,6 +124,13 @@ def test_export_round_trip_identical(conn, tmp_path):
     assert cve["enrich_state"] == "nvd"
     assert cve["cwe"] == ["CWE-89"] and cve["ref_tags"] == ["Patch"]
     assert store.get_cve(other, "CVE-2026-1002")["distrusted"] == 1
+    # the non-cve PEER row (GHSA) survives the round trip with its flaw_type +
+    # enrich_state intact — the multi-peer spine shape, not just cve rows.
+    ghsa = store.get_cve(other, "GHSA-aaaa-bbbb-cccc")
+    assert ghsa is not None
+    assert ghsa["flaw_type"] == "ghsa"
+    assert ghsa["enrich_state"] == "ghsa"
+    assert ghsa["source"] == "ghsa"
 
 
 # --- territory never leaks into the spine ------------------------------------
@@ -152,7 +184,7 @@ def test_verify_spine_clean_on_untampered(conn, tmp_path):
     out = tmp_path / "out"
     export.export_spine(conn, out_dir=out, policy_version="v")
     manifest = export.verify_spine(out)  # no raise
-    assert manifest["counts"]["cves"] == 3
+    assert manifest["counts"]["cves"] == 4
 
 
 # --- import options ----------------------------------------------------------
@@ -172,7 +204,7 @@ def test_import_no_verify_skips_check(conn, tmp_path):
         export.import_spine(other, from_dir=out)
     # ... --no-verify loads anyway (the manifest check is skipped entirely)
     stats = export.import_spine(other, from_dir=out, verify_manifest=False)
-    assert stats["cves"] == 3
+    assert stats["cves"] == 4
 
 
 def test_import_is_idempotent(conn, tmp_path):
@@ -192,6 +224,6 @@ def test_export_readonly_db(conn, tmp_path):
     # snapshot into a file DB, reopen read-only-style (connect never writes on read)
     out = tmp_path / "out"
     manifest = export.export_spine(conn, out_dir=out, policy_version="v")
-    assert manifest["counts"]["cves"] == 3
+    assert manifest["counts"]["cves"] == 4
     # the source DB's row count is unchanged (export wrote nothing to it)
-    assert len(store.catalog_all(conn)) == 3
+    assert len(store.catalog_all(conn)) == 4
