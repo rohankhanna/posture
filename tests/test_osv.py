@@ -147,7 +147,7 @@ def test_backfill_populates_osv_rows_and_alias(conn, tmp_path, monkeypatch):
     assert stats["ecosystems_done"] is True
 
     # the osv catalog rows: flaw_type='osv', enrich_state='osv', source='osv'
-    row1 = store.get_cve(conn, "OSV-2026-1")
+    row1 = store.get_flaw(conn, "OSV-2026-1")
     assert row1 is not None
     assert row1["flaw_type"] == "osv"
     assert row1["enrich_state"] == "osv"
@@ -259,7 +259,7 @@ def test_incremental_after_backfill_done(conn, tmp_path, monkeypatch):
     assert s2["upserted"] == 1
     assert s2["done"] is False  # a change was made
 
-    row = store.get_cve(conn, "OSV-2026-99")
+    row = store.get_flaw(conn, "OSV-2026-99")
     assert row is not None
     assert row["flaw_type"] == "osv"
     assert row["description"] == "incremental change"
@@ -309,7 +309,7 @@ def test_cveless_osv_record_anchors(conn, tmp_path, monkeypatch):
     assert stats["upserted"] == 1
 
     # the osv row exists, keyed by its own id
-    row = store.get_cve(conn, "OSV-2026-1")
+    row = store.get_flaw(conn, "OSV-2026-1")
     assert row is not None
     assert row["flaw_type"] == "osv"
 
@@ -327,7 +327,7 @@ def test_fetch_failure_is_noop(conn, monkeypatch):
     stats = _osv.osv_ingest_tick(conn, cap=100, now="t")
     assert stats["error"] is not None
     assert stats["upserted"] == 0
-    assert conn.execute("SELECT COUNT(*) FROM cves").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0] == 0
 
 
 # --- 8. malformed records never crash the parser (mirror of mitre hardening) -
@@ -385,10 +385,10 @@ def test_osv_backfill_skips_malformed_record(conn, tmp_path, monkeypatch):
     assert stats["error"] is None
     assert stats["upserted"] == 2  # good + malformed-valid-id (id-less skipped)
     assert stats["skipped"] == 1
-    good_row = store.get_cve(conn, "OSV-GOOD")
+    good_row = store.get_flaw(conn, "OSV-GOOD")
     assert good_row is not None and good_row["flaw_type"] == "osv"
     # the malformed-valid-id record degraded to a minimal row (no crash): no
     # vector, no cvss — but it IS anchored. The invariant is "no crash", not
     # "skip records with a valid id".
-    bad = store.get_cve(conn, "OSV-BAD")
+    bad = store.get_flaw(conn, "OSV-BAD")
     assert bad is not None and bad["cvss_vector"] is None

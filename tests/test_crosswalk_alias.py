@@ -10,15 +10,15 @@ from posture import store, spine
 
 def test_cveless_flaw_anchors_directly():
     """An OSV record with no CVE is upserted as a catalog row keyed by its own
-    flaw_id (the cves PK is TEXT, any scheme) — no cve required to exist."""
+    flaw_id (the flaws PK is TEXT, any scheme) — no cve required to exist."""
     conn = store.connect(":memory:")
-    store.upsert_cve(conn, {
+    store.upsert_flaw(conn, {
         "id": "OSV-2026-42", "flaw_type": "osv", "published": "2026-05-01",
         "description": "an osv record with no cve alias",
         "source": "osv", "fetched_at": "t", "policy_version": "v", "complete": 1,
     })
     conn.commit()
-    row = store.get_cve(conn, "OSV-2026-42")
+    row = store.get_flaw(conn, "OSV-2026-42")
     assert row is not None
     assert row["flaw_type"] == "osv"
     # and it is reachable via the flaw-type registry (posture spine show)

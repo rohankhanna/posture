@@ -174,10 +174,10 @@ One honest map, many authors:
    full re-pull is demoted to the rare `posture assess` reconciliation. With
    `--no-devices` it is catalog-only enrichment (zero verdicts) — the CI mode.
 
-The catalog (`cves` table, `id` is a TEXT PK accepting any flaw_id) carries
+The catalog (`flaws` table, `id` is a TEXT PK accepting any flaw_id) carries
 **provenance on every row** (`source`/`fetched_at`/`policy_version`/`complete`
 + `flaw_type`), so a catalog row, like a verdict, can be retroactively
-**distrusted** (`posture catalog` + `mark_cve_distrust`) — marked, never
+**distrusted** (`posture catalog` + `mark_flaw_distrust`) — marked, never
 deleted. Each foreign source emits its required attribution line wherever its
 data surfaces (NVD ToU; MITRE CVE sponsorship; CISA KEV; GitHub CC-BY 4.0;
 OSV.dev). **The map is not the territory:** a skeleton says "MITRE published

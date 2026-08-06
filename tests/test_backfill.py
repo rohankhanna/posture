@@ -43,9 +43,9 @@ def test_backfill_populates_skeletons(conn, tmp_path):
     stats = _backfill(conn, work, cap=1000)
     assert stats["upserted"] == 3
     assert stats["done"] is True
-    ids = {r[0] for r in conn.execute("SELECT id FROM cves")}
+    ids = {r[0] for r in conn.execute("SELECT id FROM flaws")}
     assert ids == {f"CVE-2026-{10000 + i}" for i in range(3)}
-    row = store.get_cve(conn, "CVE-2026-10000")
+    row = store.get_flaw(conn, "CVE-2026-10000")
     assert row["enrich_state"] == "mitre"
     assert row["flaw_type"] == "cve"          # backfill skeletons are cve peers
     assert row["fixed_raw"]["source"] == "mitre"
@@ -65,7 +65,7 @@ def test_backfill_resumes_across_ticks_via_cursor(conn, tmp_path):
     assert s2["upserted"] == 2 and s2["done"] is False
     s3 = _backfill(conn, work, cap=2)
     assert s3["upserted"] == 1 and s3["done"] is True  # only 1 left
-    assert conn.execute("SELECT COUNT(*) FROM cves").fetchone()[0] == 5
+    assert conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0] == 5
 
 
 # --- self-disables once exhausted --------------------------------------------
@@ -91,7 +91,7 @@ def test_backfill_idempotent_on_re_diff(conn, tmp_path):
     store.set_state(conn, stream.BACKFILL_CURSOR_KEY, None)
     _backfill(conn, work, cap=1000)
     # no double-count: upsert is keyed on id; mark_seen is idempotent
-    assert conn.execute("SELECT COUNT(*) FROM cves").fetchone()[0] == 3
+    assert conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0] == 3
     assert _backfill(conn, work, cap=1000)["upserted"] == 0  # now done again
 
 
