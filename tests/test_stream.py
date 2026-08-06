@@ -187,3 +187,88 @@ def test_stream_fetch_failure_does_not_touch_cursor(conn, tmp_path, monkeypatch)
     assert stats["error"] is not None and "fetch failed" in stats["error"]
     # cursor unchanged — the tick retries the same range next time.
     assert store.get_state(conn, stream.CURSOR_KEY) == cursor_before
+
+
+# --- malformed records: a single bad record must not sink the tick -----------
+# Regression for the first real CI run: the stream parsed real MITRE records for
+# the first time and one record where a normally-dict field was a list raised
+# ``'list' object has no attribute 'get'`` and sank the whole tick. The parser
+# guards every ``.get`` receiver (mitre_record/mitre_refs) AND stream_tick wraps
+# ``_skeleton`` in try/except — both layers must hold.
+
+from posture import mitre as _mitre_mod
+
+
+@pytest.mark.parametrize("bad", [
+    # containers as a list (the original CI crash shape: a truthy list keeps the
+    # `or {}` short-circuit, then `.get("cna")` raised AttributeError).
+    {"cveMetadata": {"cveId": "CVE-2026-1", "datePublished": "2026-01-01T00:00:00Z"},
+     "containers": [{"cna": {"descriptions": [{"lang": "en", "value": "x"}]}}]},
+    # cveMetadata as a list (meta.get(...) would raise).
+    {"cveMetadata": [{"cveId": "CVE-2026-2"}],
+     "containers": {"cna": {"descriptions": [{"lang": "en", "value": "y"}]}}},
+    # cna itself as a list.
+    {"cveMetadata": {"cveId": "CVE-2026-3"},
+     "containers": {"cna": [{"descriptions": [{"lang": "en", "value": "z"}]}]}},
+    # a descriptions element that is a list, not a dict.
+    {"cveMetadata": {"cveId": "CVE-2026-4"},
+     "containers": {"cna": {"descriptions": [["en", "v"]]}}},
+    # a problemTypes element that is a list.
+    {"cveMetadata": {"cveId": "CVE-2026-5"},
+     "containers": {"cna": {"problemTypes": [["x"]]}}},
+    # a references element that is a list (mitre_refs must not crash).
+    {"cveMetadata": {"cveId": "CVE-2026-6"},
+     "containers": {"cna": {"references": [["https://x"]]}}},
+    # rec itself is a list, not a dict.
+    [{"cveMetadata": {"cveId": "CVE-2026-7"}}],
+    # metrics as a list of non-dict entries.
+    {"cveMetadata": {"cveId": "CVE-2026-8"},
+     "containers": {"cna": {"metrics": ["not-a-dict", {"cvssV3_1": "also-not"}]}}},
+])
+def test_mitre_record_tolerates_non_dict_fields(bad):
+    # must not raise; returns a dict (id empty when unparseable).
+    rec = _mitre_mod.mitre_record(bad)
+    assert isinstance(rec, dict)
+    refs = _mitre_mod.mitre_refs(bad)
+    assert isinstance(refs, list)
+
+
+def test_stream_skips_malformed_record_does_not_sink_tick(conn, tmp_path):
+    # A well-formed record plus two malformed ones (one with a valid id but
+    # ``containers`` as a list — the original CI crash shape; one with NO
+    # extractable id) in the SAME diff. The good one upserts fully; the valid-id
+    # malformed one degrades gracefully to a minimal skeleton (no crash); the
+    # id-less one is skipped. The tick completes (no error, cursor advances) —
+    # the single-bad-record invariant the first CI run violated.
+    _, seed, work = _make_repos(tmp_path)
+    _commit(seed, {"cves/2026/11xxx/CVE-2026-11111.json":
+                   _mitre_json("CVE-2026-11111")}, "c1")
+    _tick(conn, work)  # bootstrap
+
+    bad_valid_id = {"cveMetadata": {"cveId": "CVE-2026-BAD1",
+                                    "datePublished": "2026-02-02T00:00:00Z"},
+                    "containers": [{"cna": {"descriptions": [{"lang": "en",
+                                                               "value": "bad"}]}}]}
+    # no cveMetadata + containers a list -> no extractable id -> skipped.
+    bad_no_id = {"containers": [{"cna": {"descriptions": [{"lang": "en",
+                                                            "value": "noid"}]}}]}
+    _commit(seed, {
+        "cves/2026/22xxx/CVE-2026-22222.json": _mitre_json("CVE-2026-22222", "good"),
+        "cves/2026/22xxx/CVE-2026-BAD1.json": bad_valid_id,
+        "cves/2026/22xxx/CVE-2026-NOID.json": bad_no_id,
+    }, "c2")
+    stats = _tick(conn, work)
+    assert stats["error"] is None  # the tick did NOT crash
+    assert stats["changed_files"] == 3
+    # the good record landed with full content.
+    good = store.get_cve(conn, "CVE-2026-22222")
+    assert good is not None and good["description"] == "good"
+    # the valid-id malformed record degraded to a minimal skeleton (graceful, not
+    # a crash): empty description, no refs, no vector — but it IS anchored.
+    bad1 = store.get_cve(conn, "CVE-2026-BAD1")
+    assert bad1 is not None
+    assert bad1["description"] == "" and bad1["cvss_vector"] is None
+    # the id-less record was skipped (nothing to anchor on).
+    assert store.get_cve(conn, "CVE-2026-NOID") is None
+    # cursor still advanced (the tick completed cleanly past the bad records).
+    assert store.get_state(conn, stream.CURSOR_KEY) is not None
