@@ -174,9 +174,14 @@ def test_export_self_cleans_stale_shards(conn, tmp_path):
     is the producer side; this keeps the signed directory tidy across renames."""
     _seed(conn)
     out = tmp_path / "out"
-    # seed the out dir with stale shards from a hypothetical prior (cves-named) run
+    # seed the out dir with stale shards from a hypothetical prior (cves-named) run.
+    # Several stale cves/ shards — the self-clean must unlink each AND rmtree the
+    # now-empty cves/ dir; materializing the rglob list first is what makes that
+    # safe (mutating the tree mid-rglob raises FileNotFoundError on the dir rglob
+    # still intends to descend into).
     (out / "spine" / "cves").mkdir(parents=True)
-    (out / "spine" / "cves" / "2026-07.jsonl").write_text('{"id":"STALE"}\n')
+    for shard in ("2005-01", "2005-02", "2026-07", "unknown"):
+        (out / "spine" / "cves" / f"{shard}.jsonl").write_text('{"id":"STALE"}\n')
     (out / "spine" / "seen_cves.jsonl").write_text('{"cve_id":"STALE"}\n')
     # a crosswalk shard IS still produced — it must survive the self-clean
     (out / "spine" / "crosswalk.jsonl").write_text('{"flaw_id":"KEEP","alias":"x","kind":"x"}\n')
