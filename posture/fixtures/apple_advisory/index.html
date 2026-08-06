@@ -1,0 +1,33 @@
+<!-- Offline fixture for the Apple security-advisory witness.
+     A small slice of https://support.apple.com/en-us/100100 (the security-
+     releases index) carrying the bits the donor's _INDEX_ROW_IOS /
+     _INDEX_ROW_MACOS regexes read: each row links an advisory URL to the
+     fix version. iOS/iPadOS share a joint row ("iOS X and iPadOS X"); macOS
+     rows carry a marketing name before the version.
+
+     Two iOS/iPadOS rows are present (16.7.15 older, 17.1 newer) so the
+     earliest-version-wins rule is exercisable: CVE-2026-99910 is re-mentioned
+     in both advisories and must resolve to the EARLIEST fix (16.7.15). One
+     macOS row (Tahoe 26.5) lets the macos product path be exercised too. -->
+<html>
+<head>
+  <meta property="og:title" content="Apple security releases - Apple Support">
+</head>
+<body>
+  <h1>Security releases</h1>
+  <ul>
+    <li>
+      <a href="https://support.apple.com/en-us/HT111111">iOS 16.7.15 and iPadOS 16.7.15</a>
+      &mdash; released 2025
+    </li>
+    <li>
+      <a href="https://support.apple.com/en-us/HT222222">iOS 17.1 and iPadOS 17.1</a>
+      &mdash; released 2025
+    </li>
+    <li>
+      <a href="https://support.apple.com/en-us/HT333333">macOS Tahoe 26.5</a>
+      &mdash; released 2025
+    </li>
+  </ul>
+</body>
+</html>

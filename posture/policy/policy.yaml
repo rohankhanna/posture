@@ -1,0 +1,145 @@
+# posture — trust policy (versioned, dated, auditable)
+#
+# This is trust AS DATA, not trust as code. Changing who is authoritative, in
+# what order, or what to do if a source goes silent = editing this file +
+# bumping `version`. The engine reads it; it never hardcodes trust.
+#
+# Produced / re-evaluated by the `source-alignment` repo against evidence on a
+# cadence. Initial values are conservative working assumptions, not verdicts.
+
+version: "2026-08-06.1"
+supersedes: "2026-08-02.3"
+dated: 2026-08-06
+rationale: |
+  Initial skeleton policy (2026-08-01.1): NVD is the CVE spine today — a
+  foreign (US NIST) coordinate system that over-reports for backport distros
+  (false-alarm); a vendor witness, when present, overrides it. MITRE CVE id
+  assignment nearly lapsed in 2024, so the spine is kept redundant (crosswalk).
+  The other five axes have no wired witness yet -> they are UNKNOWN and loud,
+  never silently clean. Bias directions are working assumptions pending the
+  alignment exercise; re-evaluate with evidence.
+  2026-08-02.1: first real VENDOR witness — ubuntu_tracker on the
+  vulnerability axis, authoritative for Ubuntu kernel CVEs (NVD records them
+  with no fix boundary, over-reporting unknown-fix). order 5 < nvd 10 so the
+  engine runs it LAST and it overrides NVD on the same CVE key. Candidate CVEs
+  come from the device (cve_candidates), not the NVD pass — the fan-out stays
+  pure. debian/apple vendor witnesses follow the same shape when wired.
+  2026-08-02.2: the remaining vendor witnesses — debian_tracker (Debian
+  security-tracker bulk JSON; status mapping resolved/open/undetermined, device
+  assumed fully-updated latest) and apple_advisory (Apple security advisories;
+  iOS/iPadOS/macOS CVE->fixed_in, device_version>=fixed_in->patched). Same
+  shape + override-by-policy-order as ubuntu_tracker. The vulnerability axis
+  now has three real vendor witnesses covering the common distros; the other
+  five axes remain stubbed/UNKNOWN until wired.
+  2026-08-02.3: first real witnesses on previously-STUBBED axes — cyclonedx_sbom
+  (inventory: reads a CycloneDX SBOM the device supplies, emits one present
+  Verdict per component keyed <name>@<version>; the measured floor) and
+  cis_checker (configuration: runs a bundled CIS-style benchmark against a
+  device config snapshot, emits fail/pass per check id; missing setting = fail).
+  Each turns its axis from loud UNKNOWN into a real status when the device
+  supplies input, and is an honest no-op (UNKNOWN) otherwise. exposure/threat/
+  trust remain stubbed.
+  2026-08-06.1: pruned the redundant sbom/cis stub policy entries now that
+  cyclonedx_sbom (inventory) and cis_checker (configuration) are wired real
+  witnesses; the stub registrations were removed to stop duplicate axis
+  entries. exposure/threat/trust remain stubbed.
+
+witnesses:
+  nvd:
+    axes: [vulnerability]
+    weight: high
+    bias: false-alarm          # over-reports for backport distros (wrong yardstick)
+    order: 10
+    conditions:
+      - "backport distros: defer to a vendor witness when one is present"
+      - "header-only apiKey (never query string) — the run-#10 wipe root cause"
+  ubuntu_tracker:
+    axes: [vulnerability]
+    weight: high
+    bias: false-safe           # vendor authoritative; clears NVD false positives
+    order: 5                   # < nvd -> runs last -> overrides on the CVE key
+    conditions:
+      - "Ubuntu hosts only: device supplies cve_candidates + ubuntu_release + ubuntu_packages"
+      - "Needs triage / DNE / Not in release / absent -> no verdict (NVD stands)"
+      - "candidate CVEs are a device input (the fan-out is pure; no peeking at NVD's verdicts)"
+  debian_tracker:
+    axes: [vulnerability]
+    weight: high
+    bias: false-safe           # vendor authoritative; clears NVD false positives
+    order: 5                   # < nvd 10 -> runs last -> overrides on the CVE key
+    conditions:
+      - "Debian hosts only: device supplies cve_candidates + debian_release + debian_packages"
+      - "undetermined / release absent / CVE absent -> no verdict (NVD stands)"
+      - "device assumed fully-updated latest; verdict is a status mapping, not an installed-vs-fixed compare"
+      - "candidate CVEs are a device input (the fan-out is pure; no peeking at NVD's verdicts)"
+  apple_advisory:
+    axes: [vulnerability]
+    weight: high
+    bias: false-safe           # vendor authoritative; clears NVD's false-clean skips
+    order: 5                   # < nvd 10 -> runs last -> overrides on the CVE key
+    conditions:
+      - "Apple hosts only: device supplies cve_candidates + apple_product + os_version"
+      - "CVE not in Apple's feed -> no verdict (NVD stands)"
+      - "candidate CVEs are a device input (the fan-out is pure; no peeking at NVD's verdicts)"
+  # The three stubbed axes — no witness implemented yet. Listed so the policy
+  # records the intended authority + bias for when each is wired, and so the
+  # engine reports UNKNOWN (not "clean") for these axes.
+  shodan:
+    axes: [exposure]
+    weight: medium
+    bias: neutral
+    order: 10
+    conditions: []
+  kev:
+    axes: [threat]
+    weight: high
+    bias: false-safe           # CISA lists only confirmed-exploited -> may miss some
+    order: 10
+    conditions: []
+  slsa:
+    axes: [trust]
+    weight: medium
+    bias: neutral
+    order: 10
+    conditions: []
+  # First REAL witnesses on previously-stubbed axes (turn UNKNOWN into a real
+  # status when the device supplies input; honest no-op / UNKNOWN otherwise).
+  cyclonedx_sbom:
+    axes: [inventory]
+    weight: high
+    bias: neutral             # the SBOM is the measured floor; no over/under-report direction
+    order: 10
+    conditions:
+      - "LOCAL only: reads device['sbom'] (inline CycloneDX dict) or device['sbom_path'] (local JSON file); no network"
+      - "no SBOM supplied -> honest no-op (zero verdicts); axis falls to UNKNOWN via loud degradation"
+      - "one present Verdict per named component, keyed <name>@<version>; nameless components skipped"
+  cis_checker:
+    axes: [configuration]
+    weight: medium
+    bias: false-safe          # community/vendor checks may understate
+    order: 10
+    conditions:
+      - "Linux/server hosts: device supplies a 'config' dict (setting->value)"
+      - "missing setting -> fail (a missing control is not a pass)"
+      - "no config dict supplied -> honest no-op (axis stays UNKNOWN, not clean)"
+      - "device may scope checks via 'cis_checks' list; default = whole benchmark"
+
+degradation:
+  nvd:
+    if_silent_for_days: 14
+    fallback: [osv, vendor_advisory]
+  mitre_cve:
+    if_silent_for_days: 30     # the 2024 near-lapse
+    fallback: [ghsa, osv_id]
+
+spine:
+  # The spine is resolved by ROLE via the glossary, not by a hardcoded word.
+  # `vulnerability_join_key` is the job; `cve` is the term filling it today. If
+  # CVEs are ever replaced, `posture spine rebind vulnerability_join_key <new>`
+  # (human-gated) swaps the term; old joins still resolve via the crosswalk.
+  role: vulnerability_join_key
+  primary_key: cve           # fallback used in pure (no-store) mode
+  crosswalk:
+    - [cve, ghsa]
+    - [cve, usn]
+    - [cve, dsa]

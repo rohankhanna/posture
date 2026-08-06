@@ -1,0 +1,9 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.4",
+  "components": [
+    {"name": "openssl", "version": "3.0.2"},
+    {"name": "nginx", "version": "1.25.3"},
+    {"name": "busybox", "version": "1.36"}
+  ]
+}

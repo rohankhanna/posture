@@ -1,0 +1,12 @@
+# A demo device (Forebode devices.yaml shape) for offline `posture demo`.
+# Running on linux kernel 6.18; the bundled NVD fixture places two unpatched
+# flaws on it (CVE-2026-99901 fixed@6.18.5, CVE-2026-99903 fixed@6.18 incl)
+# and one already-patched (CVE-2026-99902 fixed@6.17). CVE-2026-99904 is a
+# future-series flaw (not affected); CVE-2026-99905 is iPhone-only (filtered).
+id: demo-host
+name: "Demo Linux host"
+os: linux
+os_version: "6.18"
+patch_level: "6.18"
+matchers:
+  - { type: nvd_cpe, cpe: "cpe:2.3:o:linux:linux_kernel", version: "6.18" }

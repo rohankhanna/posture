@@ -1,0 +1,39 @@
+# --- TERRITORY / local-machine state — NEVER committed ---------------------
+# The posture DB is private device/verdict state (the territory), not the spine.
+# CI regenerates it each run from cvelistV5 + NVD; it is never the durable artifact.
+posture.db
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# cvelistV5 clone lives in CI cache (or ~/.local/share/posture/cvelist), not the repo
+cvelist/
+cvelistV5/
+
+# Local XDG posture state (~/.local/share/posture + ~/.config/posture)
+.local/
+.config/posture/
+
+# NVD API key env file (systemd EnvironmentFile) — SECRET, never committed
+.env
+*.env
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+build/
+dist/
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+.DS_Store
+
+# --- IMPORTANT: spine/ is NOT ignored ---------------------------------------
+# spine/ is the committed, cosign-signed output — the whole point of the CI-spine.
+# Do NOT add it here.

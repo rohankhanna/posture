@@ -1,0 +1,41 @@
+[Unit]
+Description=posture — self-course-correction sweep (vocab monitor scan + repair reconcile, ~daily)
+Documentation=man:posture(1)
+
+[Service]
+Type=oneshot
+# The self-course-correction sweep runs the two AUTO halves of posture's
+# self-updating map, back to back:
+#
+#   1. `posture monitor run`  — structured vocab scan: surfaces advisory/
+#      inventory format NAMES not yet in the glossary as candidate terms
+#      (the machine notices; the human decides to trust).
+#   2. `posture repair reconcile` — scans system state for drift and raises
+#      RepairProposals (deprecated-term-still-referenced, source-drifted,
+#      stale-policy, orphan-distrusted). AUTO to raise; HUMAN to apply any
+#      that touch trust.
+#
+# Neither step writes trust: candidates sit in a review queue; proposals sit
+# as open. Both are cheap and never wipe stored verdicts, so a daily-ish
+# sweep is safe. This is the map half of posture (the territory is assess,
+# run on demand).
+TimeoutStartSec=10min
+Environment=PYTHONUNBUFFERED=1
+# systemd user services don't inherit your shell PATH (mise/PiP bin dirs are
+# missing), so add the dir that holds `posture`. %h is your home.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Source secrets (NVD_API_KEY) from a perms-locked file, not the unit itself.
+# The reconcile sweep doesn't hit NVD, but the key is loaded for symmetry
+# with posture-stream.service so the unit file doesn't need an edit if a
+# later step adds an enrich-dependent check.
+EnvironmentFile=%h/.config/posture/env
+# DB path convention: the default (~/.local/share/posture/posture.db), same
+# as posture-stream.service. No --db flag so the units stay in sync if the
+# default ever moves.
+# Type=oneshot allows multiple ExecStart lines, run sequentially. Each exits
+# 0 before the next starts; a failure in the vocab scan still lets reconcile
+# run (use `posture-reconcile.service`'s exit code as the overall signal).
+ExecStart=/usr/bin/env posture monitor run
+ExecStart=/usr/bin/env posture repair reconcile
+StandardOutput=journal
+StandardError=journal

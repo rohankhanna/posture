@@ -1,0 +1,190 @@
+name: spine
+# CI = ingestion (public + signed + auditable MAP). No device data here.
+# The map/territory split made concrete: this workflow feeds & enriches the
+# catalog (the spine, the MAP); clients git clone + verify + `posture assess`
+# locally over their private fleet (the TERRITORY). No feeding or enrichment
+# runs from anyone's local machine.
+
+on:
+  schedule:
+    # 03:17 UTC daily — off-zero minute, off-top-of-hour (docs/sources.md item 7:
+    # high-load may delay/drop round-number cron). The daily push is also the
+    # keepalive against GitHub's 60-day auto-disable of scheduled workflows.
+    - cron: "17 3 * * *"
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/spine.yml'
+      - 'posture/**'
+      - 'pyproject.toml'
+      # NOTE: 'spine/**' intentionally NOT listed — the bot's own spine commit
+      # must not re-trigger this workflow (infinite loop).
+  workflow_dispatch:        # manual "run now"
+
+# Fork PRs never reach the secrets (NVD_API_KEY is withheld from fork-PR runs by
+# GitHub), and no `pull_request` trigger is registered at all. The secret + cosign
+# steps below are ALSO guarded `if: github.event_name != 'pull_request'` as a
+# belt-and-braces check.
+permissions:
+  contents: write           # git push spine/ back to this repo
+  id-token: write           # cosign keyless via GitHub OIDC
+  actions: read             # restore cache
+
+concurrency:
+  group: spine-ingest
+  # never cancel a mid-ingest run — mirrors the engine's no-wwipe rule. A killed
+  # run mid-fetch could leave the cached posture.db half-written; let it finish.
+  cancel-in-progress: false
+
+env:
+  DB_PATH: ${{ github.workspace }}/cache/posture.db
+  # POSTURE_CVELIST_DIR is the PARENT of the cvelistV5 clone (mirrors the default
+  # ~/.local/share/posture/cvelist -> cvelistV5/). The cache holds this parent.
+  CLONE_DIR: ${{ github.workspace }}/cache/cvelist
+  POSTURE_CVELIST_DIR: ${{ github.workspace }}/cache/cvelist
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest   # ephemeral + safe (no PR-pwn on a public repo)
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install posture
+        run: pip install .
+        # git + curl are preinstalled on ubuntu-latest (external subprocess deps
+        # not declared in pyproject.toml).
+
+      # --- persistent state across runs (else the stream cursor resets and
+      #     stream would re-bootstrap every run, producing nothing) ---
+      - name: Restore cvelistV5 clone cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CLONE_DIR }}
+          key: cvelist-blobless-v1
+          restore-keys: cvelist-blobless-
+
+      - name: Restore posture.db cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.DB_PATH }}
+          key: posture-db-v1
+          enableCrossOsArchive: true
+
+      - name: Stream (MITRE detect — skeletons only, only-adds)
+        run: |
+          mkdir -p cache
+          posture stream --db "$DB_PATH"
+
+      - name: Refresh (catalog-only; NO devices, NO verdicts)
+        if: github.event_name != 'pull_request'
+        env:
+          # header-only apiKey (nvd_cve.py:253,257) — the run-#10 fleet-wipe guard.
+          # Never travels in the query string; CI just injects it as an env var.
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          posture refresh --no-devices --cap 200 --db "$DB_PATH"
+          # 'verdicts upserted 0 across 0 device(s)' is the proof no territory was touched.
+
+      # DB-only course-correction (cheap; raise proposals/signals but apply no
+      # trust). discover writes candidates — which ARE part of the exported spine.
+      - name: Course-correct (DB-only)
+        run: |
+          posture monitor run --db "$DB_PATH"
+          posture repair reconcile --db "$DB_PATH"
+          posture discover --db "$DB_PATH"
+
+      - name: Export spine (sharded JSONL + manifest)
+        run: posture spine export --db "$DB_PATH" --out .
+
+      - name: Install cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign manifest (cosign keyless via GitHub OIDC)
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_EXPERIMENTAL: "1"   # keyless OIDC mode (no key material to manage)
+        run: |
+          cosign sign-blob --yes \
+            --output-signature spine/state.sig \
+            --output-certificate spine/state.crt \
+            spine/manifest.json
+
+      - name: Commit + push spine/
+        run: |
+          git config user.name  "posture-ci[bot]"
+          git config user.email "actions@github.com"
+          git add spine/
+          if git diff --cached --quiet; then
+            echo "no spine changes — keepalive commit only (resets 60-day auto-disable)"
+            git commit --allow-empty -m "spine: keepalive $(date -u +%FT%TZ)"
+          else
+            git commit -m "spine: $(date -u +%FT%TZ)"
+          fi
+          git push
+        # GPG-signed commits (the history layer) are deferred — this first cut
+        # ships the sigstore state.sig snapshot attestation only (docs/sources.md
+        # item 6 "both"; the signature layer is the non-negotiable one).
+
+  # --- Credentialed lane scaffold --------------------------------------------
+  # Runs gated vendor witnesses (SAP/Snyk/Tenable/Qualys/Cisco/VMware) into a
+  # SEPARATE PRIVATE repo (rohankhanna/posture-spine-cred), never into this repo's
+  # history — so the later public flip of this repo can't leak credentialed
+  # content (some of which, e.g. SAP, is non-redistributable).
+  #
+  # Dormant by default (vars.CREDENTIALED_READY != 'true') until the first vendor
+  # witness is wired + its secret added. Wiring order = credential friction:
+  # Cisco openVuln + VMware (free reg/account) -> Snyk/Tenable/Qualys (commercial)
+  # -> SAP (contract, non-redistributable, confined here).
+  credentialed:
+    needs: ingest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ vars.CREDENTIALED_READY == 'true' && github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install posture
+        run: pip install .
+
+      - name: Restore posture.db cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.DB_PATH }}
+          key: posture-db-v1
+          enableCrossOsArchive: true
+
+      # TODO(future): run credentialed vendor witnesses here (none wired yet).
+      # Each adds: a new Witness declaring its key_kind + a repo secret for its
+      # credential + provenance stamp 'credentialed'. Non-redistributable output
+      # stays in posture-spine-cred (this job), never in the public repo.
+      - name: Export credentialed spine (empty until witnesses wired)
+        run: |
+          mkdir -p spine
+          posture spine export --db "$DB_PATH" --out .
+
+      - name: Check out private posture-spine-cred
+        uses: actions/checkout@v4
+        with:
+          repository: rohankhanna/posture-spine-cred
+          path: spine-cred
+          ssh-key: ${{ secrets.POSTURE_SPINE_CRED_DEPLOY_KEY }}
+      - name: Commit + push credentialed spine
+        run: |
+          rm -rf spine-cred/spine
+          cp -a spine spine-cred/spine
+          cd spine-cred
+          git config user.name  "posture-ci[bot]"
+          git config user.email "actions@github.com"
+          git add spine/
+          git commit -m "credentialed spine: $(date -u +%FT%TZ)" || true
+          git push || echo "nothing to push"

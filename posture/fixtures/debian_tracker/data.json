@@ -1,0 +1,25 @@
+{
+  "linux": {
+    "CVE-2026-99901": {
+      "releases": {
+        "trixie": {"status": "resolved", "fixed_version": "6.18.5-1"},
+        "bookworm": {"status": "open", "fixed_version": ""}
+      }
+    },
+    "CVE-2026-99903": {
+      "releases": {
+        "trixie": {"status": "resolved", "fixed_version": "0"}
+      }
+    },
+    "CVE-2026-99902": {
+      "releases": {
+        "trixie": {"status": "open", "fixed_version": ""}
+      }
+    },
+    "CVE-2026-99907": {
+      "releases": {
+        "trixie": {"status": "undetermined", "fixed_version": ""}
+      }
+    }
+  }
+}
