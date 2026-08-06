@@ -217,7 +217,14 @@ def _backfill_tick(conn, ecosystems, done_set, base, cap, policy_version,
                 stats["skipped"] += 1
                 count += 1
                 continue
-            skel = osv_skeleton(rec, "osv", "osv", policy_version, fetched_at)
+            try:
+                skel = osv_skeleton(rec, "osv", "osv", policy_version, fetched_at)
+            except Exception:
+                # defense in depth: a malformed record that slips past
+                # osv_record's guards skips, never sinks the tick.
+                stats["skipped"] += 1
+                count += 1
+                continue
             if not skel:
                 stats["skipped"] += 1
                 count += 1
@@ -290,7 +297,14 @@ def _incremental_tick(conn, ecosystems, base, cap, policy_version, fetched_at,
                 stats["skipped"] += 1
                 count += 1
                 continue
-            skel = osv_skeleton(pdata, "osv", "osv", policy_version, fetched_at)
+            try:
+                skel = osv_skeleton(pdata, "osv", "osv", policy_version, fetched_at)
+            except Exception:
+                # defense in depth: a malformed incremental record skips, never
+                # sinks the tick.
+                stats["skipped"] += 1
+                count += 1
+                continue
             if not skel:
                 stats["skipped"] += 1
                 count += 1
