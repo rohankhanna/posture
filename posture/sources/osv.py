@@ -112,13 +112,20 @@ def osv_ingest_tick(conn, cap: int = 1000, policy_version: str = "",
 
     Idempotent + only-adds + no-wipe: writes only ``cves`` catalog rows +
     ``crosswalk`` alias edges + ``seen_flaws``; never touches ``verdicts`` (the
-    map is not the territory). On fetch failure returns ``error`` and touches
-    nothing.
+    map is not the territory). On ``ecosystems.txt`` fetch failure returns
+    ``error`` and touches nothing (no catalog to walk). A single ecosystem's
+    ``all.zip`` / ``modified_id.csv`` fetch failure is BEST-EFFORT: that ecosystem
+    is skipped (left NOT done -> retried next tick) and the tick continues to the
+    next ecosystem — one transient ecosystem outage must not sink the whole
+    ingest tick (and the CI spine commit downstream). Only a TOTAL outage (every
+    attempted ecosystem failed AND nothing was upserted) surfaces ``error``.
 
     Returns a stats dict with keys: ``fetched_ecosystem`` (str|None), ``upserted``
     (int), ``skipped`` (int), ``ecosystems_done`` (bool), ``incremental`` (bool),
-    ``done`` (bool), ``error`` (str|None). ``done=True`` only when all ecosystems
-    are backfilled AND an incremental tick made no changes.
+    ``done`` (bool), ``error`` (str|None), ``failed_ecosystems`` (list[str] —
+    ecosystems whose ``all.zip``/csv fetch failed this tick, best-effort skipped).
+    ``done=True`` only when all ecosystems are backfilled AND an incremental tick
+    made no changes.
     """
     from .. import store as _store
 
@@ -126,7 +133,7 @@ def osv_ingest_tick(conn, cap: int = 1000, policy_version: str = "",
     fetched_at = now or _now()
     stats: dict = {"fetched_ecosystem": None, "upserted": 0, "skipped": 0,
                    "ecosystems_done": False, "incremental": False,
-                   "done": False, "error": None}
+                   "done": False, "error": None, "failed_ecosystems": []}
 
     # Fetch ecosystems.txt (plain text, NOT json — take the raw body, 3rd tuple
     # element, and splitlines()).
@@ -175,6 +182,7 @@ def _backfill_tick(conn, ecosystems, done_set, base, cap, policy_version,
         conn.commit()
     cursor_eco = cursor["ecosystem"] if cursor else None
     cursor_idx = cursor["index"] if cursor else 0
+    done_grew = False   # did any ecosystem get marked done this tick?
 
     for eco in ecosystems:
         if eco in done_set:
@@ -190,15 +198,34 @@ def _backfill_tick(conn, ecosystems, done_set, base, cap, policy_version,
         # fetch so the zip bytes are not corrupted by a lossy utf-8 decode).
         zbody, zcode = _net.curl_get_bytes(f"{base}/{eco}/all.zip", max_time=300)
         if zcode != 200 or not zbody:
-            stats["error"] = f"all.zip fetch failed for {eco} (http {zcode})"
-            return stats
+            # Best-effort: a single ecosystem's all.zip fetch failure must NOT
+            # sink the whole ingest tick (and the CI spine commit downstream).
+            # Skip this ecosystem (it stays NOT in done_set -> retried next
+            # tick) and continue. If a mid-zip cursor pointed here, clear it so a
+            # persistently-failing cursor ecosystem doesn't block all progress
+            # (the failed fetch has no mid-zip progress to preserve; re-running
+            # from the start next tick is harmless — upserts are idempotent).
+            if cursor_eco == eco:
+                _store.set_state(conn, OSV_BACKFILL_CURSOR_KEY, "")
+                conn.commit()
+                cursor_eco = None
+                cursor_idx = 0
+            stats["failed_ecosystems"].append(eco)
+            continue
 
         # Stream-parse the zip from in-memory bytes (do NOT extract to disk).
         try:
             zf = zipfile.ZipFile(io.BytesIO(zbody))
-        except Exception as exc:
-            stats["error"] = f"zip parse failed for {eco}: {exc}"
-            return stats
+        except Exception:
+            # Same best-effort: a corrupt zip for one ecosystem skips it, not
+            # the whole tick. Clear a mid-zip cursor here too.
+            if cursor_eco == eco:
+                _store.set_state(conn, OSV_BACKFILL_CURSOR_KEY, "")
+                conn.commit()
+                cursor_eco = None
+                cursor_idx = 0
+            stats["failed_ecosystems"].append(eco)
+            continue
         names = [n for n in zf.namelist() if n.endswith(".json")]
         start = cursor_idx if cursor_eco == eco else 0
 
@@ -246,11 +273,24 @@ def _backfill_tick(conn, ecosystems, done_set, base, cap, policy_version,
                              json.dumps(sorted(done_set)))
             _store.set_state(conn, OSV_BACKFILL_CURSOR_KEY, "")  # clear cursor
             conn.commit()
+            done_grew = True
             # Resume subsequent ecosystems from the start of their zips.
             cursor_eco = None
             cursor_idx = 0
 
     stats["ecosystems_done"] = set(ecosystems) <= done_set
+    # Best-effort completion: a per-ecosystem failure skipped + continued above.
+    # Only surface ``error`` (exit 1) on a TOTAL outage — every attempted
+    # ecosystem failed AND nothing was upserted AND none was newly marked done
+    # (an exhausted-but-empty zip is real progress, not a failure). A partial
+    # failure (some ecosystems succeeded) stays exit 0; the CLI reports the
+    # failed ecosystems as a warning so a transient outage is visible but does
+    # not sink the daily spine commit.
+    if (stats["upserted"] == 0 and stats["failed_ecosystems"]
+            and not done_grew):
+        stats["error"] = (
+            f"all.zip fetch/parse failed for every attempted ecosystem "
+            f"({', '.join(stats['failed_ecosystems'])})")
     return stats
 
 
@@ -275,10 +315,12 @@ def _incremental_tick(conn, ecosystems, base, cap, policy_version, fetched_at,
         _, ccode, cbody = _net.curl_get(f"{base}/{eco}/modified_id.csv",
                                         max_time=120)
         if ccode != 200 or not cbody:
+            stats["failed_ecosystems"].append(eco)   # best-effort: skip + continue
             continue
         try:
             reader = _csv.DictReader(cbody.splitlines())
         except Exception:
+            stats["failed_ecosystems"].append(eco)
             continue
 
         for row in reader:

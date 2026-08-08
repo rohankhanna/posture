@@ -655,6 +655,13 @@ def _cmd_ingest_osv(args) -> int:
           f"{stats['skipped']} skipped · {phase} · ecosystem {eco}"
           f"{' · all ecosystems backfilled' if stats['ecosystems_done'] else ''}"
           f"{' · DONE (no incremental changes)' if stats['done'] else ''}")
+    # Best-effort per-ecosystem: a transient all.zip / modified_id.csv failure
+    # for one (or some) ecosystems skips them (retried next tick) and does NOT
+    # fail the ingest job — but is reported here so the outage is visible.
+    failed = stats.get("failed_ecosystems") or []
+    if failed:
+        print(f"  warning: {len(failed)} ecosystem(s) skipped "
+              f"(fetch failed, retried next tick): {', '.join(failed)}")
     line = _attr.attribution_for("osv")
     if line:
         print(f"  {line}")

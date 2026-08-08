@@ -392,3 +392,88 @@ def test_osv_backfill_skips_malformed_record(conn, tmp_path, monkeypatch):
     # "skip records with a valid id".
     bad = store.get_flaw(conn, "OSV-BAD")
     assert bad is not None and bad["cvss_vector"] is None
+
+
+# --- 9. best-effort per-ecosystem (one ecosystem's all.zip failure must not
+# sink the ingest tick / the daily spine commit) -----------------------------
+
+def test_backfill_skips_failing_ecosystem_continues_to_next(conn, tmp_path,
+                                                             monkeypatch):
+    """One ecosystem's all.zip fetch failure (404 / http 0 / timeout) is
+    BEST-EFFORT: the tick skips it (retried next tick, stays NOT done) and
+    continues to the next ecosystem. The good ecosystem is upserted; the bad
+    one is recorded in failed_ecosystems; no error (exit 0). This is the fix
+    for the CI failure where a single ecosystem outage sank the whole ingest
+    job + the daily spine commit."""
+    _write_ecosystems(tmp_path, ["Good", "Bad"])
+    _build_zip(tmp_path, "Good", [_osv_json("OSV-GOOD-1", cve_alias="CVE-2026-1")])
+    # 'Bad' has NO all.zip -> curl_get_bytes returns (None, 404) -> skip.
+    _patch_fetch(monkeypatch, tmp_path)
+    stats = _osv.osv_ingest_tick(conn, cap=100, now="t", base_url=str(tmp_path))
+    assert stats["error"] is None                 # partial failure -> exit 0
+    assert stats["upserted"] == 1                 # the Good ecosystem landed
+    assert stats["failed_ecosystems"] == ["Bad"]  # the bad one recorded
+    assert store.get_flaw(conn, "OSV-GOOD-1") is not None
+    # Bad stays NOT done (retried next tick).
+    done = json.loads(store.get_state(conn, _osv.OSV_DONE_ECOSYSTEMS_KEY) or "[]")
+    assert "Bad" not in done
+    assert "Good" in done
+
+
+def test_backfill_total_outage_surfaces_error(conn, tmp_path, monkeypatch):
+    """If EVERY attempted ecosystem's all.zip fails (total OSV outage), the tick
+    surfaces ``error`` (exit 1) — a genuine total failure must not silently pass.
+    Distinguished from a partial failure (some ecosystems succeeded = exit 0)."""
+    _write_ecosystems(tmp_path, ["Down1", "Down2"])
+    # neither ecosystem has an all.zip -> both fetches fail.
+    _patch_fetch(monkeypatch, tmp_path)
+    stats = _osv.osv_ingest_tick(conn, cap=100, now="t", base_url=str(tmp_path))
+    assert stats["error"] is not None             # total outage -> exit 1
+    assert stats["upserted"] == 0
+    assert sorted(stats["failed_ecosystems"]) == ["Down1", "Down2"]
+    assert conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0] == 0
+
+
+def test_backfill_cursor_ecosystem_failure_clears_cursor_unblocks_next(conn,
+        tmp_path, monkeypatch):
+    """A mid-zip cursor pointing at an ecosystem whose all.zip then fails must
+    be CLEARED (not stuck): the failed fetch has no mid-zip progress to preserve,
+    and without clearing, the cursor_eco != eco skip-ahead would block every
+    later ecosystem too. After clearing, the next ecosystem proceeds."""
+    _write_ecosystems(tmp_path, ["Bad", "Good"])
+    _build_zip(tmp_path, "Good", [_osv_json("OSV-GOOD-1", cve_alias="CVE-2026-1")])
+    # 'Bad' has NO all.zip. Seed a mid-zip cursor at Bad so the tick resumes there.
+    store.set_state(conn, _osv.OSV_BACKFILL_CURSOR_KEY,
+                    json.dumps({"ecosystem": "Bad", "index": 5}))
+    conn.commit()
+    _patch_fetch(monkeypatch, tmp_path)
+    stats = _osv.osv_ingest_tick(conn, cap=100, now="t", base_url=str(tmp_path))
+    assert stats["error"] is None                 # Good succeeded -> partial, exit 0
+    assert stats["upserted"] == 1
+    assert stats["failed_ecosystems"] == ["Bad"]
+    # cursor was cleared (not left pointing at the failing Bad).
+    assert store.get_state(conn, _osv.OSV_BACKFILL_CURSOR_KEY) == ""
+    assert store.get_flaw(conn, "OSV-GOOD-1") is not None
+
+
+def test_incremental_records_failing_ecosystem_skips(conn, tmp_path,
+                                                     monkeypatch):
+    """The incremental sweep already skipped a failed modified_id.csv; it now
+    ALSO records the ecosystem in failed_ecosystems (best-effort + visible).
+    One ecosystem's csv missing -> skipped + recorded, others proceed, exit 0."""
+    # Both ecosystems already done -> the tick takes the incremental path.
+    _write_ecosystems(tmp_path, ["Good", "Bad"])
+    store.set_state(conn, _osv.OSV_DONE_ECOSYSTEMS_KEY,
+                    json.dumps(["Good", "Bad"]))
+    conn.commit()
+    # Good has a modified_id.csv with one new record past the cursor; Bad has none.
+    _write_modified_csv(tmp_path, "Good",
+                       [{"id": "OSV-GOOD-1", "modified": "2026-08-06T00:00:00Z"}])
+    _write_record_json(tmp_path, "Good", _osv_json("OSV-GOOD-1", cve_alias="CVE-2026-1"))
+    _patch_fetch(monkeypatch, tmp_path)
+    stats = _osv.osv_ingest_tick(conn, cap=100, now="t", base_url=str(tmp_path))
+    assert stats["error"] is None
+    assert stats["incremental"] is True
+    assert stats["upserted"] == 1                 # Good's new record landed
+    assert stats["failed_ecosystems"] == ["Bad"]  # Bad's csv missing -> recorded
+    assert store.get_flaw(conn, "OSV-GOOD-1") is not None
