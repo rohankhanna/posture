@@ -25,6 +25,9 @@ ATTRIBUTIONS: dict[str, str] = {
     # osv: OSV.dev / GCS export — aggregate of many ecosystem DBs; the hub itself
     # is CC-BY 4.0 (OSV.dev), with per-ecosystem licenses varying.
     "osv": "Vulnerability data from OSV.dev (aggregated ecosystem advisories).",
+    # apple_advisory: Apple security advisories are public; no formal ToU
+    # attribution required, but noting the source is honest.
+    "apple_advisory": "Apple fix-version data from Apple security advisories (support.apple.com).",
 }
 
 

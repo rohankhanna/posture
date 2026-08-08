@@ -132,6 +132,18 @@ jobs:
         run: |
           posture ingest kev --db "$DB_PATH"
 
+      # Apple advisory fix-version overlay (apple_fixes). Apple's own advisories
+      # are authoritative for iOS/iPadOS/macOS fix versions (NVD's Apple coverage
+      # is thin: it records the CPE but often no version range -> the NVD witness
+      # silently skips most Apple CVEs). Per-product full refresh over Apple's
+      # live security-releases index. No secret — Apple's support pages are
+      # public. `--history` is OFF in CI by default (the Wayback-historical
+      # recovery path adds many fetches per product; enable it on a separate,
+      # rate-budgeted cadence if pre-index CVE coverage is wanted in the spine).
+      - name: Ingest Apple (advisory fix-version overlay)
+        run: |
+          posture ingest apple --db "$DB_PATH"
+
       - name: Refresh (catalog-only; NO devices, NO verdicts)
         if: github.event_name != 'pull_request'
         env:
