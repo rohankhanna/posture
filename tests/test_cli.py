@@ -44,3 +44,26 @@ def test_refresh_default_keeps_devices():
     args = _parse("refresh")
     assert args.no_devices is False
     assert args.devices  # defaults to DEFAULT_DEVICES, not None
+
+
+def test_cmd_demo_runs_end_to_end_installs_policy(tmp_path):
+    """Regression: ``posture demo`` runs end-to-end through
+    ``_install_policy_if_needed`` (which reads ``policy.supersedes``) +
+    ``_inject_catalog_overlays`` + ``engine.assess`` without raising. The
+    argparse routing smoke tests above never execute a handler, so an
+    attribute typo in ``_install_policy_if_needed`` (supersedes -> supcedes)
+    once shipped green locally and only surfaced in CI's Stream step. This
+    pins the policy-attribute access + the territory injection path that the
+    routing tests don't reach."""
+    from posture.cli import build_parser, _cmd_demo
+
+    db = tmp_path / "demo.db"
+    args = build_parser().parse_args(["demo", "--db", str(db)])
+    rc = _cmd_demo(args)
+    assert rc == 0
+    # the policy version row was written (install_policy_if_needed ran clean).
+    from posture import store
+    conn = store.connect(str(db), readonly=True)
+    rows = conn.execute(
+        "SELECT version FROM policy_versions").fetchall()
+    assert len(rows) >= 1
