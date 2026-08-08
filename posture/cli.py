@@ -44,6 +44,7 @@ from .sources.nvd_cve import NvdCveWitness
 from .sources import kev as _kev_mod
 from .sources import ghsa as _ghsa_mod
 from .sources import osv as _osv_mod
+from .sources import apple_ingest as _apple_ingest_mod
 from .sources.ubuntu_tracker import UbuntuTrackerWitness
 from .sources.debian_tracker import DebianTrackerWitness
 from .sources.apple_advisory import AppleAdvisoryWitness
@@ -560,6 +561,31 @@ def _cmd_ingest_kev(args) -> int:
     return 0
 
 
+def _cmd_ingest_apple(args) -> int:
+    policy = _load_policy(args.policy)
+    products = list(args.product) if args.product else list(_apple_ingest_mod.PRODUCTS)
+    with _open_db(args.db) as conn:
+        _install_policy_if_needed(conn, policy)
+        for product in products:
+            stats = _apple_ingest_mod.apple_ingest_tick(
+                conn, product=product, history=args.history,
+                now=_engine._now())
+            if stats["error"]:
+                print(f"ingest apple [{product}]: no-op ({stats['error']})")
+                continue
+            hist = ""
+            if stats["history"]:
+                hist = (f" · history +{stats['history_cves_added']}"
+                        f"/~{stats['history_cves_earlier']}")
+            print(f"ingest apple [{product}]: {stats['rows']} overlay row(s) "
+                  f"(index {stats['index_cves']} cves{hist})")
+        conn.commit()
+    line = _attr.attribution_for("apple_advisory")
+    if line:
+        print(f"  {line}")
+    return 0
+
+
 def _cmd_ingest_ghsa(args) -> int:
     policy = _load_policy(args.policy)
     with _open_db(args.db) as conn:
@@ -799,6 +825,12 @@ def build_parser() -> argparse.ArgumentParser:
     spo = psub.add_parser("osv", help="osv.dev hub tick (self-enriched OSV peer; per-ecosystem all.zip backfill + modified_id.csv incremental)")
     spo.add_argument("--cap", type=int, default=1000, help="max records to ingest this tick (<=0 = unlimited)")
     db_arg(spo); pol_arg(spo); spo.set_defaults(func=_cmd_ingest_osv)
+    spa = psub.add_parser("apple", help="Apple advisory fix-version overlay (CVE+product-keyed; per-product full refresh; optional Wayback historical recovery)")
+    spa.add_argument("--product", action="append", default=None,
+                     help="product slug to ingest (iphone_os|ipados|macos); repeatable, default all three")
+    spa.add_argument("--history", action="store_true",
+                    help="also recover pre-index CVEs from Wayback's archived HT1222/HT201222 snapshots (more fetches, rate-heavier)")
+    db_arg(spa); pol_arg(spa); spa.set_defaults(func=_cmd_ingest_apple)
 
     sp = sub.add_parser("refresh", help="incremental NVD enrichment + per-CVE re-decide (wipe-proof; never a bulk re-pull)")
     sp.add_argument("--devices", default=DEFAULT_DEVICES, help="fleet YAML (list of device dicts)")

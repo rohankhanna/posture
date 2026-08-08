@@ -230,7 +230,8 @@ def _ge(installed: str, fixed: str) -> bool:
 
 
 def build_fix_map(index_html: str, fetch_advisory_html,
-                  product: str = "iphone_os") -> dict[str, str]:
+                  product: str = "iphone_os",
+                  adv_of: dict[str, str] | None = None) -> dict[str, str]:
     """Build ``{cve_id: fixed_in}`` for ``product``.
 
     ``fetch_advisory_html(version, url, adv_id) -> html_str | None`` is the
@@ -245,6 +246,12 @@ def build_fix_map(index_html: str, fetch_advisory_html,
     whose og:title carries a different product's version (a Safari/iOS advisory
     hit during a macOS pass) yields ``None`` and is skipped, so one product's
     backfill never contaminates the other's fixed-version table.
+
+    ``adv_of`` (optional out-param): when supplied, populated in place as
+    ``{cve_id: advisory_id}`` for every CVE whose fix version is recorded here
+    — the per-CVE advisory provenance the CI ingestion tick writes to the
+    ``apple_fixes`` overlay's ``advisory_id`` column. Existing callers omit it
+    and see no behavior change.
     """
     rows = parse_index(index_html, product)
     # Oldest first so the first sighting of a CVE is its earliest fix version.
@@ -264,6 +271,8 @@ def build_fix_map(index_html: str, fetch_advisory_html,
             if cid in fixed:
                 continue  # earliest fix already recorded
             fixed[cid] = page_ver
+            if adv_of is not None:
+                adv_of[cid] = adv_id
     return fixed
 
 
@@ -387,7 +396,8 @@ def discover_urls_from_refs(refs) -> list[str]:
 def backfill_fix_map(urls, fetch_html, product: str = "iphone_os",
                      base: dict[str, str] | None = None,
                      covered_adv_ids: set[str] | None = None,
-                     delay: float = 0.0) -> tuple[dict[str, str], dict]:
+                     delay: float = 0.0,
+                     adv_of: dict[str, str] | None = None) -> tuple[dict[str, str], dict]:
     """Backfill the ``{cve_id: fixed_in}`` map for ``product`` from the advisory
     ``urls`` (Wayback-discovered historical + NVD-ref-discovered).
 
@@ -403,6 +413,12 @@ def backfill_fix_map(urls, fetch_html, product: str = "iphone_os",
     iOS backfill — ``parse_advisory_version`` returns ``None``) are skipped so
     one product's backfill never contaminates the other's fixed-version table.
     Best-effort: a failed advisory fetch is skipped, never a hard fail.
+
+    ``adv_of`` (optional out-param): when supplied, populated in place as
+    ``{cve_id: advisory_id}`` for every CVE this backfill ADDS or REPLACES with
+    an earlier sighting — kept in lockstep with the merge so the overlay's
+    ``advisory_id`` column always names the advisory that states the recorded
+    (earliest) fix version. Existing callers omit it and see no behavior change.
 
     Faithful to the donor's ``backfill`` but map-based (posture witnesses replay
     per-assess and share no DB across runs), returning ``(merged_map, stats)``
@@ -437,9 +453,13 @@ def backfill_fix_map(urls, fetch_html, product: str = "iphone_os",
             if cur is None:
                 merged[cid] = version
                 stats["cves_added"] += 1
+                if adv_of is not None:
+                    adv_of[cid] = adv_id
             elif _earlier(version, cur):
                 merged[cid] = version
                 stats["cves_earlier"] += 1
+                if adv_of is not None:
+                    adv_of[cid] = adv_id
         if delay and not first:
             time.sleep(delay)
         first = False

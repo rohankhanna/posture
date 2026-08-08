@@ -49,7 +49,8 @@ SPINE_DIR = "spine"
 # The MAP tables — the spine. Territory/engine-internal tables are deliberately
 # absent: verdicts, device_posture, health_*, glossary, term_signals,
 # spine_bindings, repair_proposals, policy_versions, state.
-FLAT_TABLES = ("crosswalk", "candidates", "distrust_marks", "seen_flaws", "kev")
+FLAT_TABLES = ("crosswalk", "candidates", "distrust_marks", "seen_flaws", "kev",
+               "apple_fixes")
 
 
 def _now() -> str:
@@ -130,6 +131,7 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
         "distrust_marks": _store.distrust_marks,
         "seen_flaws": _store.seen_flaws,
         "kev": _store.kev_all,
+        "apple_fixes": _store.apple_fixes_all,
     }
     for name in FLAT_TABLES:
         rows = loaders[name](conn)
@@ -219,7 +221,8 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
     manifest = json.loads((root / "manifest.json").read_text())
 
     stats = {k: 0 for k in ("flaws", "crosswalk", "candidates",
-                           "distrust_marks", "seen_flaws", "kev")}
+                           "distrust_marks", "seen_flaws", "kev",
+                           "apple_fixes")}
 
     # --- flaws: full INSERT OR REPLACE (all columns, including enrich_state,
     #     distrusted, distrust_reason, discovered_at — a faithful mirror of
@@ -305,6 +308,20 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
              row.get("fetched_at")),
         )
         stats["kev"] += 1
+
+    # --- apple_fixes: INSERT OR REPLACE (cve_id, product PK) — the Apple
+    #     fix-version overlay. Per-product idempotent refresh on the ingest side
+    #     (DELETE WHERE product + INSERT); on import we INSERT OR REPLACE so a
+    #     re-import replaces, never duplicates.
+    for row in _read_jsonl(root / "apple_fixes.jsonl"):
+        conn.execute(
+            """INSERT OR REPLACE INTO apple_fixes
+                 (cve_id, product, fixed_in, advisory_id, fetched_at)
+               VALUES (?,?,?,?,?)""",
+            (row["cve_id"], row.get("product"), row.get("fixed_in"),
+             row.get("advisory_id"), row.get("fetched_at")),
+        )
+        stats["apple_fixes"] += 1
 
     conn.commit()
     # surface any drift between manifest counts and what we loaded — but only

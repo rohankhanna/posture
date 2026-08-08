@@ -239,6 +239,27 @@ CREATE TABLE IF NOT EXISTS kev (
     fetched_at       TEXT
 );
 
+-- Apple advisory fix-version overlay — the apple_fixes map. Apple's own
+-- security advisories are authoritative for iOS/iPadOS/macOS fix versions
+-- (NVD's Apple coverage is thin: it records the CPE but often no version
+-- range, so the NVD witness silently skips most Apple CVEs). This is a
+-- (cve_id, product)-keyed OVERLAY (not a new flaw_type): it records the
+-- earliest Apple version that fixed each CVE for each product, plus the
+-- advisory article id that states it, so a witness (or territory assess)
+-- can read a durable fix map instead of replaying Apple's index + every
+-- advisory per assess. CI-side ingestion builds it (live index + optional
+-- Wayback historical recovery); per-product idempotent full refresh
+-- (DELETE WHERE product + INSERT), so advisories aged off the index do not
+-- leave stale rows.
+CREATE TABLE IF NOT EXISTS apple_fixes (
+    cve_id       TEXT NOT NULL,
+    product      TEXT NOT NULL,   -- iphone_os | ipados | macos
+    fixed_in     TEXT,            -- earliest Apple version that fixed this CVE
+    advisory_id  TEXT,            -- the HTxxxx / numeric article that states it
+    fetched_at   TEXT,
+    PRIMARY KEY (cve_id, product)
+);
+
 -- Generic key/value state — the stream cursor lives here
 -- (state key "stream:mitre_cursor" = the last-processed cvelistV5 tip SHA), as
 -- do "stream:last_tick" / "stream:last_summary". A point-in-time sample, not a
@@ -1093,6 +1114,62 @@ def kev_for_cve(conn, cve_id: str) -> dict | None:
     except (ValueError, TypeError):
         d["cwes"] = []
     return d
+
+
+# ---------------------------------------------------------------------------
+# Apple advisory fix-version overlay — the apple_fixes map
+# ((cve_id, product)-keyed overlay, not a flaw_type)
+# ---------------------------------------------------------------------------
+
+def replace_apple_fixes(conn, product: str, rows: list[dict],
+                        fetched_at: str) -> int:
+    """Idempotent per-product full refresh of the ``apple_fixes`` overlay:
+    DELETE every existing row for ``product`` then INSERT the freshly-built
+    fix map ``rows`` (each ``{cve_id, fixed_in, advisory_id}``). Returns the
+    number inserted. Deleting-then-inserting (rather than INSERT OR REPLACE)
+    means advisories aged off Apple's rolling index do not leave stale rows —
+    the overlay always reflects the current rebuild. No-wipe: touches ONLY
+    ``apple_fixes`` — never ``flaws`` / ``verdicts`` / territory."""
+    conn.execute("DELETE FROM apple_fixes WHERE product=?", (product,))
+    n = 0
+    for r in rows:
+        conn.execute(
+            """INSERT OR REPLACE INTO apple_fixes
+                 (cve_id, product, fixed_in, advisory_id, fetched_at)
+               VALUES (?,?,?,?,?)""",
+            (r["cve_id"], product, r.get("fixed_in"),
+             r.get("advisory_id"), fetched_at),
+        )
+        n += 1
+    return n
+
+
+def apple_fixes_all(conn) -> list[dict]:
+    """All apple_fixes overlay rows, ordered by (product, cve_id) — the stable
+    shape the spine export serializes and the round-trip test compares against."""
+    rows = conn.execute(
+        "SELECT * FROM apple_fixes ORDER BY product, cve_id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def apple_fixes_for_product(conn, product: str) -> list[dict]:
+    """All apple_fixes overlay rows for one product, ordered by cve_id — the
+    shape a witness reads at assess time (the durable fix map for a device's
+    product)."""
+    rows = conn.execute(
+        "SELECT * FROM apple_fixes WHERE product=? ORDER BY cve_id",
+        (product,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def apple_fixes_for(conn, cve_id: str, product: str) -> dict | None:
+    """One apple_fixes overlay row for a (cve_id, product), or None. The
+    witness's decide path: read the durable fix version + advisory id instead
+    of replaying Apple's index per assess."""
+    r = conn.execute(
+        "SELECT * FROM apple_fixes WHERE cve_id=? AND product=?",
+        (cve_id, product)).fetchone()
+    return dict(r) if r else None
 
 
 # ---------------------------------------------------------------------------
