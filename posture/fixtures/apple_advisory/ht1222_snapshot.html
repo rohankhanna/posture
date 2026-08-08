@@ -1,0 +1,31 @@
+<!-- Offline fixture for the historical-recovery path: a synthetic archived
+     snapshot of Apple's cumulative "Apple security updates" index (article
+     HT1222), as the Wayback Machine would serve it. Exercises the
+     _INDEX_LINK / _ARTICLE_ID regexes in parse_index_links:
+
+       * HT444444 — a pre-index iOS 15.7.1 advisory NOT on the live 100100
+         index (the recovery target: CVE-2026-99920 is fixed only here).
+       * an en-gb locale variant of HT444444 — must dedup to the canonical
+         en-us/HT444444 (locale normalization).
+       * HT555555 — a Safari 17.1 advisory (cross-product for an iOS backfill;
+         parse_advisory_version returns None -> skipped, CVE-2026-99930 must NOT
+         contaminate the iOS fixed-version map).
+       * HT111111 — already on the live index (16.7.15). With the covered-adv-id
+         guard the witness skips re-fetching it during backfill.
+       * HT1222 — the cumulative index's own self-link (dropped).
+       * a non-article "foo" link — no HT\d+ / numeric tail (dropped).
+-->
+<html>
+<head><title>Apple security updates (archived HT1222)</title></head>
+<body>
+  <h1>Apple security updates</h1>
+  <ul>
+    <li><a href="https://support.apple.com/en-us/HT444444">iOS 15.7.1 and iPadOS 15.7.1</a></li>
+    <li><a href="https://support.apple.com/en-gb/HT444444">iOS 15.7.1 and iPadOS 15.7.1 (UK)</a></li>
+    <li><a href="https://support.apple.com/en-us/HT555555">Safari 17.1</a></li>
+    <li><a href="https://support.apple.com/en-us/HT111111">iOS 16.7.15 and iPadOS 16.7.15</a></li>
+    <li><a href="https://support.apple.com/en-us/HT1222">Apple security updates</a></li>
+    <li><a href="https://support.apple.com/en-us/foo">not an article id</a></li>
+  </ul>
+</body>
+</html>
