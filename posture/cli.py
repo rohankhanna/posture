@@ -75,10 +75,39 @@ def _load_device(path: str) -> dict:
 
 def _install_policy_if_needed(conn, policy) -> None:
     _store.install_policy_version(
-        conn, policy.version, policy.supersedes, policy.dated,
+        conn, policy.version, policy.supcedes, policy.dated,
         policy.rationale, policy.raw_yaml,
     )
     conn.commit()
+
+
+def _inject_catalog_overlays(device: dict, conn) -> None:
+    """Territory-side pre-pass: load signed-spine catalog overlays a device's
+    witnesses consume (the MAP half of the map/territory split) and inject them
+    as device INPUTS before ``assess``. The witness contract forbids DB access
+    in ``assess()`` (no ``conn``), so the territory pre-loads overlays here —
+    this is the "consume locally" half of "feed and enrich in CI, consume
+    locally".
+
+    Additive and never clobbers: a device that already supplies an overlay
+    (explicit operator input, hermetic tests) is left untouched. No-op when the
+    device declares no ``apple_product`` or the local store has no overlay rows
+    for that product (the witness then falls back to its per-assess replay).
+
+    Today the only catalog overlay consumed this way is ``apple_fixes`` (the
+    Apple fix-version map); kev remains operator-supplied (``device["kev"]`` /
+    ``kev_path``), mirroring its witness contract.
+    """
+    product = str(device.get("apple_product") or "").strip().lower()
+    if not product or "apple_fixes" in device:
+        return
+    try:
+        rows = _store.apple_fixes_for_product(conn, product)
+    except Exception:
+        return  # no overlay table / unreadable -> skip; witness falls back to replay
+    if rows:
+        device["apple_fixes"] = {r["cve_id"]: r["fixed_in"]
+                                 for r in rows if r.get("fixed_in")}
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +162,7 @@ def _cmd_demo(args) -> int:
     )
     with _open_db(args.db) as conn:
         _install_policy_if_needed(conn, policy)
+        _inject_catalog_overlays(device, conn)
         dp = _engine.assess(device, reg, policy, conn=conn)
     _render_posture(dp)
     return 0
@@ -149,6 +179,7 @@ def _cmd_assess(args) -> int:
         reg._by_id["nvd"] = nvd_live  # type: ignore[attr-defined]
     with _open_db(args.db) as conn:
         _install_policy_if_needed(conn, policy)
+        _inject_catalog_overlays(device, conn)
         dp = _engine.assess(device, reg, policy, conn=conn)
     _render_posture(dp)
     return 0

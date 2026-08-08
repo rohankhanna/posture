@@ -428,3 +428,178 @@ def test_witness_live_advisory_404_skipped_index_ok(monkeypatch):
     assert by_key["CVE-2026-99910"].status == "patched"
     assert by_key["CVE-2026-99910"].fixed_in == "16.7.15"
     assert "CVE-2026-99912" not in by_key   # only-fixed-in-17.1 -> skipped
+
+
+# ---------------------------------------------------------------------------
+# overlay-primary path (device["apple_fixes"] short-circuits the index replay)
+# ---------------------------------------------------------------------------
+
+def test_witness_overlay_primary_skips_index_fetch(monkeypatch):
+    """device['apple_fixes'] (the signed-spine overlay, injected by the
+    territory) short-circuits the per-assess index replay: the fix map comes
+    straight from the overlay, no index/advisory fetch. Proven by sabotaging
+    _fetch_index to fail -- the overlay path never calls it, so verdicts still
+    come back. CVEs not in the overlay get no verdict (NVD would stand)."""
+    w = AppleAdvisoryWitness(live=False)
+    pol = Policy.from_yaml(_INLINE_POLICY_YAML)
+    # sabotage the replay path: a failed index fetch would return zero verdicts.
+    monkeypatch.setattr(w, "_fetch_index", lambda: ("", False))
+    device = {
+        "id": "iphone-host",
+        "os_version": "17.1",
+        "apple_product": "iphone_os",
+        "cve_candidates": ["CVE-2026-99910", "CVE-2026-99912", "CVE-2026-99999"],
+        "apple_fixes": {"CVE-2026-99910": "16.7.15", "CVE-2026-99912": "17.1"},
+    }
+    result = w.assess(device, pol)
+    assert result.complete is True
+    assert result.reason == "overlay"
+    by_key = {v.key: v for v in result.verdicts}
+    assert sorted(by_key) == ["CVE-2026-99910", "CVE-2026-99912"]
+    assert by_key["CVE-2026-99910"].status == "patched"
+    assert by_key["CVE-2026-99910"].fixed_in == "16.7.15"
+    assert by_key["CVE-2026-99912"].status == "patched"
+    assert by_key["CVE-2026-99912"].fixed_in == "17.1"
+    for v in result.verdicts:
+        assert v.provenance.witness == "apple_advisory"
+
+
+def test_witness_overlay_unpatched_below_fix():
+    """The overlay path routes through the same _decide logic: a device below
+    the overlay's fix version is unpatched (high), mirroring the replay path."""
+    w = AppleAdvisoryWitness(live=False)
+    pol = Policy.from_yaml(_INLINE_POLICY_YAML)
+    device = {
+        "id": "iphone-host",
+        "os_version": "16.7",   # below the 17.1 fix in the overlay
+        "apple_product": "iphone_os",
+        "cve_candidates": ["CVE-2026-99912"],
+        "apple_fixes": {"CVE-2026-99912": "17.1"},
+    }
+    result = w.assess(device, pol)
+    assert result.reason == "overlay"
+    assert len(result.verdicts) == 1
+    assert result.verdicts[0].status == "unpatched"
+    assert result.verdicts[0].fixed_in == "17.1"
+    assert result.verdicts[0].severity == "high"
+
+
+def test_witness_overlay_absent_falls_back_to_replay():
+    """No apple_fixes key -> the witness replays the index (today's path),
+    byte-identical. reason is 'fixture' (offline), NOT 'overlay'."""
+    w = AppleAdvisoryWitness(live=False)
+    pol = Policy.from_yaml(_INLINE_POLICY_YAML)
+    device = {
+        "id": "iphone-host",
+        "os_version": "17.1",
+        "apple_product": "iphone_os",
+        "cve_candidates": ["CVE-2026-99910"],
+    }
+    result = w.assess(device, pol)
+    assert result.reason == "fixture"
+    assert len(result.verdicts) == 1
+    assert result.verdicts[0].fixed_in == "16.7.15"
+
+
+def test_witness_empty_overlay_falls_back_to_replay():
+    """A present-but-empty overlay {} is treated as 'no overlay' -> replay
+    fallback (present + non-empty is the gate). Pins the boundary so an empty
+    overlay never silently reads as 'Apple has no fixes' (which would suppress
+    a fresh replay); the witness replays instead."""
+    w = AppleAdvisoryWitness(live=False)
+    pol = Policy.from_yaml(_INLINE_POLICY_YAML)
+    device = {
+        "id": "iphone-host",
+        "os_version": "17.1",
+        "apple_product": "iphone_os",
+        "cve_candidates": ["CVE-2026-99910"],
+        "apple_fixes": {},
+    }
+    result = w.assess(device, pol)
+    assert result.reason == "fixture"   # empty overlay -> replay fallback
+    assert len(result.verdicts) == 1
+    assert result.verdicts[0].fixed_in == "16.7.15"
+
+
+def test_inject_catalog_overlays_loads_apple_fixes_from_store():
+    """The territory pre-pass loads the device's product slice of the signed-
+    spine apple_fixes overlay from the local store and injects it as a device
+    input (the 'consume locally' half). A device that already supplies an
+    overlay is never clobbered; a non-Apple device gets nothing."""
+    from posture.cli import _inject_catalog_overlays
+
+    conn = store.connect(":memory:")
+    store.replace_apple_fixes(
+        conn, "iphone_os",
+        [{"cve_id": "CVE-2026-99910", "fixed_in": "16.7.15",
+          "advisory_id": "HT111111", "fetched_at": "2026-08-08T00:00:00Z"},
+         {"cve_id": "CVE-2026-99912", "fixed_in": "17.1",
+          "advisory_id": "HT222222", "fetched_at": "2026-08-08T00:00:00Z"}],
+        fetched_at="2026-08-08T00:00:00Z",
+    )
+    conn.commit()
+
+    # 1. Apple device with no overlay -> injected from the store, {cve: fixed_in}.
+    device = {"id": "iphone-host", "apple_product": "iphone_os",
+              "os_version": "17.1",
+              "cve_candidates": ["CVE-2026-99910"]}
+    _inject_catalog_overlays(device, conn)
+    assert device["apple_fixes"] == {"CVE-2026-99910": "16.7.15",
+                                     "CVE-2026-99912": "17.1"}
+
+    # 2. A device that already supplies an overlay is NOT clobbered.
+    device = {"id": "iphone-host", "apple_product": "iphone_os",
+              "os_version": "17.1",
+              "cve_candidates": ["CVE-2026-99910"],
+              "apple_fixes": {"CVE-2026-99910": "16.7.15"}}
+    _inject_catalog_overlays(device, conn)
+    assert device["apple_fixes"] == {"CVE-2026-99910": "16.7.15"}   # unchanged
+
+    # 3. A non-Apple device (no apple_product) -> nothing injected.
+    device = {"id": "linux-host", "os_version": "6.18"}
+    _inject_catalog_overlays(device, conn)
+    assert "apple_fixes" not in device
+
+    # 4. An Apple product with no overlay rows in the store -> nothing injected
+    #    (the witness then falls back to its per-assess replay).
+    device = {"id": "mac-host", "apple_product": "macos",
+              "os_version": "26.5",
+              "cve_candidates": ["CVE-2026-99920"]}
+    _inject_catalog_overlays(device, conn)
+    assert "apple_fixes" not in device
+
+
+def test_engine_assess_uses_injected_overlay_end_to_end(monkeypatch):
+    """End-to-end: the territory injects the overlay, then engine.assess drives
+    the apple witness through the overlay-primary path (no index replay). The
+    stub NVD-like witness says 'unpatched'; apple at order 5 overrides it to
+    'patched' from the OVERLAY (not the replay). _fetch_index is sabotaged so
+    only the overlay path can produce the verdict."""
+    from posture.cli import _inject_catalog_overlays
+
+    reg = WitnessRegistry()
+    reg.register(_StubNvdLikeWitness(cve="CVE-2026-99910"))   # order 10
+    apple_w = AppleAdvisoryWitness(live=False)
+    monkeypatch.setattr(apple_w, "_fetch_index", lambda: ("", False))
+    reg.register(apple_w)                                    # order 5 -> wins
+    pol = Policy.from_yaml(_INLINE_POLICY_YAML)
+    conn = store.connect(":memory:")
+    store.replace_apple_fixes(
+        conn, "iphone_os",
+        [{"cve_id": "CVE-2026-99910", "fixed_in": "16.7.15",
+          "advisory_id": "HT111111", "fetched_at": "2026-08-08T00:00:00Z"}],
+        fetched_at="2026-08-08T00:00:00Z",
+    )
+    conn.commit()
+    device = {"id": "iphone-host", "os_version": "17.1",
+              "apple_product": "iphone_os",
+              "cve_candidates": ["CVE-2026-99910"]}
+    _inject_catalog_overlays(device, conn)
+    assert device["apple_fixes"] == {"CVE-2026-99910": "16.7.15"}
+    engine.assess(device, reg, pol, conn=conn,
+                 now="2026-08-08T00:00:00+00:00")
+    rows = {r["key"]: r for r in
+            store.verdicts_for_device_axis(conn, "iphone-host", "vulnerability")}
+    assert rows["CVE-2026-99910"]["witness"] == "apple_advisory"
+    assert rows["CVE-2026-99910"]["status"] == "patched"
+    assert rows["CVE-2026-99910"]["fixed_in"] == "16.7.15"

@@ -29,10 +29,23 @@ whole catalog into a ``apple_fixes`` table and decided from it (sequential, db
 backed). Posture's witnesses run in a pure fan-out and cannot share state across
 runs, so the candidate CVE set + the device's product/version are DEVICE INPUTS
 (``device["cve_candidates"]``, ``device["apple_product"]``, version via
-``os_version``/``patch_level``), and the index+advisory fetch is replayed per
-assess(). The parser + decision logic are faithful to Forebode's ground truth
-(forebode/sources/apple_advisory.py); only the input channel + the absence of a
-persistent fixes table changed.
+``os_version``/``patch_level``). The fix map has TWO sources, tried in order:
+
+  1. OVERLAY-PRIMARY: ``device["apple_fixes"]`` — a ``{cve: fixed_in}`` map the
+     territory/CLI pre-loads from the local ``store.apple_fixes`` table (the
+     signed spine's ``apple_fixes`` overlay, imported from CI's
+     ``posture ingest apple`` tick). When present and non-empty it IS the fix
+     map: authoritative, offline, no network, no per-assess replay. This is the
+     durable consumption path — "feed and enrich in CI, consume locally" — and
+     the faithful port of Forebode's table-backed decide.
+  2. REPLAY FALLBACK: no overlay -> the security-releases index + each per-
+     release advisory page are replayed per assess() (offline fixtures or live
+     curl + optional Wayback history). The parser + decision logic are faithful
+     to Forebode's ground truth (forebode/sources/apple_advisory.py); only the
+     input channel + the absence of a persistent in-witness fixes table changed.
+
+The witness contract forbids DB access in ``assess()`` (no ``conn``), so the
+overlay is a device INPUT, not a table read — the territory owns loading it.
 
 Offline mode (default) reads bundled HTML fixtures (an index page + one or more
 advisory pages) under ``posture/fixtures/apple_advisory/`` so the tests run
@@ -508,27 +521,48 @@ class AppleAdvisoryWitness(Witness):
                         "or apple_product not in {iphone_os,ipados,macos})",
             )
 
-        index_html, ok = self._fetch_index()
-        # Best-effort: a failed/absent index fetch -> complete=True, zero
-        # verdicts (NVD stands). Never a fetch failure that breaks the engine
-        # (no-wipe rule). Mirrors the donor's `return []` on fetch failure.
-        if not ok or not index_html:
-            return WitnessResult(
-                verdicts=[], complete=True,
-                reason="apple advisory index fetch failed/absent (NVD stands)",
-            )
+        # Overlay-primary: a territory-pre-loaded ``{cve: fixed_in}`` map (the
+        # signed spine's ``apple_fixes`` overlay, injected as a device input by
+        # the territory/CLI from the local ``store.apple_fixes`` table) short-
+        # circuits the per-assess index replay. When present and non-empty it IS
+        # the fix map — authoritative, offline, no network, no per-advisory
+        # replay — the "feed and enrich in CI, consume locally" consumption
+        # path. The decision logic (``_decide``) is source-agnostic: it reads
+        # the ``fixed`` map the same way whether it came from the overlay or the
+        # replay. Absent (or empty) -> fall back to today's per-assess index
+        # replay (fixture/live + optional history) so a device that supplies no
+        # overlay is byte-for-byte unchanged (no regression; tests, NVD-only
+        # hosts, and pre-overlay clients all take the fallback).
+        overlay = device.get("apple_fixes")
+        if isinstance(overlay, dict) and overlay:
+            fixed = overlay
+            reason = "overlay"
+        else:
+            index_html, ok = self._fetch_index()
+            # Best-effort: a failed/absent index fetch -> complete=True, zero
+            # verdicts (NVD stands). Never a fetch failure that breaks the
+            # engine (no-wipe rule). Mirrors the donor's `return []` on fail.
+            if not ok or not index_html:
+                return WitnessResult(
+                    verdicts=[], complete=True,
+                    reason="apple advisory index fetch failed/absent (NVD stands)",
+                )
 
-        fixed = build_fix_map(index_html, self._fetch_advisory_html, product)
+            fixed = build_fix_map(index_html, self._fetch_advisory_html, product)
 
-        # Optional historical recovery: when live + history, augment the index
-        # fix map with pre-index advisories discovered via the Wayback Machine
-        # (archived HT1222/HT201222 yearly snapshots) and via the device's
-        # NVD-ref advisory URLs. Earliest-fix-version-wins across both eras, so
-        # a CVE aged off the live index still resolves to its true first Apple
-        # fix instead of NVD's silent skip (false-clean). Default history=False
-        # -> this block never runs -> byte-identical to the index-only path.
-        if self.live and self.history:
-            fixed = self._augment_with_history(index_html, fixed, product, device)
+            # Optional historical recovery: when live + history, augment the
+            # index fix map with pre-index advisories discovered via the Wayback
+            # Machine (archived HT1222/HT201222 yearly snapshots) and via the
+            # device's NVD-ref advisory URLs. Earliest-fix-version-wins across
+            # both eras, so a CVE aged off the live index still resolves to its
+            # true first Apple fix instead of NVD's silent skip (false-clean).
+            # Default history=False -> this block never runs -> byte-identical
+            # to the index-only path.
+            if self.live and self.history:
+                fixed = self._augment_with_history(
+                    index_html, fixed, product, device)
+
+            reason = "fixture" if not self.live else "live"
 
         verdicts: list[Verdict] = []
         for cid in cves:
@@ -537,8 +571,7 @@ class AppleAdvisoryWitness(Witness):
                 verdicts.append(v)
 
         return WitnessResult(
-            verdicts=verdicts, complete=True,
-            reason="fixture" if not self.live else "live",
+            verdicts=verdicts, complete=True, reason=reason,
         )
 
     def _augment_with_history(self, index_html: str, fixed: dict[str, str],
