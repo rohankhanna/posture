@@ -75,7 +75,7 @@ def _load_device(path: str) -> dict:
 
 def _install_policy_if_needed(conn, policy) -> None:
     _store.install_policy_version(
-        conn, policy.version, policy.supcedes, policy.dated,
+        conn, policy.version, policy.supersedes, policy.dated,
         policy.rationale, policy.raw_yaml,
     )
     conn.commit()
