@@ -41,22 +41,31 @@ deterministically with no network. Live mode
 curl (HTML -> body straight from ``curl_get``'s third return value; its JSON
 parser yields ``None`` for non-JSON bodies).
 
-Simplifications vs. the donor (documented): the donor's ``backfill()`` /
-``discover_urls()`` / Wayback-Machine historical-index paths are OUT OF SCOPE
-here — they exist to recover pre-index CVEs from NVD refs + archived HT1222
-snapshots, which is a db-backed catalog-maintenance job, not a per-device
-decision. The decision path (index -> advisories -> cve->fixed_in -> decide) is
-faithful. The live path fetches the live index + each advisory with polite
-spacing via ``curl_get``; it does NOT retry or fall back to Wayback (a future
-note). A failed/absent fetch is best-effort (mirrors the donor's ``return []``):
+Historical recovery (ported from the donor, opt-in): the donor's ``backfill()``
+/ ``discover_urls()`` / Wayback-Machine historical-index paths recover pre-index
+CVEs (those aged off the rolling 100100 index) from two sources — NVD reference
+URLs that point at the Apple advisory that fixed each CVE, and the Wayback
+Machine's archived yearly snapshots of Apple's cumulative "Apple security
+updates" index (HT1222 + successor HT201222). They are ported here as pure
+functions over ``curl_get`` (``discover_urls_from_refs`` / ``discover_historical_urls``
+/ ``backfill_fix_map``) and merged into the in-memory ``cve -> fixed_in`` map with
+earliest-fix-version-wins, rather than into a persistent ``apple_fixes`` table
+(posture witnesses replay per-assess and share no DB across runs; a future CI
+ingestion tick + ``apple_fixes`` catalog overlay is a separately-id'd follow-up).
+They are OFF by default: pass ``history=True`` (with ``live=True``) to augment the
+index map with the historical + NVD-ref advisories. ``history=False`` (the
+default) leaves the index-only path byte-identical — no regression. A
+failed/absent fetch is best-effort (mirrors the donor's ``return []``):
 ``complete=True`` + zero verdicts so the NVD verdict stands and the engine's
-no-wipe rule is never tripped by an Apple-side outage.
+no-wipe rule is never tripped by an Apple-side or Wayback outage.
 """
 
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from packaging.version import InvalidVersion, Version
 
@@ -114,6 +123,37 @@ _IOS_VER = re.compile(r"\biOS\s+([0-9][0-9.]*)")
 _MACOS_VER = re.compile(
     r"\b(?:macOS|OS\s+X)\s+[A-Za-z]+(?:\s+[A-Za-z]+)?\s+([0-9][0-9.]*)",
     re.IGNORECASE)
+
+# --- historical index recovery (pre-index CVEs) -----------------------------
+#
+# Apple's rolling security-releases index (100100) only reaches back so far, so
+# CVEs fixed before its horizon stay 'unaccounted' (NVD lists them under
+# iphone_os but records no version data -> NVD silently skips them -> the device
+# reads a falsely clean result). Two recovery paths backfill ``cve -> fixed_in``
+# for the pre-index era:
+#   1. NVD refs: a CVE's NVD references link the Apple advisory that fixed it;
+#      each referenced advisory lists EVERY CVE fixed in that version.
+#   2. The Wayback Machine: Apple's longstanding cumulative "Apple security
+#      updates" index (article HT1222, plus its 2016-2019 successor HT201222)
+#      listed every release with a link to its per-release advisory. The Wayback
+#      Machine archived both across eras, so yearly CDX snapshots enumerate the
+#      historical advisory article IDs; live-fetching each (Apple still serves
+#      old HT articles) resolves the pre-index era NVD's sparse refs don't reach.
+# These are catalog-maintenance (fix-map completion) mechanisms; the decision
+# path is unchanged. See ``backfill_fix_map`` / ``discover_historical_urls`` /
+# ``discover_urls_from_refs`` below. Faithful port of the donor's backfill() /
+# discover_urls() / discover_historical_urls().
+_WAYBACK_CDX = "http://web.archive.org/cdx/search/cdx"
+# Cumulative Apple security-updates index pages, archived across eras by the
+# Wayback Machine. HT1222 was the longstanding cumulative index (replaced by the
+# rolling 100100 page); HT201222 is its 2016-2019 successor. Yearly CDX snapshots
+# of each enumerate the historical per-release advisory article IDs the live
+# 100100 index no longer reaches.
+_HISTORY_ARTICLES = ("HT1222", "HT201222")
+_BACKFILL_DELAY = 0.25  # polite spacing between advisory fetches
+_INDEX_LINK = re.compile(r'href="(https?://support\.apple\.com/[^"#]+)"',
+                         re.IGNORECASE)
+_ARTICLE_ID = re.compile(r"/(HT\d+|[0-9]{4,})$", re.IGNORECASE)
 
 
 def is_cve_id(cid: str) -> bool:
@@ -227,6 +267,186 @@ def build_fix_map(index_html: str, fetch_advisory_html,
     return fixed
 
 
+# --- historical index recovery (pre-index CVEs) -----------------------------
+#
+# See the block by ``_WAYBACK_CDX`` above for the rationale. These are pure
+# functions over ``curl_get`` (live) or supplied callbacks (offline/tests); they
+# never touch the catalog and never mutate shared state, so they compose with
+# the per-assess replay the witness already does.
+
+def advisory_id_of(url: str) -> str:
+    """The trailing path segment of an Apple advisory URL, upper-cased to a
+    stable article id (``HT1222``, ``101682``). Reused by backfill to skip
+    already-covered advisories. (Donor verbatim shape.)"""
+    return url.rstrip("/").rsplit("/", 1)[-1].upper()
+
+
+def _earlier(a: str, b: str) -> bool:
+    """True if version ``a`` is strictly earlier than ``b`` (``a < b``). Used by
+    backfill's earliest-fix-version-wins merge: a historical (pre-index) sighting
+    strictly earlier than an index sighting replaces it, so a CVE spanning both
+    eras resolves to its true first fix. Mirrors the donor's ``_earlier``."""
+    try:
+        return Version(a) < Version(b)
+    except (InvalidVersion, TypeError):
+        return a < b
+
+
+def parse_index_links(html: str) -> list[str]:
+    """Per-release advisory article URLs linked from an archived cumulative
+    HT1222 / HT201222 index page. Locale variants and the index's own self-link
+    are dropped; article IDs are normalized to the live
+    ``https://support.apple.com/en-us/<ID>`` form so backfill can live-fetch
+    each (Apple still serves old HT articles). (Donor verbatim, generalized to
+    drop both cumulative indices' self-links.)"""
+    ids: set[str] = set()
+    for m in _INDEX_LINK.finditer(html):
+        path = m.group(1).split("#")[0].rstrip("/")
+        am = _ARTICLE_ID.search(path)
+        if not am:
+            continue
+        aid = am.group(1).upper()
+        if aid in _HISTORY_ARTICLES:
+            continue  # drop the cumulative index's own self-link
+        ids.add(aid)
+    return sorted(f"https://support.apple.com/en-us/{aid}" for aid in ids)
+
+
+def _ht1222_snapshot_urls(article: str = "HT1222") -> list[str]:
+    """Yearly Wayback snapshot URLs of one cumulative Apple index page
+    (``article`` = ``HT1222`` or ``HT201222``). Network: one CDX query. The CDX
+    response is a JSON array whose first row is the header and whose
+    ``row[1]`` is the capture timestamp. Best-effort: any fetch/parse failure
+    returns ``[]`` (the run must not fail).
+
+    ``collapse=timestamp:4`` keeps one snapshot per YEAR (first 4 timestamp
+    chars = YYYY). NOTE: the donor used ``timestamp:6`` (monthly) despite its
+    own docstring saying "yearly"; ported as ``timestamp:4`` to match the
+    documented intent and keep the historical fetch count rate-friendly.
+    """
+    cdx = (f"{_WAYBACK_CDX}?url=support.apple.com/en-us/{article}"
+           "&output=json&filter=statuscode:200&collapse=timestamp:4")
+    data, _code, _body = curl_get(cdx, headers=[f"User-Agent: {_UA}"], max_time=TIMEOUT)
+    if not isinstance(data, list) or len(data) < 2:
+        return []
+    out: list[str] = []
+    for row in data[1:]:  # row[0] is the header; row[1] is the timestamp
+        if not isinstance(row, list) or len(row) < 2:
+            continue
+        ts = row[1]
+        if isinstance(ts, str) and ts.isdigit():
+            out.append(f"http://web.archive.org/web/{ts}id_/"
+                       f"https://support.apple.com/en-us/{article}")
+    return out
+
+
+def _wayback_fetch(url: str) -> str | None:
+    """Live fetch of one Wayback snapshot page (HTML). Returns the body or
+    ``None`` on any non-200 / empty / failure (best-effort)."""
+    _data, code, body = curl_get(url, headers=[f"User-Agent: {_UA}"], max_time=TIMEOUT)
+    if code == 200 and body:
+        return body
+    return None
+
+
+def discover_historical_urls(articles: tuple[str, ...] = _HISTORY_ARTICLES,
+                             fetch_snapshot=None) -> list[str]:
+    """Enumerate historical Apple advisory URLs from the Wayback Machine's
+    archived yearly snapshots of each cumulative index page (HT1222 +
+    HT201222). Network: one CDX query per article + one fetch per yearly
+    snapshot. Best-effort: a failed snapshot is skipped, never a hard fail.
+    ``fetch_snapshot(url) -> html_str | None`` is the snapshot-page getter
+    (live ``curl_get`` by default; tests pass a fixture-backed fake). Donor's
+    ``discover_historical_urls``, generalized over both index articles."""
+    fetch = fetch_snapshot or _wayback_fetch
+    urls: set[str] = set()
+    for article in articles:
+        for snap in _ht1222_snapshot_urls(article):
+            html = fetch(snap)
+            if not html:
+                continue
+            urls.update(parse_index_links(html))
+    return sorted(urls)
+
+
+def discover_urls_from_refs(refs) -> list[str]:
+    """Distinct ``support.apple.com`` advisory URLs discovered in a CVE's
+    reference list (NVD's per-CVE refs link the Apple advisory that fixed each
+    CVE). Each referenced advisory lists every CVE fixed in that version, so
+    fetching them backfills the pre-index era. Paths are normalized to the
+    ``https://support.apple.com`` canonical form. Donor's ``discover_urls``,
+    ref-based rather than device/db-based so a posture witness can take the
+    refs as device input (``device["apple_ref_urls"]``)."""
+    urls: set[str] = set()
+    for u in refs or []:
+        if "support.apple.com" in u:
+            urls.add("https://support.apple.com" + urlparse(u).path.rstrip("/"))
+    return sorted(urls)
+
+
+def backfill_fix_map(urls, fetch_html, product: str = "iphone_os",
+                     base: dict[str, str] | None = None,
+                     covered_adv_ids: set[str] | None = None,
+                     delay: float = 0.0) -> tuple[dict[str, str], dict]:
+    """Backfill the ``{cve_id: fixed_in}`` map for ``product`` from the advisory
+    ``urls`` (Wayback-discovered historical + NVD-ref-discovered).
+
+    ``fetch_html(url) -> html_str | None`` is the advisory-page getter (offline
+    a fixture; live ``curl_get``). ``base`` is the index-built map to merge into;
+    ``covered_adv_ids`` are advisory ids already fetched by the index pass
+    (skipped so backfill never re-fetches an advisory the live index already
+    covered). Earliest-fix-version-wins: a historical sighting strictly earlier
+    than an existing entry REPLACES it (``_earlier``), so a CVE spanning the
+    index + historical eras resolves to its true first fix (a CVE fixed in
+    16.7.15 historically that the index only re-mentions in 17.1 must keep
+    16.7.15). Cross-product advisories (a Safari/macOS advisory hit during an
+    iOS backfill — ``parse_advisory_version`` returns ``None``) are skipped so
+    one product's backfill never contaminates the other's fixed-version table.
+    Best-effort: a failed advisory fetch is skipped, never a hard fail.
+
+    Faithful to the donor's ``backfill`` but map-based (posture witnesses replay
+    per-assess and share no DB across runs), returning ``(merged_map, stats)``
+    rather than replacing DB rows.
+    """
+    merged = dict(base or {})
+    have = set(covered_adv_ids or ())
+    stats = {"urls_seen": 0, "fetched": 0, "advisories": 0, "cves_added": 0,
+             "cves_earlier": 0, "skipped_existing": 0, "fetch_failed": 0,
+             "rows_total": 0}
+    seen: set[str] = set()
+    first = True
+    for url in urls:
+        adv_id = advisory_id_of(url)
+        if adv_id in have or url in seen:
+            stats["skipped_existing"] += 1
+            continue
+        seen.add(url)
+        stats["urls_seen"] += 1
+        html = fetch_html(url)
+        if not html:
+            stats["fetch_failed"] += 1
+            continue
+        version = parse_advisory_version(html, product)
+        if not version:
+            continue  # cross-product advisory (Safari/macOS for iOS, ...)
+        stats["fetched"] += 1
+        stats["advisories"] += 1
+        have.add(adv_id)
+        for cid in parse_advisory(html):
+            cur = merged.get(cid)
+            if cur is None:
+                merged[cid] = version
+                stats["cves_added"] += 1
+            elif _earlier(version, cur):
+                merged[cid] = version
+                stats["cves_earlier"] += 1
+        if delay and not first:
+            time.sleep(delay)
+        first = False
+    stats["rows_total"] = len(merged)
+    return merged, stats
+
+
 class AppleAdvisoryWitness(Witness):
     """The Apple security-advisory vendor witness on the vulnerability axis.
 
@@ -242,10 +462,12 @@ class AppleAdvisoryWitness(Witness):
     bias = "false-safe"   # vendor authoritative; tends to clear NVD's false-clean skips
     key_kind = "cve"      # emits CVE ids -> the vocab monitor sees a known kind
 
-    def __init__(self, live: bool = False, fixture_dir: Path | str | None = None) -> None:
+    def __init__(self, live: bool = False, fixture_dir: Path | str | None = None,
+                 history: bool = False) -> None:
         super().__init__(id=self.id, axes=self.axes, bias=self.bias,
                          key_kind=self.key_kind)
         self.live = live
+        self.history = history
         self.fixture_dir = Path(fixture_dir) if fixture_dir else FIXTURE_DIR
 
     # -- the uniform contract ------------------------------------------------
@@ -278,6 +500,16 @@ class AppleAdvisoryWitness(Witness):
 
         fixed = build_fix_map(index_html, self._fetch_advisory_html, product)
 
+        # Optional historical recovery: when live + history, augment the index
+        # fix map with pre-index advisories discovered via the Wayback Machine
+        # (archived HT1222/HT201222 yearly snapshots) and via the device's
+        # NVD-ref advisory URLs. Earliest-fix-version-wins across both eras, so
+        # a CVE aged off the live index still resolves to its true first Apple
+        # fix instead of NVD's silent skip (false-clean). Default history=False
+        # -> this block never runs -> byte-identical to the index-only path.
+        if self.live and self.history:
+            fixed = self._augment_with_history(index_html, fixed, product, device)
+
         verdicts: list[Verdict] = []
         for cid in cves:
             v = self._decide(cid, fixed, version, product)
@@ -288,6 +520,27 @@ class AppleAdvisoryWitness(Witness):
             verdicts=verdicts, complete=True,
             reason="fixture" if not self.live else "live",
         )
+
+    def _augment_with_history(self, index_html: str, fixed: dict[str, str],
+                              product: str, device: dict) -> dict[str, str]:
+        """Merge pre-index advisory fixes (Wayback history + NVD refs) into the
+        index-built ``fixed`` map. Advisories the index already covered (by
+        advisory id) are skipped so backfill never re-fetches them; cross-product
+        advisories are skipped by ``backfill_fix_map``. Best-effort: any
+        historical fetch failure leaves the index map intact (never a hard
+        fail)."""
+        covered = {adv_id for _v, _u, adv_id in parse_index(index_html, product)}
+        urls: list[str] = []
+        urls += discover_historical_urls(
+            fetch_snapshot=lambda u: self._fetch_live(u)[0] or None)
+        urls += discover_urls_from_refs(device.get("apple_ref_urls"))
+        if not urls:
+            return fixed
+        fetch_html = lambda u: self._fetch_advisory_html("", u, advisory_id_of(u))
+        merged, _stats = backfill_fix_map(
+            urls, fetch_html, product, base=fixed,
+            covered_adv_ids=covered, delay=_BACKFILL_DELAY)
+        return merged
 
     # -- decide one CVE -> a Verdict (or None: NVD stands) ---------------------
 

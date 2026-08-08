@@ -1,0 +1,34 @@
+<!-- Offline historical advisory fixture: iOS 15.7.1 / iPadOS 15.7.1, a
+     PRE-INDEX release (older than the live 100100 index's horizon). Mirrors the
+     per-version advisory structure (og:title carries the fix version; the CVE
+     list is in the raw HTML).
+
+     CVEs fixed here:
+       CVE-2026-99920  (only fixed here — the pre-index recovery target; the
+                        live index does not cover it, so without history NVD's
+                        skip stands and the device reads false-clean).
+       CVE-2026-99910  (re-mentioned here at 15.7.1 — EARLIER than the live
+                        index's 16.7.15; earliest-fix-version-wins must REPLACE
+                        the index sighting with 15.7.1). -->
+<html>
+<head>
+  <meta property="og:title"
+        content="About the security content of iOS 15.7.1 and iPadOS 15.7.1 - Apple Support">
+</head>
+<body>
+  <h1>About the security content of iOS 15.7.1 and iPadOS 15.7.1</h1>
+  <h2>Entries</h2>
+  <ul>
+    <li>Kernel
+      <p>Impact: an application may be able to execute arbitrary code with kernel privileges.</p>
+      <p>Description: a memory corruption issue was addressed with improved locking.</p>
+      <p>CVE-2026-99920: Apple</p>
+    </li>
+    <li>AppleMobileFileIntegrity
+      <p>Impact: an app may be able to read sensitive information.</p>
+      <p>Description: an out-of-bounds read was addressed with improved bounds checking.</p>
+      <p>CVE-2026-99910: Apple</p>
+    </li>
+  </ul>
+</body>
+</html>

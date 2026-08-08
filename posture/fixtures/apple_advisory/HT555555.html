@@ -1,0 +1,23 @@
+<!-- Offline cross-product advisory fixture: Safari 17.1. During an iOS
+     (iphone_os) backfill, parse_advisory_version reads the og:title and applies
+     the iOS version regex, which finds no "iOS X.Y" in "Safari 17.1" -> None ->
+     the advisory is skipped. Its CVE (CVE-2026-99930) must NEVER contaminate the
+     iOS fixed-version map (one product's backfill never contaminates the
+     other's table). -->
+<html>
+<head>
+  <meta property="og:title"
+        content="About the security content of Safari 17.1 - Apple Support">
+</head>
+<body>
+  <h1>About the security content of Safari 17.1</h1>
+  <h2>Entries</h2>
+  <ul>
+    <li>WebKit
+      <p>Impact: processing maliciously crafted web content may lead to arbitrary code execution.</p>
+      <p>Description: the issue was addressed with improved checks.</p>
+      <p>CVE-2026-99930: Apple</p>
+    </li>
+  </ul>
+</body>
+</html>
