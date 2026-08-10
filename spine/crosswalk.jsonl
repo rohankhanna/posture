@@ -10934,6 +10934,7 @@
 {"alias": "BIT-solr-2023-44487", "flaw_id": "BIT-apisix-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "BIT-apisix-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-apisix-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-apisix-2023-44487", "kind": "osv"}
 {"alias": "CVE-2024-32638", "flaw_id": "BIT-apisix-2024-32638", "kind": "cve"}
 {"alias": "CVE-2025-27446", "flaw_id": "BIT-apisix-2025-27446", "kind": "cve"}
 {"alias": "CVE-2025-46647", "flaw_id": "BIT-apisix-2025-46647", "kind": "cve"}
@@ -11257,6 +11258,7 @@
 {"alias": "BIT-solr-2023-44487", "flaw_id": "BIT-aspnet-core-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "BIT-aspnet-core-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-aspnet-core-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-aspnet-core-2023-44487", "kind": "osv"}
 {"alias": "CVE-2024-21386", "flaw_id": "BIT-aspnet-core-2024-21386", "kind": "cve"}
 {"alias": "GHSA-g74q-5xw3-j7q9", "flaw_id": "BIT-aspnet-core-2024-21386", "kind": "ghsa"}
 {"alias": "CVE-2024-21404", "flaw_id": "BIT-aspnet-core-2024-21404", "kind": "cve"}
@@ -12678,6 +12680,7 @@
 {"alias": "BIT-solr-2023-44487", "flaw_id": "BIT-contour-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "BIT-contour-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-contour-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-contour-2023-44487", "kind": "osv"}
 {"alias": "CVE-2024-36539", "flaw_id": "BIT-contour-2024-36539", "kind": "cve"}
 {"alias": "CVE-2026-41246", "flaw_id": "BIT-contour-2026-41246", "kind": "cve"}
 {"alias": "GHSA-x4mj-7f9g-29h4", "flaw_id": "BIT-contour-2026-41246", "kind": "ghsa"}
@@ -13823,6 +13826,7 @@
 {"alias": "BIT-solr-2023-44487", "flaw_id": "BIT-dotnet-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "BIT-dotnet-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-dotnet-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-dotnet-2023-44487", "kind": "osv"}
 {"alias": "BIT-dotnet-sdk-2024-0056", "flaw_id": "BIT-dotnet-2024-0056", "kind": "bit"}
 {"alias": "CVE-2024-0056", "flaw_id": "BIT-dotnet-2024-0056", "kind": "cve"}
 {"alias": "GHSA-98g6-xh36-x2p7", "flaw_id": "BIT-dotnet-2024-0056", "kind": "ghsa"}
@@ -14322,6 +14326,7 @@
 {"alias": "BIT-solr-2023-44487", "flaw_id": "BIT-dotnet-sdk-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "BIT-dotnet-sdk-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-dotnet-sdk-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-dotnet-sdk-2023-44487", "kind": "osv"}
 {"alias": "BIT-dotnet-2024-0056", "flaw_id": "BIT-dotnet-sdk-2024-0056", "kind": "bit"}
 {"alias": "CVE-2024-0056", "flaw_id": "BIT-dotnet-sdk-2024-0056", "kind": "cve"}
 {"alias": "GHSA-98g6-xh36-x2p7", "flaw_id": "BIT-dotnet-sdk-2024-0056", "kind": "ghsa"}
@@ -15216,6 +15221,7 @@
 {"alias": "BIT-solr-2023-44487", "flaw_id": "BIT-envoy-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "BIT-envoy-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-envoy-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-envoy-2023-44487", "kind": "osv"}
 {"alias": "CVE-2024-23322", "flaw_id": "BIT-envoy-2024-23322", "kind": "cve"}
 {"alias": "GHSA-6p83-mfmh-qv38", "flaw_id": "BIT-envoy-2024-23322", "kind": "ghsa"}
 {"alias": "CVE-2024-23323", "flaw_id": "BIT-envoy-2024-23323", "kind": "cve"}
@@ -17025,6 +17031,7 @@
 {"alias": "BIT-solr-2023-44487", "flaw_id": "BIT-golang-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "BIT-golang-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-golang-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-golang-2023-44487", "kind": "osv"}
 {"alias": "CVE-2023-45283", "flaw_id": "BIT-golang-2023-45283", "kind": "cve"}
 {"alias": "GO-2023-2185", "flaw_id": "BIT-golang-2023-45283", "kind": "go"}
 {"alias": "CGA-25c3-cp9r-6wrx", "flaw_id": "BIT-golang-2023-45283", "kind": "osv"}
@@ -17041,6 +17048,7 @@
 {"alias": "CVE-2023-45289", "flaw_id": "BIT-golang-2023-45289", "kind": "cve"}
 {"alias": "GO-2024-2600", "flaw_id": "BIT-golang-2023-45289", "kind": "go"}
 {"alias": "CGA-25gv-3qrh-8g5j", "flaw_id": "BIT-golang-2023-45289", "kind": "osv"}
+{"alias": "CGA-3fw9-g448-cq83", "flaw_id": "BIT-golang-2023-45289", "kind": "osv"}
 {"alias": "CVE-2023-45290", "flaw_id": "BIT-golang-2023-45290", "kind": "cve"}
 {"alias": "GO-2024-2599", "flaw_id": "BIT-golang-2023-45290", "kind": "go"}
 {"alias": "CVE-2023-54365", "flaw_id": "BIT-golang-2023-54365", "kind": "cve"}
@@ -17059,6 +17067,7 @@
 {"alias": "GO-2024-2888", "flaw_id": "BIT-golang-2024-24789", "kind": "go"}
 {"alias": "CVE-2024-24790", "flaw_id": "BIT-golang-2024-24790", "kind": "cve"}
 {"alias": "GO-2024-2887", "flaw_id": "BIT-golang-2024-24790", "kind": "go"}
+{"alias": "CGA-2fq6-p83q-pm8x", "flaw_id": "BIT-golang-2024-24790", "kind": "osv"}
 {"alias": "CVE-2024-24791", "flaw_id": "BIT-golang-2024-24791", "kind": "cve"}
 {"alias": "GO-2024-2963", "flaw_id": "BIT-golang-2024-24791", "kind": "go"}
 {"alias": "CVE-2024-34155", "flaw_id": "BIT-golang-2024-34155", "kind": "cve"}
@@ -21225,6 +21234,7 @@
 {"alias": "BIT-solr-2023-44487", "flaw_id": "BIT-jenkins-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "BIT-jenkins-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-jenkins-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-jenkins-2023-44487", "kind": "osv"}
 {"alias": "CVE-2024-23897", "flaw_id": "BIT-jenkins-2024-23897", "kind": "cve"}
 {"alias": "GHSA-6f9g-cxwr-q5jr", "flaw_id": "BIT-jenkins-2024-23897", "kind": "ghsa"}
 {"alias": "CVE-2024-23898", "flaw_id": "BIT-jenkins-2024-23898", "kind": "cve"}
@@ -23198,6 +23208,7 @@
 {"alias": "BIT-solr-2023-44487", "flaw_id": "BIT-kong-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "BIT-kong-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-kong-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-kong-2023-44487", "kind": "osv"}
 {"alias": "CVE-2021-41254", "flaw_id": "BIT-kustomize-2021-41254", "kind": "cve"}
 {"alias": "GHSA-35rf-v2jv-gfg7", "flaw_id": "BIT-kustomize-2021-41254", "kind": "ghsa"}
 {"alias": "GO-2022-0260", "flaw_id": "BIT-kustomize-2021-41254", "kind": "go"}
@@ -26457,6 +26468,7 @@
 {"alias": "PYSEC-2024-243", "flaw_id": "BIT-mlflow-2024-3573", "kind": "pysec"}
 {"alias": "CVE-2024-37052", "flaw_id": "BIT-mlflow-2024-37052", "kind": "cve"}
 {"alias": "GHSA-76cg-cfhx-373f", "flaw_id": "BIT-mlflow-2024-37052", "kind": "ghsa"}
+{"alias": "CGA-3f38-vqc4-r77r", "flaw_id": "BIT-mlflow-2024-37052", "kind": "osv"}
 {"alias": "PYSEC-2026-1643", "flaw_id": "BIT-mlflow-2024-37052", "kind": "pysec"}
 {"alias": "CVE-2024-37053", "flaw_id": "BIT-mlflow-2024-37053", "kind": "cve"}
 {"alias": "GHSA-43c4-9qgj-x742", "flaw_id": "BIT-mlflow-2024-37053", "kind": "ghsa"}
@@ -26478,6 +26490,7 @@
 {"alias": "PYSEC-2026-1648", "flaw_id": "BIT-mlflow-2024-37058", "kind": "pysec"}
 {"alias": "CVE-2024-37059", "flaw_id": "BIT-mlflow-2024-37059", "kind": "cve"}
 {"alias": "GHSA-wf7f-8fxf-xfxc", "flaw_id": "BIT-mlflow-2024-37059", "kind": "ghsa"}
+{"alias": "CGA-2xhw-w75q-cpqg", "flaw_id": "BIT-mlflow-2024-37059", "kind": "osv"}
 {"alias": "PYSEC-2026-1660", "flaw_id": "BIT-mlflow-2024-37059", "kind": "pysec"}
 {"alias": "CVE-2024-37060", "flaw_id": "BIT-mlflow-2024-37060", "kind": "cve"}
 {"alias": "GHSA-cv6c-7963-wxcg", "flaw_id": "BIT-mlflow-2024-37060", "kind": "ghsa"}
@@ -28021,6 +28034,7 @@
 {"alias": "BIT-solr-2023-44487", "flaw_id": "BIT-nginx-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "BIT-nginx-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-nginx-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-nginx-2023-44487", "kind": "osv"}
 {"alias": "BIT-nginx-gateway-2024-24989", "flaw_id": "BIT-nginx-2024-24989", "kind": "bit"}
 {"alias": "CVE-2024-24989", "flaw_id": "BIT-nginx-2024-24989", "kind": "cve"}
 {"alias": "BIT-nginx-gateway-2024-24989", "flaw_id": "BIT-nginx-2024-24989", "kind": "osv"}
@@ -28155,6 +28169,7 @@
 {"alias": "BIT-solr-2023-44487", "flaw_id": "BIT-nginx-gateway-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "BIT-nginx-gateway-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-nginx-gateway-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-nginx-gateway-2023-44487", "kind": "osv"}
 {"alias": "BIT-nginx-2024-24989", "flaw_id": "BIT-nginx-gateway-2024-24989", "kind": "bit"}
 {"alias": "CVE-2024-24989", "flaw_id": "BIT-nginx-gateway-2024-24989", "kind": "cve"}
 {"alias": "BIT-nginx-2024-24989", "flaw_id": "BIT-nginx-gateway-2024-24989", "kind": "osv"}
@@ -28286,6 +28301,7 @@
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-nginx-ingress-controller-2023-44487", "kind": "bit"}
 {"alias": "CVE-2023-44487", "flaw_id": "BIT-nginx-ingress-controller-2023-44487", "kind": "cve"}
 {"alias": "GHSA-qppj-fm5r-hxr3", "flaw_id": "BIT-nginx-ingress-controller-2023-44487", "kind": "ghsa"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-nginx-ingress-controller-2023-44487", "kind": "osv"}
 {"alias": "CVE-2020-13940", "flaw_id": "BIT-nifi-2020-13940", "kind": "cve"}
 {"alias": "GHSA-q4xf-3pmq-3hw8", "flaw_id": "BIT-nifi-2020-13940", "kind": "ghsa"}
 {"alias": "CVE-2020-1928", "flaw_id": "BIT-nifi-2020-1928", "kind": "cve"}
@@ -28599,6 +28615,7 @@
 {"alias": "BIT-solr-2023-44487", "flaw_id": "BIT-node-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "BIT-node-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-node-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-node-2023-44487", "kind": "osv"}
 {"alias": "BIT-node-min-2023-46809", "flaw_id": "BIT-node-2023-46809", "kind": "bit"}
 {"alias": "CVE-2023-46809", "flaw_id": "BIT-node-2023-46809", "kind": "cve"}
 {"alias": "BIT-node-min-2023-46809", "flaw_id": "BIT-node-2023-46809", "kind": "osv"}
@@ -29031,6 +29048,7 @@
 {"alias": "BIT-solr-2023-44487", "flaw_id": "BIT-node-min-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "BIT-node-min-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-node-min-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-node-min-2023-44487", "kind": "osv"}
 {"alias": "BIT-node-2023-46809", "flaw_id": "BIT-node-min-2023-46809", "kind": "bit"}
 {"alias": "CVE-2023-46809", "flaw_id": "BIT-node-min-2023-46809", "kind": "cve"}
 {"alias": "BIT-node-2023-46809", "flaw_id": "BIT-node-min-2023-46809", "kind": "osv"}
@@ -32853,6 +32871,7 @@
 {"alias": "BIT-node-min-2023-44487", "flaw_id": "BIT-solr-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "BIT-solr-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-solr-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-solr-2023-44487", "kind": "osv"}
 {"alias": "CVE-2023-50290", "flaw_id": "BIT-solr-2023-50290", "kind": "cve"}
 {"alias": "GHSA-gg7w-pw2r-x2cq", "flaw_id": "BIT-solr-2023-50290", "kind": "ghsa"}
 {"alias": "CVE-2023-50291", "flaw_id": "BIT-solr-2023-50291", "kind": "cve"}
@@ -35504,6 +35523,7 @@
 {"alias": "BIT-node-min-2023-44487", "flaw_id": "BIT-tomcat-2023-44487", "kind": "osv"}
 {"alias": "BIT-solr-2023-44487", "flaw_id": "BIT-tomcat-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "BIT-tomcat-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-tomcat-2023-44487", "kind": "osv"}
 {"alias": "CVE-2023-45648", "flaw_id": "BIT-tomcat-2023-45648", "kind": "cve"}
 {"alias": "GHSA-r6j3-px5g-cq3x", "flaw_id": "BIT-tomcat-2023-45648", "kind": "ghsa"}
 {"alias": "CVE-2023-46589", "flaw_id": "BIT-tomcat-2023-46589", "kind": "cve"}
@@ -36018,6 +36038,7 @@
 {"alias": "BIT-node-min-2023-44487", "flaw_id": "BIT-varnish-2023-44487", "kind": "osv"}
 {"alias": "BIT-solr-2023-44487", "flaw_id": "BIT-varnish-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "BIT-varnish-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "BIT-varnish-2023-44487", "kind": "osv"}
 {"alias": "CVE-2025-30346", "flaw_id": "BIT-varnish-2025-30346", "kind": "cve"}
 {"alias": "CVE-2025-47905", "flaw_id": "BIT-varnish-2025-47905", "kind": "cve"}
 {"alias": "CVE-2020-10660", "flaw_id": "BIT-vault-2020-10660", "kind": "cve"}
@@ -36729,14 +36750,63 @@
 {"alias": "CVE-2023-45289", "flaw_id": "CGA-25gv-3qrh-8g5j", "kind": "cve"}
 {"alias": "GHSA-32ch-6x54-q4h9", "flaw_id": "CGA-25gv-3qrh-8g5j", "kind": "ghsa"}
 {"alias": "GO-2024-2600", "flaw_id": "CGA-25gv-3qrh-8g5j", "kind": "go"}
+{"alias": "CGA-3fw9-g448-cq83", "flaw_id": "CGA-25gv-3qrh-8g5j", "kind": "osv"}
 {"alias": "BIT-golang-2023-45284", "flaw_id": "CGA-28q2-443v-7jq9", "kind": "bit"}
 {"alias": "CGA-qh2c-wrpp-8hxj", "flaw_id": "CGA-28q2-443v-7jq9", "kind": "cga"}
 {"alias": "CGA-rwjr-mxxg-r7mm", "flaw_id": "CGA-28q2-443v-7jq9", "kind": "cga"}
 {"alias": "CVE-2023-45284", "flaw_id": "CGA-28q2-443v-7jq9", "kind": "cve"}
 {"alias": "GHSA-rq3x-83w4-p28c", "flaw_id": "CGA-28q2-443v-7jq9", "kind": "ghsa"}
 {"alias": "GO-2023-2186", "flaw_id": "CGA-28q2-443v-7jq9", "kind": "go"}
+{"alias": "BIT-golang-2024-24790", "flaw_id": "CGA-2fq6-p83q-pm8x", "kind": "bit"}
+{"alias": "CVE-2024-24790", "flaw_id": "CGA-2fq6-p83q-pm8x", "kind": "cve"}
+{"alias": "GHSA-49gw-vxvf-fc2g", "flaw_id": "CGA-2fq6-p83q-pm8x", "kind": "ghsa"}
+{"alias": "GO-2024-2887", "flaw_id": "CGA-2fq6-p83q-pm8x", "kind": "go"}
+{"alias": "BIT-mlflow-2024-37059", "flaw_id": "CGA-2xhw-w75q-cpqg", "kind": "bit"}
+{"alias": "CVE-2024-37059", "flaw_id": "CGA-2xhw-w75q-cpqg", "kind": "cve"}
+{"alias": "GHSA-wf7f-8fxf-xfxc", "flaw_id": "CGA-2xhw-w75q-cpqg", "kind": "ghsa"}
+{"alias": "BIT-mlflow-2024-37052", "flaw_id": "CGA-3f38-vqc4-r77r", "kind": "bit"}
+{"alias": "CVE-2024-37052", "flaw_id": "CGA-3f38-vqc4-r77r", "kind": "cve"}
+{"alias": "GHSA-76cg-cfhx-373f", "flaw_id": "CGA-3f38-vqc4-r77r", "kind": "ghsa"}
+{"alias": "BIT-golang-2023-45289", "flaw_id": "CGA-3fw9-g448-cq83", "kind": "bit"}
+{"alias": "CGA-25gv-3qrh-8g5j", "flaw_id": "CGA-3fw9-g448-cq83", "kind": "cga"}
+{"alias": "CGA-8rhm-9jx9-j3g6", "flaw_id": "CGA-3fw9-g448-cq83", "kind": "cga"}
+{"alias": "CVE-2023-45289", "flaw_id": "CGA-3fw9-g448-cq83", "kind": "cve"}
+{"alias": "GHSA-32ch-6x54-q4h9", "flaw_id": "CGA-3fw9-g448-cq83", "kind": "ghsa"}
+{"alias": "GO-2024-2600", "flaw_id": "CGA-3fw9-g448-cq83", "kind": "go"}
 {"alias": "CGA-25gv-3qrh-8g5j", "flaw_id": "CGA-3fw9-g448-cq83", "kind": "osv"}
+{"alias": "BIT-apisix-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-aspnet-core-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-contour-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-dotnet-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-dotnet-sdk-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-envoy-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-golang-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-jenkins-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-kong-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-nginx-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-nginx-gateway-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-nginx-ingress-controller-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-node-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-node-min-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-solr-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-tomcat-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "BIT-varnish-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
+{"alias": "CGA-5jp5-95p2-jw83", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "cga"}
+{"alias": "CGA-5v4r-558c-254r", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "cga"}
+{"alias": "CGA-9w4r-68hh-64j5", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "cga"}
+{"alias": "CGA-m49h-wjp5-j434", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "cga"}
+{"alias": "CGA-mp43-q6p3-96v2", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "cga"}
+{"alias": "CVE-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "cve"}
+{"alias": "GHSA-m425-mq94-257g", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "ghsa"}
+{"alias": "GHSA-qppj-fm5r-hxr3", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "ghsa"}
+{"alias": "GO-2023-2153", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "go"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "CGA-5jp5-95p2-jw83", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "CGA-5v4r-558c-254r", "kind": "osv"}
 {"alias": "CGA-25gv-3qrh-8g5j", "flaw_id": "CGA-8rhm-9jx9-j3g6", "kind": "osv"}
+{"alias": "CGA-3fw9-g448-cq83", "flaw_id": "CGA-8rhm-9jx9-j3g6", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "CGA-9w4r-68hh-64j5", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "CGA-m49h-wjp5-j434", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "CGA-mp43-q6p3-96v2", "kind": "osv"}
 {"alias": "CGA-28q2-443v-7jq9", "flaw_id": "CGA-qh2c-wrpp-8hxj", "kind": "osv"}
 {"alias": "CGA-25c3-cp9r-6wrx", "flaw_id": "CGA-qqfg-vr55-6p99", "kind": "osv"}
 {"alias": "CGA-25c3-cp9r-6wrx", "flaw_id": "CGA-qqg8-j32g-67m9", "kind": "osv"}
@@ -59630,6 +59700,7 @@
 {"alias": "BIT-solr-2023-44487", "flaw_id": "CVE-2023-44487", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "CVE-2023-44487", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "CVE-2023-44487", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "CVE-2023-44487", "kind": "osv"}
 {"alias": "GHSA-g3mv-64h3-h482", "flaw_id": "CVE-2023-4451", "kind": "ghsa"}
 {"alias": "GHSA-599v-h3q5-g6r9", "flaw_id": "CVE-2023-4453", "kind": "ghsa"}
 {"alias": "GHSA-p8gp-899c-jvq9", "flaw_id": "CVE-2023-4454", "kind": "ghsa"}
@@ -59689,6 +59760,7 @@
 {"alias": "BIT-golang-2023-45288", "flaw_id": "CVE-2023-45288", "kind": "osv"}
 {"alias": "BIT-golang-2023-45289", "flaw_id": "CVE-2023-45289", "kind": "osv"}
 {"alias": "CGA-25gv-3qrh-8g5j", "flaw_id": "CVE-2023-45289", "kind": "osv"}
+{"alias": "CGA-3fw9-g448-cq83", "flaw_id": "CVE-2023-45289", "kind": "osv"}
 {"alias": "BIT-golang-2023-45290", "flaw_id": "CVE-2023-45290", "kind": "osv"}
 {"alias": "GHSA-5mmw-p5qv-w3x5", "flaw_id": "CVE-2023-45292", "kind": "ghsa"}
 {"alias": "GHSA-6pgr-j9v4-xfvv", "flaw_id": "CVE-2023-45303", "kind": "ghsa"}
@@ -61796,6 +61868,7 @@
 {"alias": "BIT-golang-2024-24788", "flaw_id": "CVE-2024-24788", "kind": "osv"}
 {"alias": "BIT-golang-2024-24789", "flaw_id": "CVE-2024-24789", "kind": "osv"}
 {"alias": "BIT-golang-2024-24790", "flaw_id": "CVE-2024-24790", "kind": "osv"}
+{"alias": "CGA-2fq6-p83q-pm8x", "flaw_id": "CVE-2024-24790", "kind": "osv"}
 {"alias": "BIT-golang-2024-24791", "flaw_id": "CVE-2024-24791", "kind": "osv"}
 {"alias": "GHSA-9phm-fm57-rhg8", "flaw_id": "CVE-2024-24792", "kind": "ghsa"}
 {"alias": "BIT-apache-2024-24795", "flaw_id": "CVE-2024-24795", "kind": "osv"}
@@ -63146,6 +63219,7 @@
 {"alias": "GHSA-8hqg-whrw-pv92", "flaw_id": "CVE-2024-37032", "kind": "ghsa"}
 {"alias": "GHSA-76cg-cfhx-373f", "flaw_id": "CVE-2024-37052", "kind": "ghsa"}
 {"alias": "BIT-mlflow-2024-37052", "flaw_id": "CVE-2024-37052", "kind": "osv"}
+{"alias": "CGA-3f38-vqc4-r77r", "flaw_id": "CVE-2024-37052", "kind": "osv"}
 {"alias": "GHSA-43c4-9qgj-x742", "flaw_id": "CVE-2024-37053", "kind": "ghsa"}
 {"alias": "BIT-mlflow-2024-37053", "flaw_id": "CVE-2024-37053", "kind": "osv"}
 {"alias": "GHSA-ghv6-9r9j-wh4j", "flaw_id": "CVE-2024-37054", "kind": "ghsa"}
@@ -63160,6 +63234,7 @@
 {"alias": "BIT-mlflow-2024-37058", "flaw_id": "CVE-2024-37058", "kind": "osv"}
 {"alias": "GHSA-wf7f-8fxf-xfxc", "flaw_id": "CVE-2024-37059", "kind": "ghsa"}
 {"alias": "BIT-mlflow-2024-37059", "flaw_id": "CVE-2024-37059", "kind": "osv"}
+{"alias": "CGA-2xhw-w75q-cpqg", "flaw_id": "CVE-2024-37059", "kind": "osv"}
 {"alias": "GHSA-cv6c-7963-wxcg", "flaw_id": "CVE-2024-37060", "kind": "ghsa"}
 {"alias": "BIT-mlflow-2024-37060", "flaw_id": "CVE-2024-37060", "kind": "osv"}
 {"alias": "GHSA-pqcv-qw2r-r859", "flaw_id": "CVE-2024-37061", "kind": "ghsa"}
@@ -80626,6 +80701,7 @@
 {"alias": "BIT-spark-2023-22946", "flaw_id": "GHSA-329j-jfvr-rhr6", "kind": "osv"}
 {"alias": "CVE-2026-25894", "flaw_id": "GHSA-32cc-x95p-fxcg", "kind": "cve"}
 {"alias": "CGA-25gv-3qrh-8g5j", "flaw_id": "GHSA-32ch-6x54-q4h9", "kind": "osv"}
+{"alias": "CGA-3fw9-g448-cq83", "flaw_id": "GHSA-32ch-6x54-q4h9", "kind": "osv"}
 {"alias": "CVE-2024-5798", "flaw_id": "GHSA-32cj-5wx4-gq8p", "kind": "cve"}
 {"alias": "BIT-vault-2024-5798", "flaw_id": "GHSA-32cj-5wx4-gq8p", "kind": "osv"}
 {"alias": "CVE-2024-35252", "flaw_id": "GHSA-32f8-hmr3-7vxg", "kind": "cve"}
@@ -82958,6 +83034,7 @@
 {"alias": "CVE-2023-44311", "flaw_id": "GHSA-49gm-5685-8fxv", "kind": "cve"}
 {"alias": "BIT-liferay-2023-44311", "flaw_id": "GHSA-49gm-5685-8fxv", "kind": "osv"}
 {"alias": "CVE-2026-27626", "flaw_id": "GHSA-49gm-hh7w-wfvf", "kind": "cve"}
+{"alias": "CGA-2fq6-p83q-pm8x", "flaw_id": "GHSA-49gw-vxvf-fc2g", "kind": "osv"}
 {"alias": "CVE-2026-55495", "flaw_id": "GHSA-49h3-cwhj-4737", "kind": "cve"}
 {"alias": "CVE-2015-5241", "flaw_id": "GHSA-49h4-g8p5-jgq6", "kind": "cve"}
 {"alias": "CVE-2023-41051", "flaw_id": "GHSA-49hh-fprx-m68g", "kind": "cve"}
@@ -87916,6 +87993,7 @@
 {"alias": "CVE-2025-7339", "flaw_id": "GHSA-76c9-3jph-rj3q", "kind": "cve"}
 {"alias": "CVE-2024-37052", "flaw_id": "GHSA-76cg-cfhx-373f", "kind": "cve"}
 {"alias": "BIT-mlflow-2024-37052", "flaw_id": "GHSA-76cg-cfhx-373f", "kind": "osv"}
+{"alias": "CGA-3f38-vqc4-r77r", "flaw_id": "GHSA-76cg-cfhx-373f", "kind": "osv"}
 {"alias": "CVE-2023-36812", "flaw_id": "GHSA-76f7-9v52-v2fw", "kind": "cve"}
 {"alias": "CVE-2022-0084", "flaw_id": "GHSA-76fg-mhrg-fmmg", "kind": "cve"}
 {"alias": "CVE-2025-2888", "flaw_id": "GHSA-76g3-38jv-wxh4", "kind": "cve"}
@@ -101320,6 +101398,7 @@
 {"alias": "CVE-2026-44740", "flaw_id": "GHSA-m3xc-h892-ggx6", "kind": "cve"}
 {"alias": "CVE-2011-4283", "flaw_id": "GHSA-m3xp-4hf3-qfpp", "kind": "cve"}
 {"alias": "CVE-2021-44618", "flaw_id": "GHSA-m3xv-x3ph-mq22", "kind": "cve"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "GHSA-m425-mq94-257g", "kind": "osv"}
 {"alias": "CVE-2020-7700", "flaw_id": "GHSA-m428-jqc4-2p5j", "kind": "cve"}
 {"alias": "CVE-2020-14365", "flaw_id": "GHSA-m429-fhmv-c6q2", "kind": "cve"}
 {"alias": "CVE-2019-5420", "flaw_id": "GHSA-m42h-mh85-4qgc", "kind": "cve"}
@@ -105717,6 +105796,7 @@
 {"alias": "BIT-solr-2023-44487", "flaw_id": "GHSA-qppj-fm5r-hxr3", "kind": "osv"}
 {"alias": "BIT-tomcat-2023-44487", "flaw_id": "GHSA-qppj-fm5r-hxr3", "kind": "osv"}
 {"alias": "BIT-varnish-2023-44487", "flaw_id": "GHSA-qppj-fm5r-hxr3", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "GHSA-qppj-fm5r-hxr3", "kind": "osv"}
 {"alias": "CVE-2025-66803", "flaw_id": "GHSA-qppm-g56g-fpvp", "kind": "cve"}
 {"alias": "CVE-2023-52312", "flaw_id": "GHSA-qppw-c37g-xwcc", "kind": "cve"}
 {"alias": "CVE-2026-25054", "flaw_id": "GHSA-qpq4-pw7f-pp8w", "kind": "cve"}
@@ -110393,6 +110473,7 @@
 {"alias": "CVE-2020-2121", "flaw_id": "GHSA-wf76-qgqq-gcfj", "kind": "cve"}
 {"alias": "CVE-2024-37059", "flaw_id": "GHSA-wf7f-8fxf-xfxc", "kind": "cve"}
 {"alias": "BIT-mlflow-2024-37059", "flaw_id": "GHSA-wf7f-8fxf-xfxc", "kind": "osv"}
+{"alias": "CGA-2xhw-w75q-cpqg", "flaw_id": "GHSA-wf7f-8fxf-xfxc", "kind": "osv"}
 {"alias": "CVE-2022-2668", "flaw_id": "GHSA-wf7g-7h6h-678v", "kind": "cve"}
 {"alias": "CVE-2023-32235", "flaw_id": "GHSA-wf7x-fh6w-34r6", "kind": "cve"}
 {"alias": "BIT-ghost-2023-32235", "flaw_id": "GHSA-wf7x-fh6w-34r6", "kind": "osv"}
@@ -113215,6 +113296,7 @@
 {"alias": "BIT-golang-2023-39323", "flaw_id": "GO-2023-2095", "kind": "osv"}
 {"alias": "BIT-golang-2023-39325", "flaw_id": "GO-2023-2102", "kind": "osv"}
 {"alias": "BIT-harbor-2023-20902", "flaw_id": "GO-2023-2109", "kind": "osv"}
+{"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "GO-2023-2153", "kind": "osv"}
 {"alias": "BIT-nats-2023-46129", "flaw_id": "GO-2023-2163", "kind": "osv"}
 {"alias": "BIT-cosign-2023-46737", "flaw_id": "GO-2023-2181", "kind": "osv"}
 {"alias": "BIT-golang-2023-45283", "flaw_id": "GO-2023-2185", "kind": "osv"}
@@ -113277,6 +113359,7 @@
 {"alias": "BIT-golang-2023-45290", "flaw_id": "GO-2024-2599", "kind": "osv"}
 {"alias": "BIT-golang-2023-45289", "flaw_id": "GO-2024-2600", "kind": "osv"}
 {"alias": "CGA-25gv-3qrh-8g5j", "flaw_id": "GO-2024-2600", "kind": "osv"}
+{"alias": "CGA-3fw9-g448-cq83", "flaw_id": "GO-2024-2600", "kind": "osv"}
 {"alias": "BIT-golang-2024-24784", "flaw_id": "GO-2024-2609", "kind": "osv"}
 {"alias": "BIT-golang-2024-24785", "flaw_id": "GO-2024-2610", "kind": "osv"}
 {"alias": "BIT-vault-2024-2048", "flaw_id": "GO-2024-2617", "kind": "osv"}
@@ -113350,6 +113433,7 @@
 {"alias": "BIT-argo-cd-2024-31989", "flaw_id": "GO-2024-2877", "kind": "osv"}
 {"alias": "BIT-minio-2024-36107", "flaw_id": "GO-2024-2886", "kind": "osv"}
 {"alias": "BIT-golang-2024-24790", "flaw_id": "GO-2024-2887", "kind": "osv"}
+{"alias": "CGA-2fq6-p83q-pm8x", "flaw_id": "GO-2024-2887", "kind": "osv"}
 {"alias": "BIT-golang-2024-24789", "flaw_id": "GO-2024-2888", "kind": "osv"}
 {"alias": "BIT-argo-cd-2024-36106", "flaw_id": "GO-2024-2898", "kind": "osv"}
 {"alias": "BIT-opentelemetry-collector-2024-36129", "flaw_id": "GO-2024-2900", "kind": "osv"}
