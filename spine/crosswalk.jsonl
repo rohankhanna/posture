@@ -17059,10 +17059,12 @@
 {"alias": "CVE-2023-45288", "flaw_id": "BIT-golang-2023-45288", "kind": "cve"}
 {"alias": "GHSA-4v7x-pqxf-cx7m", "flaw_id": "BIT-golang-2023-45288", "kind": "ghsa"}
 {"alias": "GO-2024-2687", "flaw_id": "BIT-golang-2023-45288", "kind": "go"}
+{"alias": "CGA-8q47-wf6v-wqg5", "flaw_id": "BIT-golang-2023-45288", "kind": "osv"}
 {"alias": "CVE-2023-45289", "flaw_id": "BIT-golang-2023-45289", "kind": "cve"}
 {"alias": "GO-2024-2600", "flaw_id": "BIT-golang-2023-45289", "kind": "go"}
 {"alias": "CGA-25gv-3qrh-8g5j", "flaw_id": "BIT-golang-2023-45289", "kind": "osv"}
 {"alias": "CGA-3fw9-g448-cq83", "flaw_id": "BIT-golang-2023-45289", "kind": "osv"}
+{"alias": "CGA-8rhm-9jx9-j3g6", "flaw_id": "BIT-golang-2023-45289", "kind": "osv"}
 {"alias": "CVE-2023-45290", "flaw_id": "BIT-golang-2023-45290", "kind": "cve"}
 {"alias": "GO-2024-2599", "flaw_id": "BIT-golang-2023-45290", "kind": "go"}
 {"alias": "CGA-63g6-wrgr-m47w", "flaw_id": "BIT-golang-2023-45290", "kind": "osv"}
@@ -17074,6 +17076,7 @@
 {"alias": "GO-2024-2609", "flaw_id": "BIT-golang-2024-24784", "kind": "go"}
 {"alias": "CVE-2024-24785", "flaw_id": "BIT-golang-2024-24785", "kind": "cve"}
 {"alias": "GO-2024-2610", "flaw_id": "BIT-golang-2024-24785", "kind": "go"}
+{"alias": "CGA-97f2-3j6h-f6fr", "flaw_id": "BIT-golang-2024-24785", "kind": "osv"}
 {"alias": "CVE-2024-24787", "flaw_id": "BIT-golang-2024-24787", "kind": "cve"}
 {"alias": "GO-2024-2825", "flaw_id": "BIT-golang-2024-24787", "kind": "go"}
 {"alias": "CGA-67wh-9fxr-2w4p", "flaw_id": "BIT-golang-2024-24787", "kind": "osv"}
@@ -26494,6 +26497,7 @@
 {"alias": "PYSEC-2026-1643", "flaw_id": "BIT-mlflow-2024-37052", "kind": "pysec"}
 {"alias": "CVE-2024-37053", "flaw_id": "BIT-mlflow-2024-37053", "kind": "cve"}
 {"alias": "GHSA-43c4-9qgj-x742", "flaw_id": "BIT-mlflow-2024-37053", "kind": "ghsa"}
+{"alias": "CGA-92hc-jqrg-xcvw", "flaw_id": "BIT-mlflow-2024-37053", "kind": "osv"}
 {"alias": "PYSEC-2026-1636", "flaw_id": "BIT-mlflow-2024-37053", "kind": "pysec"}
 {"alias": "CVE-2024-37054", "flaw_id": "BIT-mlflow-2024-37054", "kind": "cve"}
 {"alias": "GHSA-ghv6-9r9j-wh4j", "flaw_id": "BIT-mlflow-2024-37054", "kind": "ghsa"}
@@ -36793,6 +36797,7 @@
 {"alias": "GHSA-32ch-6x54-q4h9", "flaw_id": "CGA-25gv-3qrh-8g5j", "kind": "ghsa"}
 {"alias": "GO-2024-2600", "flaw_id": "CGA-25gv-3qrh-8g5j", "kind": "go"}
 {"alias": "CGA-3fw9-g448-cq83", "flaw_id": "CGA-25gv-3qrh-8g5j", "kind": "osv"}
+{"alias": "CGA-8rhm-9jx9-j3g6", "flaw_id": "CGA-25gv-3qrh-8g5j", "kind": "osv"}
 {"alias": "BIT-golang-2023-45284", "flaw_id": "CGA-28q2-443v-7jq9", "kind": "bit"}
 {"alias": "CGA-qh2c-wrpp-8hxj", "flaw_id": "CGA-28q2-443v-7jq9", "kind": "cga"}
 {"alias": "CGA-rwjr-mxxg-r7mm", "flaw_id": "CGA-28q2-443v-7jq9", "kind": "cga"}
@@ -36804,6 +36809,7 @@
 {"alias": "CVE-2024-24790", "flaw_id": "CGA-2fq6-p83q-pm8x", "kind": "cve"}
 {"alias": "GHSA-49gw-vxvf-fc2g", "flaw_id": "CGA-2fq6-p83q-pm8x", "kind": "ghsa"}
 {"alias": "GO-2024-2887", "flaw_id": "CGA-2fq6-p83q-pm8x", "kind": "go"}
+{"alias": "CGA-848h-fvmg-5h7m", "flaw_id": "CGA-2vjx-23jm-4246", "kind": "osv"}
 {"alias": "BIT-mlflow-2024-37059", "flaw_id": "CGA-2xhw-w75q-cpqg", "kind": "bit"}
 {"alias": "CVE-2024-37059", "flaw_id": "CGA-2xhw-w75q-cpqg", "kind": "cve"}
 {"alias": "GHSA-wf7f-8fxf-xfxc", "flaw_id": "CGA-2xhw-w75q-cpqg", "kind": "ghsa"}
@@ -36817,6 +36823,7 @@
 {"alias": "GHSA-32ch-6x54-q4h9", "flaw_id": "CGA-3fw9-g448-cq83", "kind": "ghsa"}
 {"alias": "GO-2024-2600", "flaw_id": "CGA-3fw9-g448-cq83", "kind": "go"}
 {"alias": "CGA-25gv-3qrh-8g5j", "flaw_id": "CGA-3fw9-g448-cq83", "kind": "osv"}
+{"alias": "CGA-8rhm-9jx9-j3g6", "flaw_id": "CGA-3fw9-g448-cq83", "kind": "osv"}
 {"alias": "BIT-apisix-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
 {"alias": "BIT-aspnet-core-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
 {"alias": "BIT-contour-2023-44487", "flaw_id": "CGA-4mmr-qwxr-f88g", "kind": "bit"}
@@ -36943,13 +36950,37 @@
 {"alias": "BIT-kafka-2021-38153", "flaw_id": "CGA-6xhq-ggm7-4q2r", "kind": "bit"}
 {"alias": "CVE-2021-38153", "flaw_id": "CGA-6xhq-ggm7-4q2r", "kind": "cve"}
 {"alias": "GHSA-3j6g-hxx5-3q26", "flaw_id": "CGA-6xhq-ggm7-4q2r", "kind": "ghsa"}
+{"alias": "CGA-2vjx-23jm-4246", "flaw_id": "CGA-848h-fvmg-5h7m", "kind": "cga"}
+{"alias": "CVE-2017-8806", "flaw_id": "CGA-848h-fvmg-5h7m", "kind": "cve"}
+{"alias": "GHSA-xg92-g8h7-v7r4", "flaw_id": "CGA-848h-fvmg-5h7m", "kind": "ghsa"}
+{"alias": "BIT-golang-2023-45288", "flaw_id": "CGA-8q47-wf6v-wqg5", "kind": "bit"}
+{"alias": "CGA-grww-v9jg-rhw2", "flaw_id": "CGA-8q47-wf6v-wqg5", "kind": "cga"}
+{"alias": "CVE-2023-45288", "flaw_id": "CGA-8q47-wf6v-wqg5", "kind": "cve"}
+{"alias": "GHSA-4v7x-pqxf-cx7m", "flaw_id": "CGA-8q47-wf6v-wqg5", "kind": "ghsa"}
+{"alias": "GO-2024-2687", "flaw_id": "CGA-8q47-wf6v-wqg5", "kind": "go"}
+{"alias": "BIT-golang-2023-45289", "flaw_id": "CGA-8rhm-9jx9-j3g6", "kind": "bit"}
+{"alias": "CGA-25gv-3qrh-8g5j", "flaw_id": "CGA-8rhm-9jx9-j3g6", "kind": "cga"}
+{"alias": "CGA-3fw9-g448-cq83", "flaw_id": "CGA-8rhm-9jx9-j3g6", "kind": "cga"}
+{"alias": "CVE-2023-45289", "flaw_id": "CGA-8rhm-9jx9-j3g6", "kind": "cve"}
+{"alias": "GHSA-32ch-6x54-q4h9", "flaw_id": "CGA-8rhm-9jx9-j3g6", "kind": "ghsa"}
+{"alias": "GO-2024-2600", "flaw_id": "CGA-8rhm-9jx9-j3g6", "kind": "go"}
 {"alias": "CGA-25gv-3qrh-8g5j", "flaw_id": "CGA-8rhm-9jx9-j3g6", "kind": "osv"}
 {"alias": "CGA-3fw9-g448-cq83", "flaw_id": "CGA-8rhm-9jx9-j3g6", "kind": "osv"}
+{"alias": "BIT-mlflow-2024-37053", "flaw_id": "CGA-92hc-jqrg-xcvw", "kind": "bit"}
+{"alias": "CVE-2024-37053", "flaw_id": "CGA-92hc-jqrg-xcvw", "kind": "cve"}
+{"alias": "GHSA-43c4-9qgj-x742", "flaw_id": "CGA-92hc-jqrg-xcvw", "kind": "ghsa"}
+{"alias": "BIT-golang-2024-24785", "flaw_id": "CGA-97f2-3j6h-f6fr", "kind": "bit"}
+{"alias": "CGA-q7f3-cq9g-gr7f", "flaw_id": "CGA-97f2-3j6h-f6fr", "kind": "cga"}
+{"alias": "CGA-wgjf-hp76-8hxw", "flaw_id": "CGA-97f2-3j6h-f6fr", "kind": "cga"}
+{"alias": "CVE-2024-24785", "flaw_id": "CGA-97f2-3j6h-f6fr", "kind": "cve"}
+{"alias": "GHSA-j6m3-gc37-6r6q", "flaw_id": "CGA-97f2-3j6h-f6fr", "kind": "ghsa"}
+{"alias": "GO-2024-2610", "flaw_id": "CGA-97f2-3j6h-f6fr", "kind": "go"}
 {"alias": "CGA-5mrq-75x2-g8hj", "flaw_id": "CGA-9qv8-44xh-vf2p", "kind": "osv"}
 {"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "CGA-9w4r-68hh-64j5", "kind": "osv"}
 {"alias": "CGA-5jp5-95p2-jw83", "flaw_id": "CGA-9w4r-68hh-64j5", "kind": "osv"}
 {"alias": "CGA-5v4r-558c-254r", "flaw_id": "CGA-9w4r-68hh-64j5", "kind": "osv"}
 {"alias": "CGA-63g6-wrgr-m47w", "flaw_id": "CGA-g554-cg74-8rm4", "kind": "osv"}
+{"alias": "CGA-8q47-wf6v-wqg5", "flaw_id": "CGA-grww-v9jg-rhw2", "kind": "osv"}
 {"alias": "CGA-62jq-8hgq-c9rv", "flaw_id": "CGA-h49j-2qff-rgxm", "kind": "osv"}
 {"alias": "CGA-62jq-8hgq-c9rv", "flaw_id": "CGA-j47h-3qf8-25gj", "kind": "osv"}
 {"alias": "CGA-4mmr-qwxr-f88g", "flaw_id": "CGA-m49h-wjp5-j434", "kind": "osv"}
@@ -36959,10 +36990,12 @@
 {"alias": "CGA-5jp5-95p2-jw83", "flaw_id": "CGA-mp43-q6p3-96v2", "kind": "osv"}
 {"alias": "CGA-5v4r-558c-254r", "flaw_id": "CGA-mp43-q6p3-96v2", "kind": "osv"}
 {"alias": "CGA-5cmg-w6mr-wx73", "flaw_id": "CGA-pp92-9wg6-xwgx", "kind": "osv"}
+{"alias": "CGA-97f2-3j6h-f6fr", "flaw_id": "CGA-q7f3-cq9g-gr7f", "kind": "osv"}
 {"alias": "CGA-28q2-443v-7jq9", "flaw_id": "CGA-qh2c-wrpp-8hxj", "kind": "osv"}
 {"alias": "CGA-25c3-cp9r-6wrx", "flaw_id": "CGA-qqfg-vr55-6p99", "kind": "osv"}
 {"alias": "CGA-25c3-cp9r-6wrx", "flaw_id": "CGA-qqg8-j32g-67m9", "kind": "osv"}
 {"alias": "CGA-28q2-443v-7jq9", "flaw_id": "CGA-rwjr-mxxg-r7mm", "kind": "osv"}
+{"alias": "CGA-97f2-3j6h-f6fr", "flaw_id": "CGA-wgjf-hp76-8hxw", "kind": "osv"}
 {"alias": "CGA-63g6-wrgr-m47w", "flaw_id": "CGA-xr68-h9cg-49cj", "kind": "osv"}
 {"alias": "GHSA-wcwp-r3fj-mm3p", "flaw_id": "CVE-2000-0062", "kind": "ghsa"}
 {"alias": "GHSA-j5cc-3h6r-jqh4", "flaw_id": "CVE-2000-0483", "kind": "ghsa"}
@@ -40588,6 +40621,7 @@
 {"alias": "GHSA-8fxc-qm65-vpxg", "flaw_id": "CVE-2017-8761", "kind": "ghsa"}
 {"alias": "GHSA-4399-46r4-5rmv", "flaw_id": "CVE-2017-8762", "kind": "ghsa"}
 {"alias": "GHSA-5hf2-7xf4-w3j6", "flaw_id": "CVE-2017-8780", "kind": "ghsa"}
+{"alias": "CGA-848h-fvmg-5h7m", "flaw_id": "CVE-2017-8806", "kind": "osv"}
 {"alias": "GHSA-wm7g-rmgg-9837", "flaw_id": "CVE-2017-8827", "kind": "ghsa"}
 {"alias": "GHSA-7vvh-xqq4-w777", "flaw_id": "CVE-2017-8874", "kind": "ghsa"}
 {"alias": "GHSA-5x4j-xcmv-v3q2", "flaw_id": "CVE-2017-8879", "kind": "ghsa"}
@@ -59916,9 +59950,11 @@
 {"alias": "BIT-golang-2023-45287", "flaw_id": "CVE-2023-45287", "kind": "osv"}
 {"alias": "GHSA-4v7x-pqxf-cx7m", "flaw_id": "CVE-2023-45288", "kind": "ghsa"}
 {"alias": "BIT-golang-2023-45288", "flaw_id": "CVE-2023-45288", "kind": "osv"}
+{"alias": "CGA-8q47-wf6v-wqg5", "flaw_id": "CVE-2023-45288", "kind": "osv"}
 {"alias": "BIT-golang-2023-45289", "flaw_id": "CVE-2023-45289", "kind": "osv"}
 {"alias": "CGA-25gv-3qrh-8g5j", "flaw_id": "CVE-2023-45289", "kind": "osv"}
 {"alias": "CGA-3fw9-g448-cq83", "flaw_id": "CVE-2023-45289", "kind": "osv"}
+{"alias": "CGA-8rhm-9jx9-j3g6", "flaw_id": "CVE-2023-45289", "kind": "osv"}
 {"alias": "BIT-golang-2023-45290", "flaw_id": "CVE-2023-45290", "kind": "osv"}
 {"alias": "CGA-63g6-wrgr-m47w", "flaw_id": "CVE-2023-45290", "kind": "osv"}
 {"alias": "GHSA-5mmw-p5qv-w3x5", "flaw_id": "CVE-2023-45292", "kind": "ghsa"}
@@ -62023,6 +62059,7 @@
 {"alias": "BIT-golang-2024-24783", "flaw_id": "CVE-2024-24783", "kind": "osv"}
 {"alias": "BIT-golang-2024-24784", "flaw_id": "CVE-2024-24784", "kind": "osv"}
 {"alias": "BIT-golang-2024-24785", "flaw_id": "CVE-2024-24785", "kind": "osv"}
+{"alias": "CGA-97f2-3j6h-f6fr", "flaw_id": "CVE-2024-24785", "kind": "osv"}
 {"alias": "GHSA-8r3f-844c-mc37", "flaw_id": "CVE-2024-24786", "kind": "ghsa"}
 {"alias": "BIT-golang-2024-24787", "flaw_id": "CVE-2024-24787", "kind": "osv"}
 {"alias": "CGA-67wh-9fxr-2w4p", "flaw_id": "CVE-2024-24787", "kind": "osv"}
@@ -63385,6 +63422,7 @@
 {"alias": "CGA-3f38-vqc4-r77r", "flaw_id": "CVE-2024-37052", "kind": "osv"}
 {"alias": "GHSA-43c4-9qgj-x742", "flaw_id": "CVE-2024-37053", "kind": "ghsa"}
 {"alias": "BIT-mlflow-2024-37053", "flaw_id": "CVE-2024-37053", "kind": "osv"}
+{"alias": "CGA-92hc-jqrg-xcvw", "flaw_id": "CVE-2024-37053", "kind": "osv"}
 {"alias": "GHSA-ghv6-9r9j-wh4j", "flaw_id": "CVE-2024-37054", "kind": "ghsa"}
 {"alias": "BIT-mlflow-2024-37054", "flaw_id": "CVE-2024-37054", "kind": "osv"}
 {"alias": "GHSA-x38x-g6gr-jqff", "flaw_id": "CVE-2024-37055", "kind": "ghsa"}
@@ -78498,7 +78536,15 @@
 {"alias": "GHSA-72c6-fx6q-fr5w", "flaw_id": "CVE-2026-6270", "kind": "ghsa"}
 {"alias": "BIT-gitlab-2026-6277", "flaw_id": "CVE-2026-6277", "kind": "osv"}
 {"alias": "GHSA-83xp-526h-j3ww", "flaw_id": "CVE-2026-62843", "kind": "ghsa"}
+{"alias": "GHSA-vg44-h755-9hw7", "flaw_id": "CVE-2026-62871", "kind": "ghsa"}
+{"alias": "GHSA-jqhp-238x-qhgf", "flaw_id": "CVE-2026-62886", "kind": "ghsa"}
+{"alias": "GHSA-fx4q-gjrx-2jw6", "flaw_id": "CVE-2026-62897", "kind": "ghsa"}
+{"alias": "GHSA-c494-m2fq-59mx", "flaw_id": "CVE-2026-62898", "kind": "ghsa"}
+{"alias": "GHSA-r6mh-95jw-g7qg", "flaw_id": "CVE-2026-62899", "kind": "ghsa"}
 {"alias": "GHSA-hv5g-26jg-pc45", "flaw_id": "CVE-2026-6290", "kind": "ghsa"}
+{"alias": "GHSA-m93f-wj8c-rp8p", "flaw_id": "CVE-2026-62901", "kind": "ghsa"}
+{"alias": "GHSA-9mrh-pw7c-9mqm", "flaw_id": "CVE-2026-62902", "kind": "ghsa"}
+{"alias": "GHSA-9mr8-pwpw-3j2w", "flaw_id": "CVE-2026-62909", "kind": "ghsa"}
 {"alias": "GHSA-h2wf-967x-gxvw", "flaw_id": "CVE-2026-62944", "kind": "ghsa"}
 {"alias": "GHSA-h22j-f9xw-xjjm", "flaw_id": "CVE-2026-62946", "kind": "ghsa"}
 {"alias": "GHSA-f6wf-28g6-769x", "flaw_id": "CVE-2026-62992", "kind": "ghsa"}
@@ -78745,6 +78791,7 @@
 {"alias": "GHSA-6r3x-h84w-fhxx", "flaw_id": "CVE-2026-6987", "kind": "ghsa"}
 {"alias": "GHSA-jj45-xvq5-rhh9", "flaw_id": "CVE-2026-6993", "kind": "ghsa"}
 {"alias": "GHSA-x99g-8v8j-25j2", "flaw_id": "CVE-2026-7020", "kind": "ghsa"}
+{"alias": "GHSA-gg8c-3338-xw2f", "flaw_id": "CVE-2026-70354", "kind": "ghsa"}
 {"alias": "GHSA-6rmm-pg23-5f8q", "flaw_id": "CVE-2026-7045", "kind": "ghsa"}
 {"alias": "GHSA-52fh-8v99-63c2", "flaw_id": "CVE-2026-70470", "kind": "ghsa"}
 {"alias": "GHSA-8r8h-6vcc-xhrv", "flaw_id": "CVE-2026-70471", "kind": "ghsa"}
@@ -78872,6 +78919,7 @@
 {"alias": "GHSA-gw2x-mfwr-h46p", "flaw_id": "CVE-2026-7303", "kind": "ghsa"}
 {"alias": "GHSA-36m8-w8qf-g76p", "flaw_id": "CVE-2026-7304", "kind": "ghsa"}
 {"alias": "GHSA-p5mv-gj8j-xqgf", "flaw_id": "CVE-2026-7307", "kind": "ghsa"}
+{"alias": "GHSA-87fv-vqqr-m4jr", "flaw_id": "CVE-2026-73080", "kind": "ghsa"}
 {"alias": "GHSA-gwfr-jfjf-92vv", "flaw_id": "CVE-2026-7317", "kind": "ghsa"}
 {"alias": "GHSA-7jcp-v9w4-wjmg", "flaw_id": "CVE-2026-7374", "kind": "ghsa"}
 {"alias": "BIT-gitlab-2026-7377", "flaw_id": "CVE-2026-7377", "kind": "osv"}
@@ -80869,6 +80917,7 @@
 {"alias": "CVE-2026-25894", "flaw_id": "GHSA-32cc-x95p-fxcg", "kind": "cve"}
 {"alias": "CGA-25gv-3qrh-8g5j", "flaw_id": "GHSA-32ch-6x54-q4h9", "kind": "osv"}
 {"alias": "CGA-3fw9-g448-cq83", "flaw_id": "GHSA-32ch-6x54-q4h9", "kind": "osv"}
+{"alias": "CGA-8rhm-9jx9-j3g6", "flaw_id": "GHSA-32ch-6x54-q4h9", "kind": "osv"}
 {"alias": "CVE-2024-5798", "flaw_id": "GHSA-32cj-5wx4-gq8p", "kind": "cve"}
 {"alias": "BIT-vault-2024-5798", "flaw_id": "GHSA-32cj-5wx4-gq8p", "kind": "osv"}
 {"alias": "CVE-2024-35252", "flaw_id": "GHSA-32f8-hmr3-7vxg", "kind": "cve"}
@@ -82655,6 +82704,7 @@
 {"alias": "CVE-2026-41007", "flaw_id": "GHSA-439x-6767-44cv", "kind": "cve"}
 {"alias": "CVE-2024-37053", "flaw_id": "GHSA-43c4-9qgj-x742", "kind": "cve"}
 {"alias": "BIT-mlflow-2024-37053", "flaw_id": "GHSA-43c4-9qgj-x742", "kind": "osv"}
+{"alias": "CGA-92hc-jqrg-xcvw", "flaw_id": "GHSA-43c4-9qgj-x742", "kind": "osv"}
 {"alias": "CVE-2025-24019", "flaw_id": "GHSA-43c9-gw4x-pcx6", "kind": "cve"}
 {"alias": "CVE-2020-28360", "flaw_id": "GHSA-43ch-2h55-2vj7", "kind": "cve"}
 {"alias": "CVE-2013-4278", "flaw_id": "GHSA-43cm-73px-5v4m", "kind": "cve"}
@@ -84081,6 +84131,7 @@
 {"alias": "CVE-2026-23997", "flaw_id": "GHSA-4v7v-7v7r-3r5h", "kind": "cve"}
 {"alias": "CVE-2023-45288", "flaw_id": "GHSA-4v7x-pqxf-cx7m", "kind": "cve"}
 {"alias": "BIT-golang-2023-45288", "flaw_id": "GHSA-4v7x-pqxf-cx7m", "kind": "osv"}
+{"alias": "CGA-8q47-wf6v-wqg5", "flaw_id": "GHSA-4v7x-pqxf-cx7m", "kind": "osv"}
 {"alias": "CVE-2026-48994", "flaw_id": "GHSA-4v89-6mgq-6rgc", "kind": "cve"}
 {"alias": "CVE-2026-40682", "flaw_id": "GHSA-4v8g-86x5-3vrc", "kind": "cve"}
 {"alias": "CVE-2025-47776", "flaw_id": "GHSA-4v8w-gg5j-ph37", "kind": "cve"}
@@ -89918,6 +89969,7 @@
 {"alias": "CVE-2026-41159", "flaw_id": "GHSA-87f9-hvmw-gh4p", "kind": "cve"}
 {"alias": "CVE-2023-38519", "flaw_id": "GHSA-87fg-9x5w-j3rm", "kind": "cve"}
 {"alias": "CVE-2026-25758", "flaw_id": "GHSA-87fh-rc96-6fr6", "kind": "cve"}
+{"alias": "CVE-2026-73080", "flaw_id": "GHSA-87fv-vqqr-m4jr", "kind": "cve"}
 {"alias": "CVE-2016-10620", "flaw_id": "GHSA-87g3-x896-w798", "kind": "cve"}
 {"alias": "BIT-wordpress-2020-4049", "flaw_id": "GHSA-87h4-phjv-rm6p", "kind": "osv"}
 {"alias": "BIT-wordpress-multisite-2020-4049", "flaw_id": "GHSA-87h4-phjv-rm6p", "kind": "osv"}
@@ -92375,6 +92427,8 @@
 {"alias": "BIT-tensorflow-2020-15194", "flaw_id": "GHSA-9mqp-7v2h-2382", "kind": "osv"}
 {"alias": "CVE-2026-44336", "flaw_id": "GHSA-9mqq-jqxf-grvw", "kind": "cve"}
 {"alias": "CVE-2018-3754", "flaw_id": "GHSA-9mr8-6prp-gwjv", "kind": "cve"}
+{"alias": "CVE-2026-62909", "flaw_id": "GHSA-9mr8-pwpw-3j2w", "kind": "cve"}
+{"alias": "CVE-2026-62902", "flaw_id": "GHSA-9mrh-pw7c-9mqm", "kind": "cve"}
 {"alias": "CVE-2026-40186", "flaw_id": "GHSA-9mrh-v2v3-xpfm", "kind": "cve"}
 {"alias": "CVE-2025-25300", "flaw_id": "GHSA-9mrq-cjgh-32g2", "kind": "cve"}
 {"alias": "CVE-2020-28487", "flaw_id": "GHSA-9mrv-456v-pf22", "kind": "cve"}
@@ -93086,6 +93140,7 @@
 {"alias": "CVE-2024-29869", "flaw_id": "GHSA-c476-j253-5rgq", "kind": "cve"}
 {"alias": "CVE-2024-49762", "flaw_id": "GHSA-c479-wq8g-57hr", "kind": "cve"}
 {"alias": "CVE-2024-7512", "flaw_id": "GHSA-c47w-9mcf-w972", "kind": "cve"}
+{"alias": "CVE-2026-62898", "flaw_id": "GHSA-c494-m2fq-59mx", "kind": "cve"}
 {"alias": "CVE-2021-23329", "flaw_id": "GHSA-c497-v8pv-ch6x", "kind": "cve"}
 {"alias": "CVE-2017-16654", "flaw_id": "GHSA-c49r-8gj6-768r", "kind": "cve"}
 {"alias": "CVE-2020-25750", "flaw_id": "GHSA-c49v-35ff-q9f7", "kind": "cve"}
@@ -96212,6 +96267,7 @@
 {"alias": "CVE-2024-10110", "flaw_id": "GHSA-fx47-jpv9-7hxr", "kind": "cve"}
 {"alias": "CVE-2024-1887", "flaw_id": "GHSA-fx48-xv6q-6gp3", "kind": "cve"}
 {"alias": "CVE-2026-2463", "flaw_id": "GHSA-fx49-m253-27jj", "kind": "cve"}
+{"alias": "CVE-2026-62897", "flaw_id": "GHSA-fx4q-gjrx-2jw6", "kind": "cve"}
 {"alias": "CVE-2022-33171", "flaw_id": "GHSA-fx4w-v43j-vc45", "kind": "cve"}
 {"alias": "CVE-2022-23588", "flaw_id": "GHSA-fx5c-h9f6-rv7c", "kind": "cve"}
 {"alias": "BIT-tensorflow-2022-23588", "flaw_id": "GHSA-fx5c-h9f6-rv7c", "kind": "osv"}
@@ -97168,6 +97224,7 @@
 {"alias": "CVE-2023-50290", "flaw_id": "GHSA-gg7w-pw2r-x2cq", "kind": "cve"}
 {"alias": "BIT-solr-2023-50290", "flaw_id": "GHSA-gg7w-pw2r-x2cq", "kind": "osv"}
 {"alias": "CVE-2020-11078", "flaw_id": "GHSA-gg84-qgv9-w4pq", "kind": "cve"}
+{"alias": "CVE-2026-70354", "flaw_id": "GHSA-gg8c-3338-xw2f", "kind": "cve"}
 {"alias": "BIT-mastodon-2026-23962", "flaw_id": "GHSA-gg8q-rcg7-p79g", "kind": "osv"}
 {"alias": "CVE-2019-10316", "flaw_id": "GHSA-gg8r-24qm-qfch", "kind": "cve"}
 {"alias": "CVE-2022-23494", "flaw_id": "GHSA-gg8r-xjwq-4w92", "kind": "cve"}
@@ -100084,6 +100141,7 @@
 {"alias": "CVE-2022-0951", "flaw_id": "GHSA-j6jg-w79c-7p8v", "kind": "cve"}
 {"alias": "CVE-2026-30943", "flaw_id": "GHSA-j6jp-78w8-34x6", "kind": "cve"}
 {"alias": "CVE-2017-7266", "flaw_id": "GHSA-j6jq-3q8p-xgg6", "kind": "cve"}
+{"alias": "CGA-97f2-3j6h-f6fr", "flaw_id": "GHSA-j6m3-gc37-6r6q", "kind": "osv"}
 {"alias": "CVE-2010-3495", "flaw_id": "GHSA-j6m4-frxh-p4x8", "kind": "cve"}
 {"alias": "CVE-2023-41005", "flaw_id": "GHSA-j6mp-hx4g-p3gm", "kind": "cve"}
 {"alias": "CVE-2017-7200", "flaw_id": "GHSA-j6mr-cm6x-h6jg", "kind": "cve"}
@@ -101023,6 +101081,7 @@
 {"alias": "CVE-2023-24057", "flaw_id": "GHSA-jqh6-9574-5x22", "kind": "cve"}
 {"alias": "CVE-2020-8176", "flaw_id": "GHSA-jqh7-w5pr-cr56", "kind": "cve"}
 {"alias": "CVE-2023-36830", "flaw_id": "GHSA-jqhc-m2j3-fjrx", "kind": "cve"}
+{"alias": "CVE-2026-62886", "flaw_id": "GHSA-jqhp-238x-qhgf", "kind": "cve"}
 {"alias": "CVE-2022-35513", "flaw_id": "GHSA-jqhq-pfg3-fg5p", "kind": "cve"}
 {"alias": "CVE-2026-55433", "flaw_id": "GHSA-jqj2-x4c5-jfxm", "kind": "cve"}
 {"alias": "CVE-2021-45693", "flaw_id": "GHSA-jqjj-r4qp-x2gh", "kind": "cve"}
@@ -102021,6 +102080,7 @@
 {"alias": "CVE-2026-55984", "flaw_id": "GHSA-m932-crvm-gcp5", "kind": "cve"}
 {"alias": "CVE-2020-2139", "flaw_id": "GHSA-m935-chfp-9f63", "kind": "cve"}
 {"alias": "CVE-2020-28461", "flaw_id": "GHSA-m939-vrfp-9v8p", "kind": "cve"}
+{"alias": "CVE-2026-62901", "flaw_id": "GHSA-m93f-wj8c-rp8p", "kind": "cve"}
 {"alias": "CVE-2026-54088", "flaw_id": "GHSA-m93h-4hw7-5qcm", "kind": "cve"}
 {"alias": "CVE-2017-2604", "flaw_id": "GHSA-m93h-5qmx-pphg", "kind": "cve"}
 {"alias": "CVE-2020-4076", "flaw_id": "GHSA-m93v-9qjc-3g79", "kind": "cve"}
@@ -106808,6 +106868,7 @@
 {"alias": "BIT-tensorflow-2021-37678", "flaw_id": "GHSA-r6jx-9g48-2r5r", "kind": "osv"}
 {"alias": "CVE-2019-1003030", "flaw_id": "GHSA-r6mc-mrvr-23cr", "kind": "cve"}
 {"alias": "CVE-2023-49377", "flaw_id": "GHSA-r6mg-fq87-gw34", "kind": "cve"}
+{"alias": "CVE-2026-62899", "flaw_id": "GHSA-r6mh-95jw-g7qg", "kind": "cve"}
 {"alias": "CVE-2021-37626", "flaw_id": "GHSA-r6mv-ppjc-4hgr", "kind": "cve"}
 {"alias": "CVE-2021-29565", "flaw_id": "GHSA-r6pg-pjwc-j585", "kind": "cve"}
 {"alias": "BIT-tensorflow-2021-29565", "flaw_id": "GHSA-r6pg-pjwc-j585", "kind": "osv"}
@@ -108986,6 +109047,7 @@
 {"alias": "BIT-mastodon-2026-47777", "flaw_id": "GHSA-vg36-gxjg-2v46", "kind": "osv"}
 {"alias": "CVE-2026-29113", "flaw_id": "GHSA-vg3j-hpm9-8v5v", "kind": "cve"}
 {"alias": "CVE-2024-35176", "flaw_id": "GHSA-vg3r-rm7w-2xgh", "kind": "cve"}
+{"alias": "CVE-2026-62871", "flaw_id": "GHSA-vg44-h755-9hw7", "kind": "cve"}
 {"alias": "CVE-2022-39348", "flaw_id": "GHSA-vg46-2rrj-3647", "kind": "cve"}
 {"alias": "CVE-2018-1000165", "flaw_id": "GHSA-vg4f-8v9q-5c3x", "kind": "cve"}
 {"alias": "CVE-2016-15015", "flaw_id": "GHSA-vg5x-6q66-rvgx", "kind": "cve"}
@@ -112412,6 +112474,7 @@
 {"alias": "CVE-2022-36086", "flaw_id": "GHSA-xg8p-34w2-j49j", "kind": "cve"}
 {"alias": "CVE-2019-10433", "flaw_id": "GHSA-xg8p-cp7f-cphx", "kind": "cve"}
 {"alias": "CVE-2024-31453", "flaw_id": "GHSA-xg8v-m2mh-45m6", "kind": "cve"}
+{"alias": "CGA-848h-fvmg-5h7m", "flaw_id": "GHSA-xg92-g8h7-v7r4", "kind": "osv"}
 {"alias": "CVE-2023-25577", "flaw_id": "GHSA-xg9f-g7g7-2323", "kind": "cve"}
 {"alias": "CVE-2025-50151", "flaw_id": "GHSA-xg9p-p463-3qjp", "kind": "cve"}
 {"alias": "CVE-2026-22871", "flaw_id": "GHSA-xg9w-vg3g-6m68", "kind": "cve"}
@@ -113544,8 +113607,10 @@
 {"alias": "BIT-golang-2023-45289", "flaw_id": "GO-2024-2600", "kind": "osv"}
 {"alias": "CGA-25gv-3qrh-8g5j", "flaw_id": "GO-2024-2600", "kind": "osv"}
 {"alias": "CGA-3fw9-g448-cq83", "flaw_id": "GO-2024-2600", "kind": "osv"}
+{"alias": "CGA-8rhm-9jx9-j3g6", "flaw_id": "GO-2024-2600", "kind": "osv"}
 {"alias": "BIT-golang-2024-24784", "flaw_id": "GO-2024-2609", "kind": "osv"}
 {"alias": "BIT-golang-2024-24785", "flaw_id": "GO-2024-2610", "kind": "osv"}
+{"alias": "CGA-97f2-3j6h-f6fr", "flaw_id": "GO-2024-2610", "kind": "osv"}
 {"alias": "BIT-vault-2024-2048", "flaw_id": "GO-2024-2617", "kind": "osv"}
 {"alias": "BIT-grafana-2024-1442", "flaw_id": "GO-2024-2629", "kind": "osv"}
 {"alias": "BIT-mattermost-2024-1952", "flaw_id": "GO-2024-2635", "kind": "osv"}
@@ -113585,6 +113650,7 @@
 {"alias": "BIT-argo-cd-2024-29893", "flaw_id": "GO-2024-2667", "kind": "osv"}
 {"alias": "BIT-consul-2021-41803", "flaw_id": "GO-2024-2683", "kind": "osv"}
 {"alias": "BIT-golang-2023-45288", "flaw_id": "GO-2024-2687", "kind": "osv"}
+{"alias": "CGA-8q47-wf6v-wqg5", "flaw_id": "GO-2024-2687", "kind": "osv"}
 {"alias": "BIT-vault-2024-2660", "flaw_id": "GO-2024-2690", "kind": "osv"}
 {"alias": "BIT-pebble-2024-3250", "flaw_id": "GO-2024-2692", "kind": "osv"}
 {"alias": "BIT-mattermost-2024-28949", "flaw_id": "GO-2024-2695", "kind": "osv"}
