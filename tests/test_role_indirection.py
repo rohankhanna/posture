@@ -1,6 +1,6 @@
 """Alias-graph + role-indirection tests.
 
-The spine is the alias↔alias graph (see spine.py): every flaw_id is a peer, cve
+The spine is the alias↔alias graph (see spine.py): every defect_id is a peer, cve
 is NOT a primary key and NOT rebindable. These tests pin the crosswalk alias
 mechanics (register/resolve/reverse_resolve, symmetric alias, crosswalk keeps
 old joins resolving) and the remaining generic role resolution
@@ -27,13 +27,13 @@ def test_register_and_resolve_returns_typed_aliases():
     assert kinds == {"ghsa", "usn"}
 
 
-def test_reverse_resolve_returns_flaw_id_key():
+def test_reverse_resolve_returns_defect_id_key():
     conn = store.connect(":memory:")
     spine.register(conn, "CVE-2026-31589", "GHSA-aaaa", "ghsa")
     conn.commit()
     rev = spine.reverse_resolve(conn, "GHSA-aaaa")
     assert len(rev) == 1
-    assert rev[0]["flaw_id"] == "CVE-2026-31589"
+    assert rev[0]["defect_id"] == "CVE-2026-31589"
 
 
 def test_register_alias_symmetric_both_directions():
@@ -62,7 +62,7 @@ def test_crosswalk_preserves_old_joins():
     assert any(a["alias"] == "X-2026-99901" for a in aliases)
     # reverse: alias -> cve
     rev = spine.reverse_resolve(conn, "X-2026-99901")
-    assert rev[0]["flaw_id"] == "CVE-2026-99901"
+    assert rev[0]["defect_id"] == "CVE-2026-99901"
 
 
 def test_role_resolution_for_non_spine_roles():

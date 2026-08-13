@@ -20,7 +20,7 @@ def conn():
 
 
 def _skeleton(conn, cve_id="CVE-2026-1", published="2026-08-01"):
-    store.upsert_flaw(conn, {
+    store.upsert_defect(conn, {
         "id": cve_id, "published": published, "description": "skeleton",
         "fixed_raw": {"source": "mitre", "pending_nvd": True}, "refs": [],
         "source": "mitre", "fetched_at": "t", "policy_version": "v", "complete": 1,
@@ -108,7 +108,7 @@ def test_refresh_enrich_promotes_skeleton_and_upserts_verdict(conn, monkeypatch)
     stats = refresh.refresh_tick(conn, devs, policy_version="v", live=True)
     assert stats["enriched"] == 1
     assert stats["verdicts_upserted"] == 1
-    row = store.get_flaw(conn, "CVE-2026-1")
+    row = store.get_defect(conn, "CVE-2026-1")
     assert row["enrich_state"] == "nvd"
     assert row["cvss"] == 9.9 and row["severity"] == "CRITICAL"
     assert row["fixed_raw"]["source"] == "nvd"
@@ -142,7 +142,7 @@ def test_refresh_incomplete_fetch_no_wipe(conn, monkeypatch):
     assert stats["enriched"] == 0 and stats["incomplete"] == 1
     assert stats["verdicts_upserted"] == 0
     # skeleton stays pending; old verdict untouched
-    assert store.get_flaw(conn, "CVE-2026-1")["enrich_state"] == "mitre"
+    assert store.get_defect(conn, "CVE-2026-1")["enrich_state"] == "mitre"
     rows = store.verdicts_for_device_axis(conn, "host", "vulnerability")
     assert len(rows) == 1 and rows[0]["key"] == "CVE-OLD"
 
@@ -177,7 +177,7 @@ def test_refresh_absent_leaves_pending(conn, monkeypatch):
                         lambda cid, throttle=True: (None, True, "absent"))
     stats = refresh.refresh_tick(conn, [_device()], policy_version="v", live=True)
     assert stats["absent"] == 1 and stats["enriched"] == 0
-    assert store.get_flaw(conn, "CVE-2026-1")["enrich_state"] == "mitre"
+    assert store.get_defect(conn, "CVE-2026-1")["enrich_state"] == "mitre"
     assert "CVE-2026-1" in store.pending_enrichment_ids(conn)
 
 
@@ -201,7 +201,7 @@ def test_refresh_ttl_retires_retry_without_deleting(conn, monkeypatch):
     _skeleton(conn)
     # age the skeleton past the TTL
     old = "2020-01-01T00:00:00+00:00"
-    conn.execute("UPDATE flaws SET discovered_at=? WHERE id='CVE-2026-1'", (old,))
+    conn.execute("UPDATE defects SET discovered_at=? WHERE id='CVE-2026-1'", (old,))
     conn.commit()
     called = {"n": 0}
 
@@ -214,8 +214,8 @@ def test_refresh_ttl_retires_retry_without_deleting(conn, monkeypatch):
     assert called["n"] == 0  # not retried
     assert stats["ttl_retired"] == 1
     # the row is retained as a mitre skeleton (retire the retry, not the row)
-    assert store.get_flaw(conn, "CVE-2026-1") is not None
-    assert store.get_flaw(conn, "CVE-2026-1")["enrich_state"] == "mitre"
+    assert store.get_defect(conn, "CVE-2026-1") is not None
+    assert store.get_defect(conn, "CVE-2026-1")["enrich_state"] == "mitre"
 
 
 # --- offline (no live fetch) is a safe no-op --------------------------------
@@ -224,7 +224,7 @@ def test_refresh_offline_no_enrichment_no_wipe(conn):
     _skeleton(conn)
     stats = refresh.refresh_tick(conn, [_device()], policy_version="v", live=False)
     assert stats["enriched"] == 0 and stats["verdicts_upserted"] == 0
-    assert store.get_flaw(conn, "CVE-2026-1")["enrich_state"] == "mitre"
+    assert store.get_defect(conn, "CVE-2026-1")["enrich_state"] == "mitre"
 
 
 # --- CWE + reference-tag capture (foothold/arming signal) -------------------
@@ -332,7 +332,7 @@ def test_refresh_no_devices_enriches_catalog_zero_verdicts(conn, monkeypatch):
                                  live=True, registry=None)
     # the MAP was enriched ...
     assert stats["enriched"] == 1
-    row = store.get_flaw(conn, "CVE-2026-1")
+    row = store.get_defect(conn, "CVE-2026-1")
     assert row["enrich_state"] == "nvd" and row["severity"] == "CRITICAL"
     # ... and NO territory was written (zero verdicts, zero device rows)
     assert stats["verdicts_upserted"] == 0

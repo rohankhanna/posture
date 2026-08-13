@@ -146,10 +146,10 @@ def test_backfill_populates_osv_rows_and_alias(conn, tmp_path, monkeypatch):
     assert stats["error"] is None
     assert stats["ecosystems_done"] is True
 
-    # the osv catalog rows: flaw_type='osv', enrich_state='osv', source='osv'
-    row1 = store.get_flaw(conn, "OSV-2026-1")
+    # the osv catalog rows: defect_type='osv', enrich_state='osv', source='osv'
+    row1 = store.get_defect(conn, "OSV-2026-1")
     assert row1 is not None
-    assert row1["flaw_type"] == "osv"
+    assert row1["defect_type"] == "osv"
     assert row1["enrich_state"] == "osv"
     assert row1["source"] == "osv"
     assert row1["description"] == "test vuln"
@@ -160,7 +160,7 @@ def test_backfill_populates_osv_rows_and_alias(conn, tmp_path, monkeypatch):
     assert any(a["alias"] == "CVE-2026-1001" and a["kind"] == "cve" for a in fwd)
     # reverse_resolve(CVE-2026-1001) -> OSV-2026-1 typed 'osv' (the symmetric edge)
     back = store.reverse_crosswalk(conn, "CVE-2026-1001")
-    assert any(r["flaw_id"] == "OSV-2026-1" and r["kind"] == "cve" for r in back)
+    assert any(r["defect_id"] == "OSV-2026-1" and r["kind"] == "cve" for r in back)
 
 
 # --- 2. cap-resumed across ticks (cap=2 over 5 records: 2+2+1) ---------------
@@ -259,9 +259,9 @@ def test_incremental_after_backfill_done(conn, tmp_path, monkeypatch):
     assert s2["upserted"] == 1
     assert s2["done"] is False  # a change was made
 
-    row = store.get_flaw(conn, "OSV-2026-99")
+    row = store.get_defect(conn, "OSV-2026-99")
     assert row is not None
-    assert row["flaw_type"] == "osv"
+    assert row["defect_type"] == "osv"
     assert row["description"] == "incremental change"
 
     # the cursor advanced; a 3rd tick finds no changes -> done=True
@@ -309,12 +309,12 @@ def test_cveless_osv_record_anchors(conn, tmp_path, monkeypatch):
     assert stats["upserted"] == 1
 
     # the osv row exists, keyed by its own id
-    row = store.get_flaw(conn, "OSV-2026-1")
+    row = store.get_defect(conn, "OSV-2026-1")
     assert row is not None
-    assert row["flaw_type"] == "osv"
+    assert row["defect_type"] == "osv"
 
-    # flaw_type_counts includes osv
-    counts = {r["flaw_type"]: r["n"] for r in store.flaw_type_counts(conn)}
+    # defect_type_counts includes osv
+    counts = {r["defect_type"]: r["n"] for r in store.defect_type_counts(conn)}
     assert counts.get("osv") == 1
 
 
@@ -327,7 +327,7 @@ def test_fetch_failure_is_noop(conn, monkeypatch):
     stats = _osv.osv_ingest_tick(conn, cap=100, now="t")
     assert stats["error"] is not None
     assert stats["upserted"] == 0
-    assert conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM defects").fetchone()[0] == 0
 
 
 # --- 8. malformed records never crash the parser (mirror of mitre hardening) -
@@ -385,12 +385,12 @@ def test_osv_backfill_skips_malformed_record(conn, tmp_path, monkeypatch):
     assert stats["error"] is None
     assert stats["upserted"] == 2  # good + malformed-valid-id (id-less skipped)
     assert stats["skipped"] == 1
-    good_row = store.get_flaw(conn, "OSV-GOOD")
-    assert good_row is not None and good_row["flaw_type"] == "osv"
+    good_row = store.get_defect(conn, "OSV-GOOD")
+    assert good_row is not None and good_row["defect_type"] == "osv"
     # the malformed-valid-id record degraded to a minimal row (no crash): no
     # vector, no cvss — but it IS anchored. The invariant is "no crash", not
     # "skip records with a valid id".
-    bad = store.get_flaw(conn, "OSV-BAD")
+    bad = store.get_defect(conn, "OSV-BAD")
     assert bad is not None and bad["cvss_vector"] is None
 
 
@@ -413,7 +413,7 @@ def test_backfill_skips_failing_ecosystem_continues_to_next(conn, tmp_path,
     assert stats["error"] is None                 # partial failure -> exit 0
     assert stats["upserted"] == 1                 # the Good ecosystem landed
     assert stats["failed_ecosystems"] == ["Bad"]  # the bad one recorded
-    assert store.get_flaw(conn, "OSV-GOOD-1") is not None
+    assert store.get_defect(conn, "OSV-GOOD-1") is not None
     # Bad stays NOT done (retried next tick).
     done = json.loads(store.get_state(conn, _osv.OSV_DONE_ECOSYSTEMS_KEY) or "[]")
     assert "Bad" not in done
@@ -431,7 +431,7 @@ def test_backfill_total_outage_surfaces_error(conn, tmp_path, monkeypatch):
     assert stats["error"] is not None             # total outage -> exit 1
     assert stats["upserted"] == 0
     assert sorted(stats["failed_ecosystems"]) == ["Down1", "Down2"]
-    assert conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM defects").fetchone()[0] == 0
 
 
 def test_backfill_cursor_ecosystem_failure_clears_cursor_unblocks_next(conn,
@@ -453,7 +453,7 @@ def test_backfill_cursor_ecosystem_failure_clears_cursor_unblocks_next(conn,
     assert stats["failed_ecosystems"] == ["Bad"]
     # cursor was cleared (not left pointing at the failing Bad).
     assert store.get_state(conn, _osv.OSV_BACKFILL_CURSOR_KEY) == ""
-    assert store.get_flaw(conn, "OSV-GOOD-1") is not None
+    assert store.get_defect(conn, "OSV-GOOD-1") is not None
 
 
 def test_incremental_records_failing_ecosystem_skips(conn, tmp_path,
@@ -476,4 +476,4 @@ def test_incremental_records_failing_ecosystem_skips(conn, tmp_path,
     assert stats["incremental"] is True
     assert stats["upserted"] == 1                 # Good's new record landed
     assert stats["failed_ecosystems"] == ["Bad"]  # Bad's csv missing -> recorded
-    assert store.get_flaw(conn, "OSV-GOOD-1") is not None
+    assert store.get_defect(conn, "OSV-GOOD-1") is not None

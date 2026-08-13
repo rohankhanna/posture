@@ -6,7 +6,7 @@
         "id": "CVE-2026-99901",
         "published": "2026-02-01T00:00:00.000",
         "descriptions": [
-          {"lang": "en", "value": "Demo: a network-reachable kernel flaw fixed in 6.18.5. Device on 6.18 is vulnerable."}
+          {"lang": "en", "value": "Demo: a network-reachable kernel defect fixed in 6.18.5. Device on 6.18 is vulnerable."}
         ],
         "metrics": {
           "cvssMetricV31": [
@@ -28,7 +28,7 @@
         "id": "CVE-2026-99902",
         "published": "2026-03-01T00:00:00.000",
         "descriptions": [
-          {"lang": "en", "value": "Demo: a flaw fixed at 6.17. Device on 6.18 already has the fix -> patched."}
+          {"lang": "en", "value": "Demo: a defect fixed at 6.17. Device on 6.18 already has the fix -> patched."}
         ],
         "metrics": {
           "cvssMetricV31": [
@@ -50,7 +50,7 @@
         "id": "CVE-2026-99903",
         "published": "2026-04-01T00:00:00.000",
         "descriptions": [
-          {"lang": "en", "value": "Demo: a flaw bounded to 6.18 inclusive. Device exactly on 6.18 is vulnerable; fix at 6.18 inclusive (so 6.18.1+ is clear)."}
+          {"lang": "en", "value": "Demo: a defect bounded to 6.18 inclusive. Device exactly on 6.18 is vulnerable; fix at 6.18 inclusive (so 6.18.1+ is clear)."}
         ],
         "metrics": {
           "cvssMetricV31": [
@@ -72,7 +72,7 @@
         "id": "CVE-2026-99904",
         "published": "2026-05-01T00:00:00.000",
         "descriptions": [
-          {"lang": "en", "value": "Demo: a future-series flaw (start 6.19). Device on 6.18 is NOT affected."}
+          {"lang": "en", "value": "Demo: a future-series defect (start 6.19). Device on 6.18 is NOT affected."}
         ],
         "metrics": {
           "cvssMetricV31": [
@@ -94,7 +94,7 @@
         "id": "CVE-2026-99905",
         "published": "2026-06-01T00:00:00.000",
         "descriptions": [
-          {"lang": "en", "value": "Demo: an iPhone-only flaw (different CPE head). Must be filtered out for the linux device."}
+          {"lang": "en", "value": "Demo: an iPhone-only defect (different CPE head). Must be filtered out for the linux device."}
         ],
         "metrics": {
           "cvssMetricV31": [

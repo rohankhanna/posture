@@ -78,7 +78,7 @@ def test_stream_first_run_bootstraps_cursor(conn, tmp_path):
     assert stats["new"] == 0
     assert store.get_state(conn, stream.CURSOR_KEY) is not None  # cursor set
     # No CVE rows inserted on the bootstrap tick (O(1), no back-fill).
-    assert conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM defects").fetchone()[0] == 0
 
 
 # --- diff + skeleton upsert -------------------------------------------------
@@ -98,10 +98,10 @@ def test_stream_diff_upserts_skeletons(conn, tmp_path):
     assert stats["changed_files"] == 2
     # Bootstrap inserted nothing, so both changed files are newly seen now.
     assert stats["new"] == 2
-    ids = {r[0] for r in conn.execute("SELECT id FROM flaws")}
+    ids = {r[0] for r in conn.execute("SELECT id FROM defects")}
     assert ids == {"CVE-2026-11111", "CVE-2026-22222"}
     # Skeleton provenance + shape (the map, not the territory).
-    row = store.get_flaw(conn, "CVE-2026-22222")
+    row = store.get_defect(conn, "CVE-2026-22222")
     assert row["enrich_state"] == "mitre"
     assert row["cvss"] is None and row["severity"] is None  # skeleton, NVD not yet
     assert row["cvss_vector"].startswith("CVSS:3.1")
@@ -133,7 +133,7 @@ def test_stream_skeleton_idempotent_on_re_diff(conn, tmp_path):
     stats = _tick(conn, work)
     assert stats["changed_files"] == 1  # CVE-2026-22222 again
     assert stats["new"] == 0  # already seen -> not newly counted
-    assert conn.execute("SELECT COUNT(*) FROM flaws WHERE id='CVE-2026-22222'").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM defects WHERE id='CVE-2026-22222'").fetchone()[0] == 1
 
 
 # --- no-wipe: the stream never touches verdicts -----------------------------
@@ -172,7 +172,7 @@ def test_stream_history_rewrite_resets_cursor(conn, tmp_path):
     assert stats["error"] is not None and "diff failed" in stats["error"]
     # Cursor reset to the current tip; nothing wiped.
     assert store.get_state(conn, stream.CURSOR_KEY) != "0" * 40
-    assert conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM defects").fetchone()[0] == 0
 
 
 def test_stream_fetch_failure_does_not_touch_cursor(conn, tmp_path, monkeypatch):
@@ -261,14 +261,14 @@ def test_stream_skips_malformed_record_does_not_sink_tick(conn, tmp_path):
     assert stats["error"] is None  # the tick did NOT crash
     assert stats["changed_files"] == 3
     # the good record landed with full content.
-    good = store.get_flaw(conn, "CVE-2026-22222")
+    good = store.get_defect(conn, "CVE-2026-22222")
     assert good is not None and good["description"] == "good"
     # the valid-id malformed record degraded to a minimal skeleton (graceful, not
     # a crash): empty description, no refs, no vector — but it IS anchored.
-    bad1 = store.get_flaw(conn, "CVE-2026-BAD1")
+    bad1 = store.get_defect(conn, "CVE-2026-BAD1")
     assert bad1 is not None
     assert bad1["description"] == "" and bad1["cvss_vector"] is None
     # the id-less record was skipped (nothing to anchor on).
-    assert store.get_flaw(conn, "CVE-2026-NOID") is None
+    assert store.get_defect(conn, "CVE-2026-NOID") is None
     # cursor still advanced (the tick completed cleanly past the bad records).
     assert store.get_state(conn, stream.CURSOR_KEY) is not None

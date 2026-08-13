@@ -5,16 +5,16 @@ repo must be designed against. This is reference data gathered 2026-08-05
 (retrieval date for every fact below); it is the canonical record of the source
 constraints, and carries the *design decisions* that depend on these numbers.
 
-posture's spine is **all flaws** (every flaw that is a peer of cves, across
-every flaw_type). cve is one peer, not a primary key. See
+posture's spine is **all defects** (every defect that is a peer of cves, across
+every defect_type). cve is one peer, not a primary key. See
 [README.md](../README.md) for the engine overview.
 
-Vocabulary: **flaw** = the universal spine entity; **flaw_type** = the naming
+Vocabulary: **defect** = the universal spine entity; **defect_type** = the naming
 scheme (`cve` / `ghsa` / `osv` / `rustsec` / `sap-note` / `fg-ir` / …);
-**flaw_id** = a specific id under a type (`CVE-2026-99901`, `GHSA-…`,
-`OSV-…`). The spine entity = the equivalence class of flaw_ids that denote
-one flaw. `flaw_type` is a glossary role; `cve` is the term bound to it
-today — but there is **no swapping and no rebinding**: all flaw_types are
+**defect_id** = a specific id under a type (`CVE-2026-99901`, `GHSA-…`,
+`OSV-…`). The spine entity = the equivalence class of defect_ids that denote
+one defect. `defect_type` is a glossary role; `cve` is the term bound to it
+today — but there is **no swapping and no rebinding**: all defect_types are
 peers simultaneously.
 
 ---
@@ -80,17 +80,17 @@ peers simultaneously.
 
 ## Sources
 
-### The flaw-record / aggregator peers
+### The defect-record / aggregator peers
 
 **NVD CVE API 2.0** — `services.nvd.nist.gov/rest/json/cves/2.0`
 - Rate: **50 req / 30 s WITH apiKey** (**header `apiKey:`, not query string**), 5/30 s without; 6 s sleep between requests recommended; 120-day date-range max; `resultsPerPage` max 2,000.
 - **2026-04-15: NVD moved to risk-based enrichment** — only KEV / federal / EO 14028 critical-software CVEs get CPE/CVSS/EPSS; everything else listed but NOT enriched; pre-March-2026 backlog "Not Scheduled".
-- → NVD is **no longer the enrichment source for most flaws**. Use cvelistV5 + OSV + GHSA as peers; NVD = threat-prioritized overlay (KEV/critical only). Partially obsoletes the old NVD-enrichment design.
+- → NVD is **no longer the enrichment source for most defects**. Use cvelistV5 + OSV + GHSA as peers; NVD = threat-prioritized overlay (KEV/critical only). Partially obsoletes the old NVD-enrichment design.
 
 **MITRE cvelistV5** — `github.com/CVEProject/cvelistV5` (git)
 - ~1.7 GB clone, refreshed ~7 min, the **only** bulk path (legacy CSV/HTML/XML/CVRF retired 2024-06-30). `delta.json` + `deltaLog.json` for diffs; per-midnight baseline zip + hourly delta zips under Releases.
 - CVE Services API `cveawg.mitre.org/api` — rate limits **not published** (AWS ELB enforced); records published hourly.
-- → **primary flaw-record source** (the CNA's own record, which NVD no longer enriches).
+- → **primary defect-record source** (the CNA's own record, which NVD no longer enriches).
 
 **OSV.dev** — `api.osv.dev`
 - **No published rate limit** (GCP DoS protection can still throttle); 32 MiB HTTP/1.1 response cap (use HTTP/2).
@@ -144,7 +144,7 @@ peers simultaneously.
 
 **HARD-BLOCKED → loud UNKNOWN with a dossier:** SAP (portal-gated). **Partial:** Juniper (some full text), Cisco API (free reg), VMware (patches). **Commercial-only APIs:** Snyk / Tenable / Qualys (web browse public, APIs paid).
 
-These gaps are **declared, not hidden** — posture's honesty rule: a flaw_type posture can't reach is a loud `UNKNOWN` with a dossier, never a silent "clean".
+These gaps are **declared, not hidden** — posture's honesty rule: a defect_type posture can't reach is a loud `UNKNOWN` with a dossier, never a silent "clean".
 
 ---
 
@@ -158,7 +158,7 @@ These gaps are **declared, not hidden** — posture's honesty rule: a flaw_type 
 6. **Signing = GPG-signed commits (history) + optional sigstore-signed `state.sig` (snapshot attestation).** Both.
 7. **Cadence = off-zero cron + idempotent/resumable** (a dropped run is recovered by the next); ingestion's own periodic push is the keepalive against 60-day auto-disable.
 8. **Bulk writes via `git push` batches** (6/min, 2 GB/push), NOT per-record REST API (the 500 content-gen/hr secondary limit bites first).
-9. **Repo = signed directory** (content stays at the source URL, not committed), sharded by flaw_type/time for the 100 MB file limit; signing frees history to be gc'd (tamper-evidence lives in the signature, not the history).
+9. **Repo = signed directory** (content stays at the source URL, not committed), sharded by defect_type/time for the 100 MB file limit; signing frees history to be gc'd (tamper-evidence lives in the signature, not the history).
 
 10. **Implemented (first cut, 2026-08-06).** The in-repo `.github/workflows/spine.yml` runs the daily off-zero-cron ingestion (`posture stream` + `posture refresh --no-devices` + DB-only course-correction + `posture spine export`) on ephemeral GitHub-hosted runners, commits the sharded `spine/*.jsonl` + `manifest.json`, and cosign-signs `manifest.json` keyless via GitHub OIDC (`spine/state.sig`). `refresh --no-devices` is the map/territory contract — catalog enrichment only, zero verdicts, no device data in CI. The cvelistV5 clone + `posture.db` persist in the Actions cache (else the stream cursor resets and stream would re-bootstrap every run, producing nothing). First cut is **one repo** (created private first, flipped public after a clean-history audit); the `posture-digest` private + self-hosted split (item 5) is deferred until a hosted runner can't carry the load. A **credentialed lane** is scaffolded as a dormant second job that pushes gated-vendor output (SAP/Snyk/Tenable/Qualys/Cisco/VMware, to be wired as credentials are obtained) to a separate *private* `rohankhanna/posture-cred` repo — never into the public repo's history, so the public flip can't leak non-redistributable content. An open question is resolved: the operator holds no gated creds yet but will apply; NVD is public-lane, not credentialed. GPG-signed commits (item 6 history layer) deferred — the sigstore `state.sig` snapshot attestation (the non-negotiable layer) ships first.
 

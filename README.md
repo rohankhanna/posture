@@ -16,13 +16,13 @@ Vulnerabilities and Exposures) match this machine?* posture answers a wider one:
 *what is this device's security posture
 across the things that actually matter — misconfiguration, network exposure, what's
 installed, what's being exploited, whether what's installed can be trusted, and
-known flaws — and where am I blind?* A dimension with no evidence is a loud
+known defects — and where am I blind?* A dimension with no evidence is a loud
 `UNKNOWN`, never a silent "clean."
 
 posture is **device-agnostic**: it does not scan your machine itself. You *represent*
 a device as a small YAML file and point posture at evidence you gather (an SBOM, a
 config snapshot, a socket capture, signatures), and posture assesses that
-description locally. The public flaw data it draws on (CVEs, advisories, the CISA KEV
+description locally. The public defect data it draws on (CVEs, advisories, the CISA KEV
 list — CISA is the Cybersecurity and Infrastructure Security Agency; KEV is Known
 Exploited Vulnerabilities) is a shared, signed **catalog** that a CI workflow builds
 and publishes and that you clone and verify.
@@ -34,7 +34,7 @@ and publishes and that you clone and verify.
   rather than papered over.
 - **Fleet / portfolio tooling** that needs to keep device-specific assessment
   private (the *territory*) while consuming one shared signed catalog of public
-  flaw data (the *map*).
+  defect data (the *map*).
 - **Downstream tools**, which can use posture as a Python library (the catalog
   ingest + assessment engine).
 
@@ -52,7 +52,7 @@ and publishes and that you clone and verify.
 
 ## Highlights
 
-- **Assess six dimensions of a host, not just CVEs.** Known flaws (vulnerability),
+- **Assess six dimensions of a host, not just CVEs.** Known defects (vulnerability),
   misconfiguration (configuration), network reachability (exposure), what's
   installed (inventory), what's being exploited in the wild (threat), and whether
   installed artifacts are trusted (trust).
@@ -133,7 +133,7 @@ overall: incomplete (axis(es) unknown)
      Can you trust what is installed (provenance / signatures / SLSA).
    GAP: no observer produced any signal (axis blank — not 'clean')
 ! [vulnerability] UNPATCHED  (4 verdicts, complete=True, commit=swapped)
-     Known flaws (CVEs + advisories).
+     Known defects (CVEs + advisories).
      decided by nvd (bias=false-alarm)
        - CVE-2026-99901 unpatched [CRITICAL] fixed_in=6.18.5
        - CVE-2026-99902 patched [HIGH] fixed_in=6.17
@@ -214,7 +214,7 @@ overall: incomplete (axis(es) unknown)
      Can you trust what is installed (provenance / signatures / SLSA).
    GAP: no observer produced any signal (axis blank — not 'clean')
 ! [vulnerability] UNPATCHED  (4 verdicts, complete=True, commit=swapped)
-     Known flaws (CVEs + advisories).
+     Known defects (CVEs + advisories).
      decided by nvd (bias=false-alarm)
        - CVE-2026-99901 unpatched [CRITICAL] fixed_in=6.18.5
        - CVE-2026-99902 patched [HIGH] fixed_in=6.17
@@ -343,7 +343,7 @@ device YAML. Bare/relative paths in the fields below also resolve under
 The public catalog (CVEs, advisories, KEV) is the **map** — drawn by outside
 authorities. Your device is the **territory**. posture keeps them separate: CI builds
 and signs the map; you assess your territory locally. A verdict says "the catalog
-places this flaw on this device's map," never "this device has this flaw" as an
+places this defect on this device's map," never "this device has this defect" as an
 absolute. (See
 [Honesty and trust model](#honesty-and-trust-model).)
 
@@ -442,7 +442,7 @@ data files themselves. `posture spine import --no-verify` skips this check; do n
 use it for a catalog you did not verify yourself.
 
 **What the imported catalog actually drives today:** importing populates the local
-catalog tables (flaws, crosswalks, candidates, distrust marks, KEV, Apple fixes).
+catalog tables (defects, crosswalks, candidates, distrust marks, KEV, Apple fixes).
 Of these, only the **Apple fix-version overlay** currently flows into a live
 `posture assess` verdict (it is injected as a device input for `apple_advisory`).
 The rest is browsable library data (`posture catalog list`, `posture crosswalk show`)
@@ -480,7 +480,7 @@ gated) lives in [`docs/sources.md`](docs/sources.md).
 | `posture backfill --cap N` | cvelistV5 back-catalog (history the forward-only stream can't take); cap-resumed; self-disables once exhausted. |
 | `posture ingest ghsa --cap N` | GitHub Advisory Database (CC-BY 4.0, OSV schema): blobless clone, cap-resumed backfill + incremental. CVE aliases become symmetric crosswalk edges. |
 | `posture ingest osv --cap N` | osv.dev hub — the highest-leverage peer (RustSec, PyPA, Go, Red Hat, Debian, Ubuntu, Alpine…). Per-ecosystem backfill + incremental. A CVE-less OSV record still anchors as first-class. |
-| `posture ingest kev` | CISA KEV overlay (annotates existing CVE rows; not a new flaw type). Idempotent full refresh, ~1,660 entries. |
+| `posture ingest kev` | CISA KEV overlay (annotates existing CVE rows; not a new defect type). Idempotent full refresh, ~1,660 entries. |
 | `posture ingest apple [--product …] [--history]` | Apple advisory fix-version overlay, CVE+product-keyed, per-product full refresh. `--history` recovers pre-index CVEs from Wayback (more fetches). |
 | `posture refresh [--devices <yaml> \| --no-devices]` | Incremental NVD enrichment + per-CVE re-decide; upserts verdicts one key at a time, never a bulk swap. |
 
@@ -577,8 +577,8 @@ Every subcommand takes `--help` for full options. Common options include
 | `posture health [--add-dossier …]` | source-health (operational + dossier + drift) |
 | `posture distrust <observer>` | mark a observer's verdicts distrusted (retroactive) |
 | `posture audit <observer>` | which verdicts rest on this observer? |
-| `posture spine {show\|export\|import}` | the flaw catalog; `import` takes `--from` and `--no-verify` |
-| `posture catalog {show <id>\|list\|pending}` | browse the flaw catalog |
+| `posture spine {show\|export\|import}` | the defect catalog; `import` takes `--from` and `--no-verify` |
+| `posture catalog {show <id>\|list\|pending}` | browse the defect catalog |
 | `posture crosswalk {add\|show}` | the identifier alias graph |
 
 **Catalog operators** (self-hosting / development)
@@ -595,7 +595,7 @@ Every subcommand takes `--help` for full options. Common options include
 | Command | Purpose |
 |---|---|
 | `posture discover [--fetch]` | horizon scan: surface new aggregator candidates |
-| `posture glossary {list\|roles\|show\|add\|promote\|deprecate}` | the vocabulary as data (axes, flaw types, roles) |
+| `posture glossary {list\|roles\|show\|add\|promote\|deprecate}` | the vocabulary as data (axes, defect types, roles) |
 | `posture monitor {run\|queue}` | vocabulary monitor |
 | `posture repair {list\|apply <id>\|reconcile}` | trust-repair proposals (`apply` takes a proposal id) |
 
