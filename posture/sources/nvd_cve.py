@@ -11,7 +11,7 @@ truth):
   - `__HTTP__%{http_code}` sentinel splits status from body; 404-twice =
     genuine absent (complete=True, zero); retry give-up = complete=False
     (no-wipe); `totalResults` reached = complete.
-  - Emits the NVD attribution string in its output (AGENTS.md rule).
+  - Emits the NVD attribution string in its output (attribution rule).
 
 Offline mode (default) reads a bundled NVD-shaped fixture so `posture demo`
 and the tests run deterministically with no network and no key. Live mode
@@ -413,7 +413,7 @@ class NvdCveWitness(Witness):
             ),
         )
 
-    # -- attribution (the AGENTS.md-required NVD notice) ---------------------
+    # -- attribution (the required NVD notice) ---------------------
 
     @staticmethod
     def attribution() -> str:

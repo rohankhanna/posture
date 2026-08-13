@@ -1,9 +1,9 @@
 """Attribution registry — required attribution strings for consumed sources.
 
-Forebode's AGENTS.md standing rule: any NVD-sourced output must emit
+Project rule: any NVD-sourced output must emit
 `This product uses the NVD API but is not endorsed or certified by the NVD.`
-The map is foreign-authored; say so. posture inherits that rule and generalizes
-it to a registry so each foreign source can carry its own required notice.
+The map is foreign-authored; say so. posture generalizes this to a registry so
+each foreign source can carry its own required notice.
 """
 
 from __future__ import annotations

@@ -28,7 +28,7 @@ The **deterministic term-profile / neighborhood** (`neighborhood`,
 `suggest_for_signal`) is the model-free Phase-1 classifier: it relates terms by
 shared kind/role and substring matches on labels. It is deliberately NOT a
 learned embedding — that is a clearly-separated, versioned, opt-in Phase 2
-extension point (see `llm_classifier.py`): an embedding is another map (a
+extension point: an embedding is another map (a
 map-of-a-map, geometry inferred not measured), so if it is ever added it must
 be grown in dated, reproducible batches and must never sit in the trust path.
 """
@@ -110,7 +110,7 @@ class Term:
 # ---------------------------------------------------------------------------
 
 # Identifier + scoring + signal schemes, each cited to its authority. These are
-# AXIOM-1/2/3 in the AGENTS.md stack (naming + coordinate + CPE authorities) —
+# AXIOM-1/2/3 in the axiom stack (naming + coordinate + CPE authorities) —
 # recorded as cited terms, not as unquestioned facts.
 _SEED_TERMS: list[dict] = [
     {"id": "cve", "label": "Common Vulnerabilities and Exposures",
