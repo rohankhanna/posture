@@ -142,7 +142,7 @@ def test_export_excludes_verdicts(conn, tmp_path):
     store.upsert_verdict(conn, {
         "device_id": "host-PRIVATE", "axis": "vulnerability", "key": "CVE-2026-1001",
         "status": "unpatched", "severity": "CRITICAL", "fixed_in": None, "detail": "private",
-        "provenance": {"witness": "nvd", "policy_version": "v",
+        "provenance": {"observer": "nvd", "policy_version": "v",
                        "fetched_at": "t", "complete": 1},
     }, "t")
     conn.commit()

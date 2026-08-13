@@ -1,4 +1,4 @@
-"""Tests for the CIS-style configuration witness — the first REAL witness on
+"""Tests for the CIS-style configuration observer — the first REAL observer on
 the configuration axis.
 
 These pin four things:
@@ -6,12 +6,12 @@ These pin four things:
   2. the decide logic: pass/fail per check, the numeric >= / <= comparators,
      and the documented missing-setting decision (FAIL — a missing control is
      not a pass);
-  3. the witness emits honest configuration-axis Verdicts from a device config
+  3. the observer emits honest configuration-axis Verdicts from a device config
      snapshot, honors cis_checks scoping, and is an honest no-op with no config;
-  4. in the engine, the witness's verdicts are committed to the store with
-     witness=cis_checker, the configuration axis status is fail when any check
+  4. in the engine, the observer's verdicts are committed to the store with
+     observer=cis_checker, the configuration axis status is fail when any check
      fails, pass when all pass, and stays unknown when no config is supplied
-     (all three directions proven); witness attribution is per-verdict row.
+     (all three directions proven); observer attribution is per-verdict row.
 """
 import json
 from pathlib import Path
@@ -21,9 +21,9 @@ import yaml
 from posture.axis import Axis
 from posture.policy import Policy
 from posture import store, engine
-from posture.witness import WitnessRegistry
+from posture.observer import ObserverRegistry
 from posture.sources.cis_checker import (
-    CisCheckerWitness, CIS_BENCHMARK, _compare,
+    CisCheckerObserver, CIS_BENCHMARK, _compare,
 )
 
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "posture" / "fixtures"
@@ -38,7 +38,7 @@ version: "2026-08-02.3"
 dated: 2026-08-02
 rationale: |
   Inline test policy for cis_checker (configuration axis). Self-contained.
-witnesses:
+observers:
   cis_checker:
     axes: [configuration]
     weight: medium
@@ -52,9 +52,9 @@ def _policy() -> Policy:
     return Policy.from_yaml(_INLINE_POLICY_YAML)
 
 
-def _registry() -> WitnessRegistry:
-    reg = WitnessRegistry()
-    reg.register(CisCheckerWitness())
+def _registry() -> ObserverRegistry:
+    reg = ObserverRegistry()
+    reg.register(CisCheckerObserver())
     return reg
 
 
@@ -130,11 +130,11 @@ def test_compare_unknown_comparator_is_safe_fail():
 
 
 # ---------------------------------------------------------------------------
-# witness decide logic
+# observer decide logic
 # ---------------------------------------------------------------------------
 
 def test_decide_pass_on_matching_value():
-    w = CisCheckerWitness()
+    w = CisCheckerObserver()
     pol = _policy()
     device = {
         "id": "h",
@@ -148,12 +148,12 @@ def test_decide_pass_on_matching_value():
     assert v.key == "CIS-6.2.1"
     assert v.status == "pass"
     assert v.severity == "high"
-    assert v.provenance.witness == "cis_checker"
+    assert v.provenance.observer == "cis_checker"
     assert v.provenance.raw_ref == "cis:CIS-6.2.1"
 
 
 def test_decide_fail_on_mismatched_value():
-    w = CisCheckerWitness()
+    w = CisCheckerObserver()
     pol = _policy()
     device = {
         "id": "h",
@@ -169,7 +169,7 @@ def test_decide_fail_on_mismatched_value():
 def test_decide_missing_setting_is_fail():
     """Documented behavior: a setting absent from the config is FAIL — a missing
     control is not a pass (false-safe direction)."""
-    w = CisCheckerWitness()
+    w = CisCheckerObserver()
     pol = _policy()
     device = {
         "id": "h",
@@ -184,7 +184,7 @@ def test_decide_missing_setting_is_fail():
 
 
 def test_decide_numeric_ge_pass_and_fail():
-    w = CisCheckerWitness()
+    w = CisCheckerObserver()
     pol = _policy()
     # pass: 14 >= 12
     ok = w.assess({"id": "h", "config": {"password_min_len": 14},
@@ -201,7 +201,7 @@ def test_decide_numeric_ge_pass_and_fail():
 
 
 def test_decide_numeric_le_pass_and_fail():
-    w = CisCheckerWitness()
+    w = CisCheckerObserver()
     pol = _policy()
     ok = w.assess({"id": "h", "config": {"password_max_days": 60},
                    "cis_checks": ["CIS-5.4.2"]}, pol)
@@ -218,7 +218,7 @@ def test_decide_numeric_le_pass_and_fail():
 def test_decide_new_eq_sshd_password_authentication_pass_and_fail():
     """New eq check CIS-6.2.2 (sshd_password_authentication): pass on 'no',
     fail on 'yes'."""
-    w = CisCheckerWitness()
+    w = CisCheckerObserver()
     pol = _policy()
     ok = w.assess({"id": "h",
                    "config": {"sshd_password_authentication": "no"},
@@ -237,7 +237,7 @@ def test_decide_new_eq_sshd_password_authentication_pass_and_fail():
 def test_decide_new_ge_password_min_days_pass_and_fail():
     """New ge check CIS-5.4.3 (password_min_days): pass at >= 1, fail at 0,
     fail on a non-numeric value (control not demonstrably in place)."""
-    w = CisCheckerWitness()
+    w = CisCheckerObserver()
     pol = _policy()
     # pass: 1 >= 1
     ok = w.assess({"id": "h", "config": {"password_min_days": 1},
@@ -260,7 +260,7 @@ def test_decide_new_ge_password_min_days_pass_and_fail():
 
 def test_decide_new_le_sshd_max_auth_tries_pass_and_fail():
     """New le check CIS-6.2.3 (sshd_max_auth_tries): pass at <= 4, fail above."""
-    w = CisCheckerWitness()
+    w = CisCheckerObserver()
     pol = _policy()
     ok = w.assess({"id": "h", "config": {"sshd_max_auth_tries": 3},
                    "cis_checks": ["CIS-6.2.3"]}, pol)
@@ -273,7 +273,7 @@ def test_decide_new_le_sshd_max_auth_tries_pass_and_fail():
 def test_decide_new_eq_sysctl_numeric_value_pass_and_fail():
     """New eq check CIS-3.1.1 (sysctl_ipv4_forwarding): expected 0 — pass when
     the device supplies 0 (int or str), fail when forwarding is enabled (1)."""
-    w = CisCheckerWitness()
+    w = CisCheckerObserver()
     pol = _policy()
     # int 0 -> str "0" == str(0) -> pass
     ok_int = w.assess({"id": "h", "config": {"sysctl_ipv4_forwarding": 0},
@@ -292,7 +292,7 @@ def test_decide_new_eq_sysctl_numeric_value_pass_and_fail():
 def test_decide_new_check_missing_setting_is_fail():
     """Missing-setting decision holds for the new checks too: a setting absent
     from the config is FAIL (a missing control is not a pass)."""
-    w = CisCheckerWitness()
+    w = CisCheckerObserver()
     pol = _policy()
     device = {
         "id": "h",
@@ -307,11 +307,11 @@ def test_decide_new_check_missing_setting_is_fail():
 
 
 # ---------------------------------------------------------------------------
-# witness: full benchmark run + cis_checks scoping
+# observer: full benchmark run + cis_checks scoping
 # ---------------------------------------------------------------------------
 
-def test_witness_full_config_emits_verdict_per_check():
-    w = CisCheckerWitness()
+def test_observer_full_config_emits_verdict_per_check():
+    w = CisCheckerObserver()
     pol = _policy()
     device = {
         "id": "h",
@@ -334,13 +334,13 @@ def test_witness_full_config_emits_verdict_per_check():
     assert by_key["CIS-5.4.1"].status == "fail"
     assert by_key["CIS-6.1.2"].status == "pass"
     for v in result.verdicts:
-        assert v.provenance.witness == "cis_checker"
+        assert v.provenance.observer == "cis_checker"
         assert v.provenance.raw_ref.startswith("cis:CIS-")
         assert v.axis == Axis.CONFIGURATION.value
 
 
-def test_witness_cis_checks_scopes_to_subset():
-    w = CisCheckerWitness()
+def test_observer_cis_checks_scopes_to_subset():
+    w = CisCheckerObserver()
     pol = _policy()
     device = {
         "id": "h",
@@ -356,8 +356,8 @@ def test_witness_cis_checks_scopes_to_subset():
     assert all(v.status == "pass" for v in result.verdicts)
 
 
-def test_witness_cis_checks_filters_unknown_ids():
-    w = CisCheckerWitness()
+def test_observer_cis_checks_filters_unknown_ids():
+    w = CisCheckerObserver()
     pol = _policy()
     device = {
         "id": "h",
@@ -368,9 +368,9 @@ def test_witness_cis_checks_filters_unknown_ids():
     assert [v.key for v in result.verdicts] == ["CIS-6.2.1"]
 
 
-def test_witness_loads_offline_fixture():
+def test_observer_loads_offline_fixture():
     """The bundled sample_config.json fixture loads and yields verdicts."""
-    w = CisCheckerWitness()
+    w = CisCheckerObserver()
     pol = _policy()
     device = json.loads(SAMPLE_CONFIG.read_text())
     result = w.assess(device, pol)
@@ -389,11 +389,11 @@ def test_witness_loads_offline_fixture():
 # honest no-op (no config supplied)
 # ---------------------------------------------------------------------------
 
-def test_witness_no_config_is_honest_noop():
-    """A device with no config snapshot gives the witness nothing to say. It
+def test_observer_no_config_is_honest_noop():
+    """A device with no config snapshot gives the observer nothing to say. It
     returns ZERO verdicts (complete) so the configuration axis stays UNKNOWN
     (loud) — never a crash, never silently clean."""
-    w = CisCheckerWitness()
+    w = CisCheckerObserver()
     pol = _policy()
     for device in (
         {"id": "h"},                          # no config key at all
@@ -407,7 +407,7 @@ def test_witness_no_config_is_honest_noop():
 
 
 # ---------------------------------------------------------------------------
-# engine: verdicts committed, axis status, witness attribution
+# engine: verdicts committed, axis status, observer attribution
 # ---------------------------------------------------------------------------
 
 def _run_engine(device, conn):
@@ -421,9 +421,9 @@ def _config_axis(dp):
     return {a.axis: a for a in dp.axes}["configuration"]
 
 
-def test_engine_commits_verdicts_with_witness_attribution():
+def test_engine_commits_verdicts_with_observer_attribution():
     """A failing config drives committed configuration verdicts, all carrying
-    witness=cis_checker at the per-verdict row level."""
+    observer=cis_checker at the per-verdict row level."""
     conn = store.connect(":memory:")
     device = {
         "id": "cfg-host",
@@ -441,12 +441,12 @@ def test_engine_commits_verdicts_with_witness_attribution():
     rows = {r["key"]: r for r in
             store.verdicts_for_device_axis(conn, "cfg-host", "configuration")}
     assert rows["CIS-6.2.1"]["status"] == "fail"
-    assert rows["CIS-6.2.1"]["witness"] == "cis_checker"
+    assert rows["CIS-6.2.1"]["observer"] == "cis_checker"
     assert rows["CIS-6.2.1"]["raw_ref"] == "cis:CIS-6.2.1"
     # every committed row rests on cis_checker
-    assert all(r["witness"] == "cis_checker" for r in rows.values())
-    # deciding witness for the axis is cis_checker
-    assert _config_axis(dp).deciding_witness == "cis_checker"
+    assert all(r["observer"] == "cis_checker" for r in rows.values())
+    # deciding observer for the axis is cis_checker
+    assert _config_axis(dp).deciding_observer == "cis_checker"
 
 
 def test_engine_all_pass_axis_status_pass():
@@ -483,7 +483,7 @@ def test_engine_all_pass_axis_status_pass():
     dp = _run_engine(device, conn)
     cfg = _config_axis(dp)
     assert cfg.status == "pass"
-    assert cfg.deciding_witness == "cis_checker"
+    assert cfg.deciding_observer == "cis_checker"
 
 
 def test_engine_no_config_axis_stays_unknown():
@@ -494,12 +494,12 @@ def test_engine_no_config_axis_stays_unknown():
     dp = _run_engine(device, conn)
     cfg = _config_axis(dp)
     assert cfg.status == "unknown"
-    assert cfg.deciding_witness is None
+    assert cfg.deciding_observer is None
     # no verdict rows committed
     assert store.verdicts_for_device_axis(conn, "blank-host",
                                           "configuration") == []
-    # and the witness is NOT a 'used' witness (it produced no verdicts)
-    assert "cis_checker" not in dp.used_witnesses
+    # and the observer is NOT a 'used' observer (it produced no verdicts)
+    assert "cis_checker" not in dp.used_observers
 
 
 def test_engine_partial_fail_drives_axis_fail():
@@ -542,6 +542,6 @@ def test_engine_scoped_cis_checks_commit_only_subset():
     rows = {r["key"]: r for r in
             store.verdicts_for_device_axis(conn, "scoped-host", "configuration")}
     assert sorted(rows) == ["CIS-6.1.2", "CIS-6.2.1"]
-    assert all(r["witness"] == "cis_checker" for r in rows.values())
+    assert all(r["observer"] == "cis_checker" for r in rows.values())
     # CIS-6.2.1 pass, CIS-6.1.2 pass -> axis pass
     assert _config_axis(dp).status == "pass"

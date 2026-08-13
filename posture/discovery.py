@@ -120,7 +120,7 @@ def set_candidate_status(conn: sqlite3.Connection, url: str, status: str) -> Non
     _store.set_candidate_status(conn, url, status)
 
 
-# Map of standard format -> adapter hint (sources/base.StandardFormatWitness
+# Map of standard format -> adapter hint (sources/base.StandardFormatObserver
 # consumes these). Betting on standards adoption is the hedge against domain
 # expansion: a new source that speaks a standard costs ~zero to ingest.
 STANDARD_FORMATS = {

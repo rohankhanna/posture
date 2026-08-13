@@ -3,7 +3,7 @@ policy, source-health samples/dossier, spine crosswalk, discovery candidates,
 and distrust marks.
 
 The load-bearing rule lives in `commit_device_verdicts`: a device's stored
-verdicts for an axis are only replaced when the witness fetch was *provably
+verdicts for an axis are only replaced when the observer fetch was *provably
 complete* (per-axis gate). An incomplete fetch preserves last-known-good
 verdicts — fragile remote ends must never delete state by failing. This
 mirrors Forebode's `db.commit_device_verdicts` (the run-#10 fleet wipe was an
@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS device_posture (
     device_id     TEXT,
     axis          TEXT,
     status        TEXT,
-    deciding_witness TEXT,
+    deciding_observer TEXT,
     bias          TEXT,
     gap           TEXT,
     policy_version TEXT,
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS verdicts (
     severity      TEXT,
     fixed_in      TEXT,
     detail        TEXT,
-    witness       TEXT,
+    observer       TEXT,
     policy_version TEXT,
     fetched_at    TEXT,
     complete      INTEGER,
@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS verdicts (
     computed_at   TEXT,
     distrusted    INTEGER DEFAULT 0,
     distrust_reason TEXT,
-    PRIMARY KEY (device_id, axis, key, witness)
+    PRIMARY KEY (device_id, axis, key, observer)
 );
 
 CREATE TABLE IF NOT EXISTS policy_versions (
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS policy_versions (
 
 CREATE TABLE IF NOT EXISTS health_samples (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    witness     TEXT,
+    observer     TEXT,
     device_id   TEXT,
     axis        TEXT,
     complete    INTEGER,
@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS health_samples (
 
 CREATE TABLE IF NOT EXISTS health_dossier (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    witness    TEXT,
+    observer    TEXT,
     date       TEXT,
     axis       TEXT,
     claim      TEXT,
@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS candidates (
 );
 
 CREATE TABLE IF NOT EXISTS distrust_marks (
-    witness   TEXT PRIMARY KEY,
+    observer   TEXT PRIMARY KEY,
     marked_at TEXT,
     reason    TEXT
 );
@@ -242,10 +242,10 @@ CREATE TABLE IF NOT EXISTS kev (
 -- Apple advisory fix-version overlay — the apple_fixes map. Apple's own
 -- security advisories are authoritative for iOS/iPadOS/macOS fix versions
 -- (NVD's Apple coverage is thin: it records the CPE but often no version
--- range, so the NVD witness silently skips most Apple CVEs). This is a
+-- range, so the NVD observer silently skips most Apple CVEs). This is a
 -- (cve_id, product)-keyed OVERLAY (not a new flaw_type): it records the
 -- earliest Apple version that fixed each CVE for each product, plus the
--- advisory article id that states it, so a witness (or territory assess)
+-- advisory article id that states it, so a observer (or territory assess)
 -- can read a durable fix map instead of replaying Apple's index + every
 -- advisory per assess. CI-side ingestion builds it (live index + optional
 -- Wayback historical recovery); per-product idempotent full refresh
@@ -369,6 +369,31 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA user_version = 3")
         conn.commit()
 
+    if version < 4:
+        # v3 -> v4: assessors are *observers*, not "witnesses". Rename the five
+        # columns that carry the observer id so the schema's words match the
+        # code. SQLite >= 3.25 RENAME COLUMN (CI runs Python 3.11); RENAME
+        # rewrites the stored CREATE TABLE including the PRIMARY KEY clauses on
+        # `verdicts` and `distrust_marks`. Guarded + idempotent: a column already
+        # renamed is skipped, so a fresh db (created with the current SCHEMA, where
+        # these are already `observer`) and a re-open of a v4 db (version>=4, never
+        # enters) both no-op. The `state` table (stream cursor) is untouched.
+        renames = [
+            ("device_posture", "deciding_witness", "deciding_observer"),
+            ("verdicts", "witness", "observer"),
+            ("health_samples", "witness", "observer"),
+            ("health_dossier", "witness", "observer"),
+            ("distrust_marks", "witness", "observer"),
+        ]
+        for table, old, new in renames:
+            if _has_table(conn, table) and old in _columns(conn, table) \
+                    and new not in _columns(conn, table):
+                conn.execute(
+                    f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}"
+                )
+        conn.execute("PRAGMA user_version = 4")
+        conn.commit()
+
 
 def connect(path: str, readonly: bool = False) -> sqlite3.Connection:
     """Open (and migrate) the posture DB. Creates the file if missing.
@@ -421,10 +446,10 @@ def commit_device_verdicts(
                                previously had rows (suspect false-absent).
 
     A clean axis is NEVER silently empty — "complete and zero" against an axis
-    that had rows is suspicious (a witness may have lost its voice), so we
+    that had rows is suspicious (a observer may have lost its voice), so we
     preserve rather than wipe. This is the no-wipe + no-silent-clean rule
     combined. The engine additionally never calls this for an axis with no
-    witness at all (those are UNKNOWN at the posture layer, not committed).
+    observer at all (those are UNKNOWN at the posture layer, not committed).
     """
     if not complete:
         return "preserved-incomplete"
@@ -441,13 +466,13 @@ def commit_device_verdicts(
     conn.executemany(
         """INSERT OR REPLACE INTO verdicts
            (device_id, axis, key, status, severity, fixed_in, detail,
-            witness, policy_version, fetched_at, complete, raw_ref, computed_at)
+            observer, policy_version, fetched_at, complete, raw_ref, computed_at)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 device_id, v["axis"], v["key"], v["status"], v.get("severity"),
                 v.get("fixed_in"), v.get("detail", ""),
-                v["provenance"]["witness"], v["provenance"]["policy_version"],
+                v["provenance"]["observer"], v["provenance"]["policy_version"],
                 v["provenance"]["fetched_at"], int(v["provenance"]["complete"]),
                 v["provenance"].get("raw_ref"), ts,
             )
@@ -462,7 +487,7 @@ def upsert_axis_posture(
     device_id: str,
     axis: str,
     status: str,
-    deciding_witness: str | None,
+    deciding_observer: str | None,
     bias: str | None,
     gap: str | None,
     policy_version: str,
@@ -470,17 +495,17 @@ def upsert_axis_posture(
 ) -> None:
     conn.execute(
         """INSERT OR REPLACE INTO device_posture
-           (device_id, axis, status, deciding_witness, bias, gap,
+           (device_id, axis, status, deciding_observer, bias, gap,
             policy_version, computed_at)
            VALUES (?,?,?,?,?,?,?,?)""",
-        (device_id, axis, status, deciding_witness, bias, gap, policy_version, ts),
+        (device_id, axis, status, deciding_observer, bias, gap, policy_version, ts),
     )
 
 
 def verdicts_for_device_axis(conn, device_id: str, axis: str) -> list[dict]:
     rows = conn.execute(
         """SELECT * FROM verdicts WHERE device_id=? AND axis=?
-           ORDER BY key, witness""",
+           ORDER BY key, observer""",
         (device_id, axis),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -535,49 +560,49 @@ def policy_log(conn) -> list[dict]:
 # Source-health: operational samples + dated dossier
 # ---------------------------------------------------------------------------
 
-def record_health_sample(conn, witness: str, device_id: str, axis: str,
+def record_health_sample(conn, observer: str, device_id: str, axis: str,
                           complete: bool, latency_ms: int, reason: str,
                           fetched_at: str) -> None:
     conn.execute(
         """INSERT INTO health_samples
-           (witness, device_id, axis, complete, latency_ms, reason, fetched_at)
+           (observer, device_id, axis, complete, latency_ms, reason, fetched_at)
            VALUES (?,?,?,?,?,?,?)""",
-        (witness, device_id, axis, int(complete), latency_ms, reason, fetched_at),
+        (observer, device_id, axis, int(complete), latency_ms, reason, fetched_at),
     )
 
 
-def health_samples(conn, witness: str, limit: int = 50) -> list[dict]:
+def health_samples(conn, observer: str, limit: int = 50) -> list[dict]:
     rows = conn.execute(
-        """SELECT * FROM health_samples WHERE witness=?
+        """SELECT * FROM health_samples WHERE observer=?
            ORDER BY id DESC LIMIT ?""",
-        (witness, limit),
+        (observer, limit),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def last_complete_sample(conn, witness: str) -> dict | None:
+def last_complete_sample(conn, observer: str) -> dict | None:
     r = conn.execute(
-        """SELECT * FROM health_samples WHERE witness=? AND complete=1
+        """SELECT * FROM health_samples WHERE observer=? AND complete=1
            ORDER BY id DESC LIMIT 1""",
-        (witness,),
+        (observer,),
     ).fetchone()
     return dict(r) if r else None
 
 
-def add_dossier_entry(conn, witness: str, date: str, axis: str, claim: str,
+def add_dossier_entry(conn, observer: str, date: str, axis: str, claim: str,
                        citation: str, direction: str) -> None:
     conn.execute(
         """INSERT INTO health_dossier
-           (witness, date, axis, claim, citation, direction, added_at)
+           (observer, date, axis, claim, citation, direction, added_at)
            VALUES (?,?,?,?,?,?,?)""",
-        (witness, date, axis, claim, citation, direction, _now()),
+        (observer, date, axis, claim, citation, direction, _now()),
     )
 
 
-def dossier(conn, witness: str) -> list[dict]:
+def dossier(conn, observer: str) -> list[dict]:
     rows = conn.execute(
-        "SELECT * FROM health_dossier WHERE witness=? ORDER BY date DESC, id DESC",
-        (witness,),
+        "SELECT * FROM health_dossier WHERE observer=? ORDER BY date DESC, id DESC",
+        (observer,),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -682,30 +707,30 @@ def set_candidate_status(conn, url: str, status: str) -> None:
 # Provenance: audit + retroactive distrust (marks, never deletes)
 # ---------------------------------------------------------------------------
 
-def audit_witness(conn, witness: str) -> list[dict]:
-    """All stored verdicts whose provenance rests on `witness`."""
+def audit_observer(conn, observer: str) -> list[dict]:
+    """All stored verdicts whose provenance rests on `observer`."""
     rows = conn.execute(
-        """SELECT device_id, axis, key, status, witness, policy_version,
+        """SELECT device_id, axis, key, status, observer, policy_version,
                   fetched_at, complete, distrusted, distrust_reason
-           FROM verdicts WHERE witness=? ORDER BY device_id, axis, key""",
-        (witness,),
+           FROM verdicts WHERE observer=? ORDER BY device_id, axis, key""",
+        (observer,),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def mark_distrust(conn, witness: str, reason: str) -> int:
-    """Mark (not delete) every verdict resting on `witness` as distrusted.
+def mark_distrust(conn, observer: str, reason: str) -> int:
+    """Mark (not delete) every verdict resting on `observer` as distrusted.
     Returns the count of marked verdicts. Records are kept — you retain the
     fact that you no longer trust them, auditable and re-evaluable."""
     n = conn.execute(
         """UPDATE verdicts SET distrusted=1, distrust_reason=?
-           WHERE witness=? AND (distrusted IS NULL OR distrusted=0)""",
-        (reason, witness),
+           WHERE observer=? AND (distrusted IS NULL OR distrusted=0)""",
+        (reason, observer),
     ).rowcount
     conn.execute(
-        """INSERT OR REPLACE INTO distrust_marks (witness, marked_at, reason)
+        """INSERT OR REPLACE INTO distrust_marks (observer, marked_at, reason)
            VALUES (?,?,?)""",
-        (witness, _now(), reason),
+        (observer, _now(), reason),
     )
     return n
 
@@ -1154,7 +1179,7 @@ def apple_fixes_all(conn) -> list[dict]:
 
 def apple_fixes_for_product(conn, product: str) -> list[dict]:
     """All apple_fixes overlay rows for one product, ordered by cve_id — the
-    shape a witness reads at assess time (the durable fix map for a device's
+    shape a observer reads at assess time (the durable fix map for a device's
     product)."""
     rows = conn.execute(
         "SELECT * FROM apple_fixes WHERE product=? ORDER BY cve_id",
@@ -1164,7 +1189,7 @@ def apple_fixes_for_product(conn, product: str) -> list[dict]:
 
 def apple_fixes_for(conn, cve_id: str, product: str) -> dict | None:
     """One apple_fixes overlay row for a (cve_id, product), or None. The
-    witness's decide path: read the durable fix version + advisory id instead
+    observer's decide path: read the durable fix version + advisory id instead
     of replaying Apple's index per assess."""
     r = conn.execute(
         "SELECT * FROM apple_fixes WHERE cve_id=? AND product=?",
@@ -1196,7 +1221,7 @@ def set_state(conn, key: str, value: str) -> None:
 def upsert_verdict(conn, v: dict, ts: str) -> None:
     """Per-key verdict upsert — the no-wipe counterpart to
     :func:`commit_device_verdicts`. INSERT ... ON CONFLICT(device_id, axis, key,
-    witness) DO UPDATE: only the touched CVE's row is updated; every other
+    observer) DO UPDATE: only the touched CVE's row is updated; every other
     verdict for the device/axis is left byte-identical. An incomplete fetch
     simply upserts fewer rows — it can never delete last-known-good verdicts the
     way a bulk DELETE-then-INSERT can.
@@ -1212,9 +1237,9 @@ def upsert_verdict(conn, v: dict, ts: str) -> None:
     conn.execute(
         """INSERT INTO verdicts
              (device_id, axis, key, status, severity, fixed_in, detail,
-              witness, policy_version, fetched_at, complete, raw_ref, computed_at)
+              observer, policy_version, fetched_at, complete, raw_ref, computed_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(device_id, axis, key, witness) DO UPDATE SET
+           ON CONFLICT(device_id, axis, key, observer) DO UPDATE SET
              status=excluded.status, severity=excluded.severity,
              fixed_in=excluded.fixed_in, detail=excluded.detail,
              policy_version=excluded.policy_version, fetched_at=excluded.fetched_at,
@@ -1223,7 +1248,7 @@ def upsert_verdict(conn, v: dict, ts: str) -> None:
         (
             v["device_id"], v["axis"], v["key"], v["status"],
             v.get("severity"), v.get("fixed_in"), v.get("detail", ""),
-            prov.get("witness") or v.get("witness", ""),
+            prov.get("observer") or v.get("observer", ""),
             prov.get("policy_version", ""),
             prov.get("fetched_at", ""),
             int(prov.get("complete", 1)),

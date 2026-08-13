@@ -7,7 +7,7 @@ Two kinds of repair:
     These run on every assess and touch no trust.
 
   - **TRUST repairs** (raised here, applied by a human): when a source drifts
-    silent, when the policy goes stale, or when a distrusted witness is still
+    silent, when the policy goes stale, or when a distrusted observer is still
     policy-authorized. `reconcile()` produces versioned `RepairProposal`s;
     `apply()` marks the human-approved one handled. The system never applies a
     trust repair on its own.
@@ -60,20 +60,20 @@ def reconcile(conn: sqlite3.Connection, policy, now_iso: str | None = None) -> l
     existing = {p["id"] for p in _store.all_repair_proposals(conn)}
     props: list[RepairProposal] = []
 
-    # 1. a policy-authorized witness has drifted silent -> propose re-evaluate.
-    for wid, wp in policy.witnesses.items():
+    # 1. a policy-authorized observer has drifted silent -> propose re-evaluate.
+    for wid, wp in policy.observers.items():
         deg = _health.degradation_action(conn, wid, policy, ts)
         if deg in {"fallback", "offline"}:
             pid = f"source_drifted:{wid}"
             if pid not in existing:
                 props.append(RepairProposal(
                     id=pid, kind="source_drifted",
-                    detail=f"witness {wid!r} is {deg} (silent past its "
+                    detail=f"observer {wid!r} is {deg} (silent past its "
                            f"degradation window)",
                     proposed_action={"re_evaluate": wid,
                                      "fallback": policy.degradation_for(wid).fallback
                                      if policy.degradation_for(wid) else []},
-                    evidence={"witness": wid, "state": deg},
+                    evidence={"observer": wid, "state": deg},
                     raised_at=ts,
                 ))
 
@@ -95,17 +95,17 @@ def reconcile(conn: sqlite3.Connection, policy, now_iso: str | None = None) -> l
                 raised_at=ts,
             ))
 
-    # 3. a distrusted witness still policy-authorized -> propose removal.
+    # 3. a distrusted observer still policy-authorized -> propose removal.
     for m in _store.distrust_marks(conn):
-        if policy.has_witness(m["witness"]):
-            pid = f"orphan_distrusted:{m['witness']}"
+        if policy.has_observer(m["observer"]):
+            pid = f"orphan_distrusted:{m['observer']}"
             if pid not in existing:
                 props.append(RepairProposal(
                     id=pid, kind="orphan_distrusted",
-                    detail=f"witness {m['witness']!r} is distrusted but still "
+                    detail=f"observer {m['observer']!r} is distrusted but still "
                            f"policy-authorized",
-                    proposed_action={"remove_from_policy": m["witness"]},
-                    evidence={"witness": m["witness"], "reason": m["reason"]},
+                    proposed_action={"remove_from_policy": m["observer"]},
+                    evidence={"observer": m["observer"], "reason": m["reason"]},
                     raised_at=ts,
                 ))
 
@@ -121,7 +121,7 @@ def apply(conn: sqlite3.Connection, proposal_id: str, actor: str = "human",
     """HUMAN-gated: mark a trust repair applied. All remaining proposals
     (source_drifted / stale_policy / orphan_distrusted) are advisory — the
     operator handles them out of band (re-evaluate the source, refresh the
-    policy, remove the witness) and this just records the decision. Returns a
+    policy, remove the observer) and this just records the decision. Returns a
     summary. No-wipe throughout (the alias graph preserves joins)."""
     from . import store as _store
     ts = now or _now()

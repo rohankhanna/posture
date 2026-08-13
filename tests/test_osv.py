@@ -283,7 +283,7 @@ def test_osv_ingest_does_not_touch_verdicts(conn, tmp_path, monkeypatch):
     store.upsert_verdict(conn, {
         "device_id": "host", "axis": "vulnerability", "key": "CVE-2026-1",
         "status": "unpatched", "severity": "HIGH", "fixed_in": None,
-        "detail": "prior", "provenance": {"witness": "nvd",
+        "detail": "prior", "provenance": {"observer": "nvd",
                                           "policy_version": "v",
                                           "fetched_at": "t", "complete": 1},
     }, "t")

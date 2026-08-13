@@ -1,11 +1,11 @@
-"""Tests for the Ubuntu security-tracker witness — the first real VENDOR
-witness on the vulnerability axis.
+"""Tests for the Ubuntu security-tracker observer — the first real VENDOR
+observer on the vulnerability axis.
 
 These pin three things:
   1. the parser maps tracker status cells to (status, fixed_in) faithfully;
-  2. the witness emits honest CVE-keyed Verdicts from a device's cve_candidates
+  2. the observer emits honest CVE-keyed Verdicts from a device's cve_candidates
      (offline fixture), and is an honest no-op when the device gives it nothing;
-  3. in the engine, the vendor witness OVERRIDES NVD on the same CVE key by
+  3. in the engine, the vendor observer OVERRIDES NVD on the same CVE key by
      policy order (order 5 < nvd 10 -> runs last -> wins) — the actual point:
      NVD's false-alarm unknown-fix on an Ubuntu host becomes patched.
 """
@@ -19,7 +19,7 @@ from posture.policy import default_policy_path, Policy
 from posture import store, engine
 from posture.sources import build_default_registry
 from posture.sources.ubuntu_tracker import (
-    UbuntuTrackerWitness, parse_cve_page, is_cve_id,
+    UbuntuTrackerObserver, parse_cve_page, is_cve_id,
 )
 
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "posture" / "fixtures"
@@ -76,11 +76,11 @@ def test_parse_cve_page_skips_other_release_keeps_recognized_status():
 
 
 # ---------------------------------------------------------------------------
-# witness (offline)
+# observer (offline)
 # ---------------------------------------------------------------------------
 
-def test_witness_offline_overrides_two_cves_and_skips_absent():
-    w = UbuntuTrackerWitness(live=False)
+def test_observer_offline_overrides_two_cves_and_skips_absent():
+    w = UbuntuTrackerObserver(live=False)
     pol = Policy.from_file(default_policy_path())
     device = {
         "id": "ubuntu-host",
@@ -101,12 +101,12 @@ def test_witness_offline_overrides_two_cves_and_skips_absent():
     assert by_key["CVE-2026-99903"].status == "patched"
     assert by_key["CVE-2026-99903"].fixed_in is None
     for v in result.verdicts:
-        assert v.provenance.witness == "ubuntu_tracker"
+        assert v.provenance.observer == "ubuntu_tracker"
         assert v.provenance.raw_ref.startswith("https://ubuntu.com/security/")
 
 
-def test_witness_below_fix_is_unpatched():
-    w = UbuntuTrackerWitness(live=False)
+def test_observer_below_fix_is_unpatched():
+    w = UbuntuTrackerObserver(live=False)
     pol = Policy.from_file(default_policy_path())
     device = {
         "id": "ubuntu-host",
@@ -121,11 +121,11 @@ def test_witness_below_fix_is_unpatched():
     assert result.verdicts[0].fixed_in == "6.17.9"
 
 
-def test_witness_no_input_is_honest_noop():
-    """A non-Ubuntu host (no candidate set) gives the witness nothing to say.
+def test_observer_no_input_is_honest_noop():
+    """A non-Ubuntu host (no candidate set) gives the observer nothing to say.
     It returns ZERO verdicts (complete) so the engine keeps NVD's verdicts and
     the loud-degradation rule is unaffected — never a crash, never 'clean'."""
-    w = UbuntuTrackerWitness(live=False)
+    w = UbuntuTrackerObserver(live=False)
     pol = Policy.from_file(default_policy_path())
     # the shipped demo device has no ubuntu_* fields and no cve_candidates
     device = yaml.safe_load(SAMPLE_DEVICE.read_text())
@@ -135,10 +135,10 @@ def test_witness_no_input_is_honest_noop():
     assert "no ubuntu tracker input" in result.reason
 
 
-def test_witness_filters_non_cve_candidate_ids():
+def test_observer_filters_non_cve_candidate_ids():
     """GHSA/PYSEC ids in the candidate set (from other matchers) have no tracker
     page; they are filtered out, not fetched."""
-    w = UbuntuTrackerWitness(live=False)
+    w = UbuntuTrackerObserver(live=False)
     pol = Policy.from_file(default_policy_path())
     device = {
         "id": "ubuntu-host",
@@ -155,11 +155,11 @@ def test_witness_filters_non_cve_candidate_ids():
 # engine: vendor overrides NVD by policy order (the actual point)
 # ---------------------------------------------------------------------------
 
-def test_vendor_witness_overrides_nvd_on_shared_cve_key():
+def test_vendor_observer_overrides_nvd_on_shared_cve_key():
     """NVD says CVE-2026-99901 and -99903 are unpatched (unknown-fix). With
     ubuntu_tracker registered and its policy order < nvd's, the engine runs it
     LAST and it wins on the shared CVE key — the committed verdicts carry
-    witness=ubuntu_tracker and status=patched, not witness=nvd/unpatched."""
+    observer=ubuntu_tracker and status=patched, not observer=nvd/unpatched."""
     reg = build_default_registry()
     pol = Policy.from_file(default_policy_path())
     conn = store.connect(":memory:")
@@ -173,22 +173,22 @@ def test_vendor_witness_overrides_nvd_on_shared_cve_key():
     rows = {r["key"]: r for r in
             store.verdicts_for_device_axis(conn, "demo-host", "vulnerability")}
     # the two overridden CVEs now rest on the vendor, patched
-    assert rows["CVE-2026-99901"]["witness"] == "ubuntu_tracker"
+    assert rows["CVE-2026-99901"]["observer"] == "ubuntu_tracker"
     assert rows["CVE-2026-99901"]["status"] == "patched"
-    assert rows["CVE-2026-99903"]["witness"] == "ubuntu_tracker"
+    assert rows["CVE-2026-99903"]["observer"] == "ubuntu_tracker"
     assert rows["CVE-2026-99903"]["status"] == "patched"
     # the CVEs the vendor had nothing to say about still rest on NVD, unchanged
-    assert rows["CVE-2026-99902"]["witness"] == "nvd"
+    assert rows["CVE-2026-99902"]["observer"] == "nvd"
     assert rows["CVE-2026-99902"]["status"] == "patched"
-    assert rows["CVE-2026-99904"]["witness"] == "nvd"
-    # NOTE: dp.used_witnesses tracks only the axis-deciding witness (here 'nvd',
+    assert rows["CVE-2026-99904"]["observer"] == "nvd"
+    # NOTE: dp.used_observers tracks only the axis-deciding observer (here 'nvd',
     # because CVE-2026-99904's not_affected is the worst bucket present), NOT
-    # every witness that produced a verdict. The override is proven by the
-    # per-verdict rows above (witness=ubuntu_tracker), not by used_witnesses.
+    # every observer that produced a verdict. The override is proven by the
+    # per-verdict rows above (observer=ubuntu_tracker), not by used_observers.
 
 
-def test_default_demo_device_unchanged_by_new_witness():
-    """The shipped demo device has no ubuntu input -> the new witness no-ops, so
+def test_default_demo_device_unchanged_by_new_observer():
+    """The shipped demo device has no ubuntu input -> the new observer no-ops, so
     the existing vulnerability posture (unpatched, decided by NVD) is unchanged.
     Guards against the registration accidentally altering the demo's behavior."""
     reg = build_default_registry()
@@ -199,16 +199,16 @@ def test_default_demo_device_unchanged_by_new_witness():
                        now="2026-08-02T00:00:00+00:00")
     vuln = {a.axis: a for a in dp.axes}["vulnerability"]
     assert vuln.status == "unpatched"
-    assert vuln.deciding_witness == "nvd"
-    # ubuntu_tracker ran but produced no verdicts -> not a 'used' witness
-    assert "ubuntu_tracker" not in dp.used_witnesses
+    assert vuln.deciding_observer == "nvd"
+    # ubuntu_tracker ran but produced no verdicts -> not a 'used' observer
+    assert "ubuntu_tracker" not in dp.used_observers
 
 
 # ---------------------------------------------------------------------------
 # live fetch path (mocked curl)
 # ---------------------------------------------------------------------------
 
-def test_witness_live_fetch_mocked(monkeypatch):
+def test_observer_live_fetch_mocked(monkeypatch):
     """The live path parses HTML returned by curl_get (which yields
     parsed_json=None for non-JSON bodies, with the body in slot 3)."""
     html = (TRACKER_FIXTURE / "CVE-2026-99901.html").read_text()
@@ -219,7 +219,7 @@ def test_witness_live_fetch_mocked(monkeypatch):
         return None, 200, html   # non-JSON -> data None, body in slot 3
 
     monkeypatch.setattr("posture.sources.ubuntu_tracker.curl_get", fake_curl_get)
-    w = UbuntuTrackerWitness(live=True)
+    w = UbuntuTrackerObserver(live=True)
     pol = Policy.from_file(default_policy_path())
     device = {
         "id": "ubuntu-host",
@@ -235,7 +235,7 @@ def test_witness_live_fetch_mocked(monkeypatch):
     assert seen and "CVE-2026-99901" in seen[0]
 
 
-def test_witness_live_404_is_absent_not_failure(monkeypatch):
+def test_observer_live_404_is_absent_not_failure(monkeypatch):
     """A 404 (CVE not in the tracker) is genuine absent -> complete=True, zero
     verdicts (NVD stands in the engine). It must NOT mark the fetch incomplete
     (no-wipe: an absent tracker page is not a source failure)."""
@@ -244,7 +244,7 @@ def test_witness_live_404_is_absent_not_failure(monkeypatch):
         return None, 404, "<html>not found</html>"
 
     monkeypatch.setattr("posture.sources.ubuntu_tracker.curl_get", fake_curl_get)
-    w = UbuntuTrackerWitness(live=True)
+    w = UbuntuTrackerObserver(live=True)
     pol = Policy.from_file(default_policy_path())
     device = {
         "id": "ubuntu-host",

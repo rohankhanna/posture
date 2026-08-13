@@ -1,20 +1,20 @@
-"""Tests for the Apple security-advisory witness — a real VENDOR witness on the
+"""Tests for the Apple security-advisory observer — a real VENDOR observer on the
 vulnerability axis (the Apple counterpart to ubuntu_tracker).
 
 These pin three things:
   1. the parser maps index rows + advisory og:titles + CVE lists faithfully,
      including the earliest-version-wins rule across re-mentioned CVEs;
-  2. the witness emits honest CVE-keyed Verdicts from a device's cve_candidates
+  2. the observer emits honest CVE-keyed Verdicts from a device's cve_candidates
      (offline fixture): patched at/above the fix, unpatched below it, no verdict
      for CVEs not in Apple's feed; and is an honest no-op when the device gives
      it nothing;
-  3. in the engine, the vendor witness OVERRIDES another witness on the same
+  3. in the engine, the vendor observer OVERRIDES another observer on the same
      CVE key by policy order (order 5 < 10 -> runs last -> wins) — proven at the
      per-verdict row level via store.verdicts_for_device_axis.
 
 The NVD fixture shipped with the repo is linux-only (no Apple CVEs), so the
-override proof uses a SECOND trivial inline witness (a stand-in for NVD emitting
-'unpatched') with order=10 alongside AppleAdvisoryWitness at order=5; the
+override proof uses a SECOND trivial inline observer (a stand-in for NVD emitting
+'unpatched') with order=10 alongside AppleAdvisoryObserver at order=5; the
 registry + policy are built inline so this test needs NO change to any shared
 file. Live curl is monkeypatched.
 """
@@ -25,9 +25,9 @@ import yaml
 from posture.axis import Axis
 from posture.policy import Policy
 from posture import store, engine
-from posture.witness import Witness, WitnessRegistry, WitnessResult, Verdict
+from posture.observer import Observer, ObserverRegistry, ObserverResult, Verdict
 from posture.sources.apple_advisory import (
-    AppleAdvisoryWitness, build_fix_map, is_cve_id,
+    AppleAdvisoryObserver, build_fix_map, is_cve_id,
     parse_advisory, parse_advisory_version, parse_index,
 )
 
@@ -35,13 +35,13 @@ FIXTURE_DIR = Path(__file__).resolve().parent.parent / "posture" / "fixtures"
 APPLE_FIXTURE = FIXTURE_DIR / "apple_advisory"
 
 # An inline policy that authorizes apple_advisory (order 5) and a stand-in NVD
-# witness (order 10). order 5 < 10 -> the engine runs apple LAST -> apple wins
+# observer (order 10). order 5 < 10 -> the engine runs apple LAST -> apple wins
 # on a shared CVE key. No shared file is touched.
 _INLINE_POLICY_YAML = """
 version: "2026-08-02.1"
 dated: 2026-08-02
-rationale: "test policy for apple_advisory witness"
-witnesses:
+rationale: "test policy for apple_advisory observer"
+observers:
   apple_advisory:
     axes: [vulnerability]
     weight: high
@@ -57,7 +57,7 @@ witnesses:
 """
 
 
-class _StubNvdLikeWitness(Witness):
+class _StubNvdLikeObserver(Observer):
     """A trivial stand-in for NVD on the vulnerability axis: emits 'unpatched'
     on a configured CVE so the engine override can be proven without relying on
     the shipped linux-only NVD fixture. order 10 (higher than apple's 5)."""
@@ -71,8 +71,8 @@ class _StubNvdLikeWitness(Witness):
         super().__init__(id=self.id, axes=self.axes, bias=self.bias)
         self._cve = cve
 
-    def assess(self, device: dict, policy) -> WitnessResult:
-        return WitnessResult(
+    def assess(self, device: dict, policy) -> ObserverResult:
+        return ObserverResult(
             verdicts=[Verdict(
                 axis=Axis.VULNERABILITY.value, key=self._cve,
                 status="unpatched", fixed_in=None, severity="high",
@@ -147,11 +147,11 @@ def test_build_fix_map_earliest_version_wins():
 
 
 # ---------------------------------------------------------------------------
-# witness (offline)
+# observer (offline)
 # ---------------------------------------------------------------------------
 
-def test_witness_offline_overrides_and_skips_absent():
-    w = AppleAdvisoryWitness(live=False)
+def test_observer_offline_overrides_and_skips_absent():
+    w = AppleAdvisoryObserver(live=False)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host",
@@ -171,12 +171,12 @@ def test_witness_offline_overrides_and_skips_absent():
     assert by_key["CVE-2026-99912"].status == "patched"
     assert by_key["CVE-2026-99912"].fixed_in == "17.1"
     for v in result.verdicts:
-        assert v.provenance.witness == "apple_advisory"
+        assert v.provenance.observer == "apple_advisory"
         assert v.provenance.raw_ref == "https://support.apple.com/en-us/100100"
 
 
-def test_witness_below_fix_is_unpatched():
-    w = AppleAdvisoryWitness(live=False)
+def test_observer_below_fix_is_unpatched():
+    w = AppleAdvisoryObserver(live=False)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host",
@@ -191,8 +191,8 @@ def test_witness_below_fix_is_unpatched():
     assert result.verdicts[0].severity == "high"
 
 
-def test_witness_macos_product_path():
-    w = AppleAdvisoryWitness(live=False)
+def test_observer_macos_product_path():
+    w = AppleAdvisoryObserver(live=False)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "mac-host",
@@ -207,10 +207,10 @@ def test_witness_macos_product_path():
     assert "macOS" in result.verdicts[0].detail
 
 
-def test_witness_ipados_shares_ios_advisory_rows():
+def test_observer_ipados_shares_ios_advisory_rows():
     """iPadOS shares the joint iOS/iPadOS advisory rows, so the ipados product
     slug resolves CVEs from the same advisories as iphone_os."""
-    w = AppleAdvisoryWitness(live=False)
+    w = AppleAdvisoryObserver(live=False)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "ipad-host",
@@ -224,12 +224,12 @@ def test_witness_ipados_shares_ios_advisory_rows():
     assert "iPadOS" in result.verdicts[0].detail
 
 
-def test_witness_no_input_is_honest_noop():
-    """A non-Apple host (no candidate set / product / version) gives the witness
+def test_observer_no_input_is_honest_noop():
+    """A non-Apple host (no candidate set / product / version) gives the observer
     nothing to say. It returns ZERO verdicts (complete) so the engine keeps NVD's
     verdicts and the loud-degradation rule is unaffected — never a crash, never
     'clean'."""
-    w = AppleAdvisoryWitness(live=False)
+    w = AppleAdvisoryObserver(live=False)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     # no apple_* fields and no cve_candidates
     device = {"id": "linux-host"}
@@ -239,15 +239,15 @@ def test_witness_no_input_is_honest_noop():
     assert "no apple advisory input" in result.reason
 
 
-def test_witness_unknown_product_is_honest_noop():
+def test_observer_unknown_product_is_honest_noop():
     """An apple_product slug not in {iphone_os, ipados, macos} is a no-op, not a
     crash."""
-    w = AppleAdvisoryWitness(live=False)
+    w = AppleAdvisoryObserver(live=False)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "watch-host",
         "os_version": "10.4",
-        "apple_product": "watchos",   # not supported by this witness
+        "apple_product": "watchos",   # not supported by this observer
         "cve_candidates": ["CVE-2026-99910"],
     }
     result = w.assess(device, pol)
@@ -256,10 +256,10 @@ def test_witness_unknown_product_is_honest_noop():
     assert "no apple advisory input" in result.reason
 
 
-def test_witness_filters_non_cve_candidate_ids():
+def test_observer_filters_non_cve_candidate_ids():
     """GHSA/PYSEC ids in the candidate set (from other matchers) have no Apple
     advisory page; they are filtered out, not fetched/decided."""
-    w = AppleAdvisoryWitness(live=False)
+    w = AppleAdvisoryObserver(live=False)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host",
@@ -272,18 +272,18 @@ def test_witness_filters_non_cve_candidate_ids():
 
 
 # ---------------------------------------------------------------------------
-# engine: vendor overrides another witness by policy order (the actual point)
+# engine: vendor overrides another observer by policy order (the actual point)
 # ---------------------------------------------------------------------------
 
 def test_apple_overrides_stub_on_shared_cve_key():
-    """The stub NVD-like witness says CVE-2026-99910 is unpatched (thin Apple
+    """The stub NVD-like observer says CVE-2026-99910 is unpatched (thin Apple
     coverage). With apple_advisory registered at order 5 < stub's 10, the engine
     runs apple LAST and it wins on the shared CVE key — the committed verdict
-    carries witness=apple_advisory and status=patched. Proven at the per-verdict
+    carries observer=apple_advisory and status=patched. Proven at the per-verdict
     row level via store.verdicts_for_device_axis."""
-    reg = WitnessRegistry()
-    reg.register(_StubNvdLikeWitness(cve="CVE-2026-99910"))   # order 10
-    reg.register(AppleAdvisoryWitness(live=False))            # order 5 -> wins
+    reg = ObserverRegistry()
+    reg.register(_StubNvdLikeObserver(cve="CVE-2026-99910"))   # order 10
+    reg.register(AppleAdvisoryObserver(live=False))            # order 5 -> wins
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     conn = store.connect(":memory:")
     device = {
@@ -297,18 +297,18 @@ def test_apple_overrides_stub_on_shared_cve_key():
     rows = {r["key"]: r for r in
             store.verdicts_for_device_axis(conn, "iphone-host", "vulnerability")}
     # the shared CVE now rests on apple_advisory, patched (overrides the stub)
-    assert rows["CVE-2026-99910"]["witness"] == "apple_advisory"
+    assert rows["CVE-2026-99910"]["observer"] == "apple_advisory"
     assert rows["CVE-2026-99910"]["status"] == "patched"
     assert rows["CVE-2026-99910"]["fixed_in"] == "16.7.15"
 
 
 def test_apple_no_input_leaves_stub_verdict_unchanged():
-    """A device with no Apple input -> the apple witness no-ops, so the stub's
+    """A device with no Apple input -> the apple observer no-ops, so the stub's
     unpatched verdict stands untouched (the override must NOT fire when Apple
     has nothing to say). Guards against accidental over-clearing."""
-    reg = WitnessRegistry()
-    reg.register(_StubNvdLikeWitness(cve="CVE-2026-99910"))
-    reg.register(AppleAdvisoryWitness(live=False))
+    reg = ObserverRegistry()
+    reg.register(_StubNvdLikeObserver(cve="CVE-2026-99910"))
+    reg.register(AppleAdvisoryObserver(live=False))
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     conn = store.connect(":memory:")
     device = {
@@ -320,7 +320,7 @@ def test_apple_no_input_leaves_stub_verdict_unchanged():
                   now="2026-08-02T00:00:00+00:00")
     rows = {r["key"]: r for r in
             store.verdicts_for_device_axis(conn, "iphone-host", "vulnerability")}
-    assert rows["CVE-2026-99910"]["witness"] == "stub_nvd_like"
+    assert rows["CVE-2026-99910"]["observer"] == "stub_nvd_like"
     assert rows["CVE-2026-99910"]["status"] == "unpatched"
 
 
@@ -339,7 +339,7 @@ def _load_live_fixtures() -> dict:
     return index_html, advisories
 
 
-def test_witness_live_fetch_mocked(monkeypatch):
+def test_observer_live_fetch_mocked(monkeypatch):
     """The live path parses HTML returned by curl_get (which yields
     parsed_json=None for non-JSON bodies, with the body in slot 3). The index
     plus each advisory is served from the in-memory fixture set."""
@@ -354,7 +354,7 @@ def test_witness_live_fetch_mocked(monkeypatch):
         return None, 200, advisories[adv_id]   # non-JSON -> data None, body in slot 3
 
     monkeypatch.setattr("posture.sources.apple_advisory.curl_get", fake_curl_get)
-    w = AppleAdvisoryWitness(live=True)
+    w = AppleAdvisoryObserver(live=True)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host",
@@ -373,7 +373,7 @@ def test_witness_live_fetch_mocked(monkeypatch):
     assert any("HT222222" in u for u in seen)
 
 
-def test_witness_live_fetch_failure_is_absent_not_break(monkeypatch):
+def test_observer_live_fetch_failure_is_absent_not_break(monkeypatch):
     """A failed/absent fetch (timeout / non-200) is best-effort: complete=True,
     zero verdicts (NVD stands). It must NOT mark the fetch incomplete and never
     break the engine (no-wipe rule). Mirrors the donor's `return []` on failure.
@@ -383,7 +383,7 @@ def test_witness_live_fetch_failure_is_absent_not_break(monkeypatch):
         return None, 0, ""   # timeout / no body
 
     monkeypatch.setattr("posture.sources.apple_advisory.curl_get", fake_curl_get)
-    w = AppleAdvisoryWitness(live=True)
+    w = AppleAdvisoryObserver(live=True)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host",
@@ -397,7 +397,7 @@ def test_witness_live_fetch_failure_is_absent_not_break(monkeypatch):
     assert "failed/absent" in result.reason
 
 
-def test_witness_live_advisory_404_skipped_index_ok(monkeypatch):
+def test_observer_live_advisory_404_skipped_index_ok(monkeypatch):
     """Index ok but an advisory fetch 404s -> that advisory is skipped (best-
     effort), and the CVEs only it would have covered get no Apple verdict (NVD
     stands). CVEs covered by the still-ok advisory resolve normally."""
@@ -412,7 +412,7 @@ def test_witness_live_advisory_404_skipped_index_ok(monkeypatch):
         return None, 200, advisories[adv_id]
 
     monkeypatch.setattr("posture.sources.apple_advisory.curl_get", fake_curl_get)
-    w = AppleAdvisoryWitness(live=True)
+    w = AppleAdvisoryObserver(live=True)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host",
@@ -434,13 +434,13 @@ def test_witness_live_advisory_404_skipped_index_ok(monkeypatch):
 # overlay-primary path (device["apple_fixes"] short-circuits the index replay)
 # ---------------------------------------------------------------------------
 
-def test_witness_overlay_primary_skips_index_fetch(monkeypatch):
+def test_observer_overlay_primary_skips_index_fetch(monkeypatch):
     """device['apple_fixes'] (the signed-spine overlay, injected by the
     territory) short-circuits the per-assess index replay: the fix map comes
     straight from the overlay, no index/advisory fetch. Proven by sabotaging
     _fetch_index to fail -- the overlay path never calls it, so verdicts still
     come back. CVEs not in the overlay get no verdict (NVD would stand)."""
-    w = AppleAdvisoryWitness(live=False)
+    w = AppleAdvisoryObserver(live=False)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     # sabotage the replay path: a failed index fetch would return zero verdicts.
     monkeypatch.setattr(w, "_fetch_index", lambda: ("", False))
@@ -461,13 +461,13 @@ def test_witness_overlay_primary_skips_index_fetch(monkeypatch):
     assert by_key["CVE-2026-99912"].status == "patched"
     assert by_key["CVE-2026-99912"].fixed_in == "17.1"
     for v in result.verdicts:
-        assert v.provenance.witness == "apple_advisory"
+        assert v.provenance.observer == "apple_advisory"
 
 
-def test_witness_overlay_unpatched_below_fix():
+def test_observer_overlay_unpatched_below_fix():
     """The overlay path routes through the same _decide logic: a device below
     the overlay's fix version is unpatched (high), mirroring the replay path."""
-    w = AppleAdvisoryWitness(live=False)
+    w = AppleAdvisoryObserver(live=False)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host",
@@ -484,10 +484,10 @@ def test_witness_overlay_unpatched_below_fix():
     assert result.verdicts[0].severity == "high"
 
 
-def test_witness_overlay_absent_falls_back_to_replay():
-    """No apple_fixes key -> the witness replays the index (today's path),
+def test_observer_overlay_absent_falls_back_to_replay():
+    """No apple_fixes key -> the observer replays the index (today's path),
     byte-identical. reason is 'fixture' (offline), NOT 'overlay'."""
-    w = AppleAdvisoryWitness(live=False)
+    w = AppleAdvisoryObserver(live=False)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host",
@@ -501,12 +501,12 @@ def test_witness_overlay_absent_falls_back_to_replay():
     assert result.verdicts[0].fixed_in == "16.7.15"
 
 
-def test_witness_empty_overlay_falls_back_to_replay():
+def test_observer_empty_overlay_falls_back_to_replay():
     """A present-but-empty overlay {} is treated as 'no overlay' -> replay
     fallback (present + non-empty is the gate). Pins the boundary so an empty
     overlay never silently reads as 'Apple has no fixes' (which would suppress
-    a fresh replay); the witness replays instead."""
-    w = AppleAdvisoryWitness(live=False)
+    a fresh replay); the observer replays instead."""
+    w = AppleAdvisoryObserver(live=False)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host",
@@ -561,7 +561,7 @@ def test_inject_catalog_overlays_loads_apple_fixes_from_store():
     assert "apple_fixes" not in device
 
     # 4. An Apple product with no overlay rows in the store -> nothing injected
-    #    (the witness then falls back to its per-assess replay).
+    #    (the observer then falls back to its per-assess replay).
     device = {"id": "mac-host", "apple_product": "macos",
               "os_version": "26.5",
               "cve_candidates": ["CVE-2026-99920"]}
@@ -571,15 +571,15 @@ def test_inject_catalog_overlays_loads_apple_fixes_from_store():
 
 def test_engine_assess_uses_injected_overlay_end_to_end(monkeypatch):
     """End-to-end: the territory injects the overlay, then engine.assess drives
-    the apple witness through the overlay-primary path (no index replay). The
-    stub NVD-like witness says 'unpatched'; apple at order 5 overrides it to
+    the apple observer through the overlay-primary path (no index replay). The
+    stub NVD-like observer says 'unpatched'; apple at order 5 overrides it to
     'patched' from the OVERLAY (not the replay). _fetch_index is sabotaged so
     only the overlay path can produce the verdict."""
     from posture.cli import _inject_catalog_overlays
 
-    reg = WitnessRegistry()
-    reg.register(_StubNvdLikeWitness(cve="CVE-2026-99910"))   # order 10
-    apple_w = AppleAdvisoryWitness(live=False)
+    reg = ObserverRegistry()
+    reg.register(_StubNvdLikeObserver(cve="CVE-2026-99910"))   # order 10
+    apple_w = AppleAdvisoryObserver(live=False)
     monkeypatch.setattr(apple_w, "_fetch_index", lambda: ("", False))
     reg.register(apple_w)                                    # order 5 -> wins
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
@@ -600,6 +600,6 @@ def test_engine_assess_uses_injected_overlay_end_to_end(monkeypatch):
                  now="2026-08-08T00:00:00+00:00")
     rows = {r["key"]: r for r in
             store.verdicts_for_device_axis(conn, "iphone-host", "vulnerability")}
-    assert rows["CVE-2026-99910"]["witness"] == "apple_advisory"
+    assert rows["CVE-2026-99910"]["observer"] == "apple_advisory"
     assert rows["CVE-2026-99910"]["status"] == "patched"
     assert rows["CVE-2026-99910"]["fixed_in"] == "16.7.15"

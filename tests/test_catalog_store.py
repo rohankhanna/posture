@@ -120,11 +120,11 @@ def test_state_round_trip(conn):
 
 # --- upsert_verdict: the no-wipe per-key path -------------------------------
 
-def _v(cve_id, status="unpatched", witness="nvd", fixed_in=None):
+def _v(cve_id, status="unpatched", observer="nvd", fixed_in=None):
     return {
         "device_id": "host", "axis": "vulnerability", "key": cve_id,
         "status": status, "severity": "HIGH", "fixed_in": fixed_in,
-        "detail": "d", "provenance": {"witness": witness, "policy_version": "v",
+        "detail": "d", "provenance": {"observer": observer, "policy_version": "v",
                                        "fetched_at": "t", "complete": 1},
     }
 

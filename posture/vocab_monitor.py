@@ -4,9 +4,9 @@ The glossary is the dictionary; this module is what makes it *grow on its own*
 without breaking. Two paths, both AUTO (the machine notices; the human decides
 to trust):
 
-  - **emergent:** a witness emits keys of a KIND the glossary does not know
+  - **emergent:** a observer emits keys of a KIND the glossary does not know
     (e.g. a brand-new advisory scheme). The engine calls `scan_emergent` after
-    each witness run; an unknown kind becomes a `NewTermSignal` and is
+    each observer run; an unknown kind becomes a `NewTermSignal` and is
     auto-written to the glossary as a **candidate**. The verdict for an
     unknown-kind record is tagged (never crashes, never silently trusted).
 
@@ -43,13 +43,13 @@ def _now() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Emergent path — unknown identifier kinds in witness output (AUTO)
+# Emergent path — unknown identifier kinds in observer output (AUTO)
 # ---------------------------------------------------------------------------
 
-def scan_emergent(conn: sqlite3.Connection, witness_id: str,
+def scan_emergent(conn: sqlite3.Connection, observer_id: str,
                   key_kind: str | None, keys: list[str],
                   now: str | None = None) -> list[NewTermSignal]:
-    """After a witness run: if the witness declares a `key_kind` not in the
+    """After a observer run: if the observer declares a `key_kind` not in the
     glossary's known set, surface it as a signal and auto-write a candidate
     term. The system keeps running on the known spine; nothing breaks.
 
@@ -60,7 +60,7 @@ def scan_emergent(conn: sqlite3.Connection, witness_id: str,
     ts = now or _now()
     if not key_kind:
         return []
-    # a witness's key_kind is a specific scheme id (e.g. "cve", "X"); it is
+    # a observer's key_kind is a specific scheme id (e.g. "cve", "X"); it is
     # "known" only if a KNOWN term with that id exists. An unknown or merely-
     # candidate scheme is an emergent signal (the map grows; nothing breaks).
     existing = _glossary.get(conn, key_kind)
@@ -69,9 +69,9 @@ def scan_emergent(conn: sqlite3.Connection, witness_id: str,
     sig = NewTermSignal(
         kind=key_kind,
         label=key_kind,
-        context=f"emergent: witness '{witness_id}' emitted {len(keys)} key(s) "
+        context=f"emergent: observer '{observer_id}' emitted {len(keys)} key(s) "
                 f"of unknown kind (sample: {keys[0] if keys else ''})",
-        citation=f"witness={witness_id}",
+        citation=f"observer={observer_id}",
         detected_at=ts,
     )
     _store.add_term_signal(conn, sig.kind, sig.label, sig.context,
@@ -79,7 +79,7 @@ def scan_emergent(conn: sqlite3.Connection, witness_id: str,
     if existing is None:
         _glossary.add_term(conn, _glossary.Term(
             id=key_kind, label=key_kind, kind="identifier_scheme",
-            roles=[], status="candidate", citation=f"emergent via {witness_id}",
+            roles=[], status="candidate", citation=f"emergent via {observer_id}",
             discovered_at=ts,
         ), actor="vocab_monitor", now=ts)
     return [sig]

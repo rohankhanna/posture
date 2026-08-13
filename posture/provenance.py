@@ -3,8 +3,8 @@
 Every stored verdict carries full Provenance (who said it, under which policy
 version, when, how completely, and a citable reference). This is the
 mechanism that lets trust be UNWOUND: when a source is later found captured
-or defunded, `audit(witness)` lists every verdict that rests on it, and
-`distrust(witness, reason)` MARKS them (never silently deletes) so they can be
+or defunded, `audit(observer)` lists every verdict that rests on it, and
+`distrust(observer, reason)` MARKS them (never silently deletes) so they can be
 re-evaluated. You keep the record that you no longer trust it — auditable.
 
 This is the concrete answer to "keep an eye on the funding/capture risk of
@@ -15,20 +15,20 @@ a source ever told you and whether it still holds.
 from __future__ import annotations
 import sqlite3
 
-from .witness import Provenance, Verdict
+from .observer import Provenance, Verdict
 
 
 def stamp(verdicts: list[Verdict], policy_version: str, fetched_at: str,
           complete: bool) -> list[Verdict]:
     """Fill in the engine-controlled provenance fields on a batch of verdicts
-    (policy_version, fetched_at, complete). Witness + raw_ref are already set
-    by the witness; complete reflects the underlying fetch completeness."""
+    (policy_version, fetched_at, complete). Observer + raw_ref are already set
+    by the observer; complete reflects the underlying fetch completeness."""
     out: list[Verdict] = []
     for v in verdicts:
         if v.provenance is None:
             v = Verdict(axis=v.axis, key=v.key, status=v.status, detail=v.detail,
                         severity=v.severity, fixed_in=v.fixed_in,
-                        provenance=Provenance(witness="", policy_version=policy_version,
+                        provenance=Provenance(observer="", policy_version=policy_version,
                                               fetched_at=fetched_at, complete=complete))
         else:
             p = v.provenance
@@ -36,7 +36,7 @@ def stamp(verdicts: list[Verdict], policy_version: str, fetched_at: str,
                 axis=v.axis, key=v.key, status=v.status, detail=v.detail,
                 severity=v.severity, fixed_in=v.fixed_in,
                 provenance=Provenance(
-                    witness=p.witness,
+                    observer=p.observer,
                     policy_version=policy_version or p.policy_version,
                     fetched_at=fetched_at or p.fetched_at,
                     complete=complete if not p.complete else p.complete,
@@ -47,17 +47,17 @@ def stamp(verdicts: list[Verdict], policy_version: str, fetched_at: str,
     return out
 
 
-def audit(conn: sqlite3.Connection, witness: str) -> list[dict]:
-    """All stored verdicts whose provenance rests on `witness`."""
+def audit(conn: sqlite3.Connection, observer: str) -> list[dict]:
+    """All stored verdicts whose provenance rests on `observer`."""
     from . import store as _store
-    return _store.audit_witness(conn, witness)
+    return _store.audit_observer(conn, observer)
 
 
-def distrust(conn: sqlite3.Connection, witness: str, reason: str) -> int:
-    """Mark (not delete) every verdict resting on `witness` as distrusted.
+def distrust(conn: sqlite3.Connection, observer: str, reason: str) -> int:
+    """Mark (not delete) every verdict resting on `observer` as distrusted.
     Returns the count of newly-marked verdicts."""
     from . import store as _store
-    return _store.mark_distrust(conn, witness, reason)
+    return _store.mark_distrust(conn, observer, reason)
 
 
 def distrust_log(conn: sqlite3.Connection) -> list[dict]:
@@ -73,7 +73,7 @@ def verdicts_to_commit_dicts(verdicts: list[Verdict]) -> list[dict]:
         d = v.to_dict()
         prov = v.provenance
         d["provenance"] = (prov.to_dict() if prov else
-                           {"witness": "", "policy_version": "", "fetched_at": "",
+                           {"observer": "", "policy_version": "", "fetched_at": "",
                             "complete": False, "raw_ref": None})
         out.append(d)
     return out

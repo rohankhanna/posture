@@ -1,12 +1,12 @@
-"""Tests for the Debian security-tracker witness — a real VENDOR witness on the
+"""Tests for the Debian security-tracker observer — a real VENDOR observer on the
 vulnerability axis.
 
 These pin four things:
   1. the bulk-extract parser maps the tracker's per-release status fields to
      (status, fixed_in) faithfully;
-  2. the witness emits honest CVE-keyed Verdicts from a device's cve_candidates
+  2. the observer emits honest CVE-keyed Verdicts from a device's cve_candidates
      (offline fixture), and is an honest no-op when the device gives it nothing;
-  3. in the engine, the vendor witness OVERRIDES NVD on the same CVE key by
+  3. in the engine, the vendor observer OVERRIDES NVD on the same CVE key by
      policy order (order 5 < nvd 10 -> runs last -> wins) — the actual point:
      NVD's false-alarm unknown-fix on a Debian host becomes patched;
   4. the live fetch path (mocked curl) works, and a failed/absent fetch is a
@@ -21,10 +21,10 @@ import yaml
 from posture.axis import Axis
 from posture.policy import Policy
 from posture import store, engine
-from posture.witness import WitnessRegistry
-from posture.sources.nvd_cve import NvdCveWitness
+from posture.observer import ObserverRegistry
+from posture.sources.nvd_cve import NvdCveObserver
 from posture.sources.debian_tracker import (
-    DebianTrackerWitness, bulk_extract, is_cve_id,
+    DebianTrackerObserver, bulk_extract, is_cve_id,
 )
 
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "posture" / "fixtures"
@@ -40,7 +40,7 @@ version: "2026-08-02.2"
 supersedes: "2026-08-02.1"
 dated: 2026-08-02
 rationale: "inline test policy: debian_tracker overrides nvd on the CVE key"
-witnesses:
+observers:
   nvd:
     axes: [vulnerability]
     weight: high
@@ -72,9 +72,9 @@ def _inline_policy():
 
 
 def _registry():
-    reg = WitnessRegistry()
-    reg.register(NvdCveWitness(live=False))
-    reg.register(DebianTrackerWitness(live=False))
+    reg = ObserverRegistry()
+    reg.register(NvdCveObserver(live=False))
+    reg.register(DebianTrackerObserver(live=False))
     return reg
 
 
@@ -111,11 +111,11 @@ def test_bulk_extract_skips_other_release():
 
 
 # ---------------------------------------------------------------------------
-# witness (offline)
+# observer (offline)
 # ---------------------------------------------------------------------------
 
-def test_witness_offline_overrides_status_mappings():
-    w = DebianTrackerWitness(live=False)
+def test_observer_offline_overrides_status_mappings():
+    w = DebianTrackerObserver(live=False)
     pol = _inline_policy()
     device = {
         "id": "debian-host",
@@ -144,16 +144,16 @@ def test_witness_offline_overrides_status_mappings():
     assert by_key["CVE-2026-99902"].status == "unpatched"
     assert by_key["CVE-2026-99902"].fixed_in is None
     for v in result.verdicts:
-        assert v.provenance.witness == "debian_tracker"
+        assert v.provenance.observer == "debian_tracker"
         assert v.provenance.raw_ref.startswith(
             "https://security-tracker.debian.org/tracker/CVE-")
 
 
-def test_witness_no_input_is_honest_noop():
-    """A non-Debian host (no candidate set) gives the witness nothing to say.
+def test_observer_no_input_is_honest_noop():
+    """A non-Debian host (no candidate set) gives the observer nothing to say.
     It returns ZERO verdicts (complete) so the engine keeps NVD's verdicts and
     the loud-degradation rule is unaffected — never a crash, never 'clean'."""
-    w = DebianTrackerWitness(live=False)
+    w = DebianTrackerObserver(live=False)
     pol = _inline_policy()
     # the shipped demo device has no debian_* fields and no cve_candidates
     device = yaml.safe_load(SAMPLE_DEVICE.read_text())
@@ -163,10 +163,10 @@ def test_witness_no_input_is_honest_noop():
     assert "no debian tracker input" in result.reason
 
 
-def test_witness_filters_non_cve_candidate_ids():
+def test_observer_filters_non_cve_candidate_ids():
     """GHSA/PYSEC/DSA ids in the candidate set (from other matchers) have no
     tracker row; they are filtered out, not consulted."""
-    w = DebianTrackerWitness(live=False)
+    w = DebianTrackerObserver(live=False)
     pol = _inline_policy()
     device = {
         "id": "debian-host",
@@ -183,13 +183,13 @@ def test_witness_filters_non_cve_candidate_ids():
 # engine: vendor overrides NVD by policy order (the actual point)
 # ---------------------------------------------------------------------------
 
-def test_vendor_witness_overrides_nvd_on_shared_cve_key():
+def test_vendor_observer_overrides_nvd_on_shared_cve_key():
     """NVD says CVE-2026-99901 is unpatched (unknown-fix; device 6.18 < 6.18.5).
     With debian_tracker registered and its policy order < nvd's, the engine
     runs it LAST and it wins on the shared CVE key — the committed verdict
-    carries witness=debian_tracker and status=patched, not witness=nvd/
+    carries observer=debian_tracker and status=patched, not observer=nvd/
     unpatched. The override is proven at the per-verdict row level (not via
-    dp.used_witnesses, which tracks only the axis-deciding witness)."""
+    dp.used_observers, which tracks only the axis-deciding observer)."""
     reg = _registry()
     pol = _inline_policy()
     conn = store.connect(":memory:")
@@ -203,17 +203,17 @@ def test_vendor_witness_overrides_nvd_on_shared_cve_key():
     rows = {r["key"]: r for r in
             store.verdicts_for_device_axis(conn, "demo-host", "vulnerability")}
     # the overridden CVE now rests on the vendor, patched
-    assert rows["CVE-2026-99901"]["witness"] == "debian_tracker"
+    assert rows["CVE-2026-99901"]["observer"] == "debian_tracker"
     assert rows["CVE-2026-99901"]["status"] == "patched"
     assert rows["CVE-2026-99901"]["fixed_in"] == "6.18.5-1"
     # a CVE the vendor had nothing to say about still rests on NVD, unchanged
-    assert rows["CVE-2026-99902"]["witness"] == "nvd"
+    assert rows["CVE-2026-99902"]["observer"] == "nvd"
     assert rows["CVE-2026-99902"]["status"] == "patched"
-    assert rows["CVE-2026-99904"]["witness"] == "nvd"
+    assert rows["CVE-2026-99904"]["observer"] == "nvd"
 
 
-def test_default_demo_device_unchanged_by_new_witness():
-    """The shipped demo device has no debian input -> the new witness no-ops, so
+def test_default_demo_device_unchanged_by_new_observer():
+    """The shipped demo device has no debian input -> the new observer no-ops, so
     the existing vulnerability posture (unpatched, decided by NVD) is unchanged.
     Guards against the registration accidentally altering the demo's behavior."""
     reg = _registry()
@@ -224,16 +224,16 @@ def test_default_demo_device_unchanged_by_new_witness():
                        now="2026-08-02T00:00:00+00:00")
     vuln = {a.axis: a for a in dp.axes}["vulnerability"]
     assert vuln.status == "unpatched"
-    assert vuln.deciding_witness == "nvd"
-    # debian_tracker ran but produced no verdicts -> not a 'used' witness
-    assert "debian_tracker" not in dp.used_witnesses
+    assert vuln.deciding_observer == "nvd"
+    # debian_tracker ran but produced no verdicts -> not a 'used' observer
+    assert "debian_tracker" not in dp.used_observers
 
 
 # ---------------------------------------------------------------------------
 # live fetch path (mocked curl)
 # ---------------------------------------------------------------------------
 
-def test_witness_live_fetch_mocked(monkeypatch):
+def test_observer_live_fetch_mocked(monkeypatch):
     """The live path reads the parsed JSON from curl_get's slot 1 (the tracker
     returns JSON, so the body is parsed there)."""
     fixture_data = json.loads(DEBIAN_FIXTURE.read_text())
@@ -244,7 +244,7 @@ def test_witness_live_fetch_mocked(monkeypatch):
         return fixture_data, 200, json.dumps(fixture_data)
 
     monkeypatch.setattr("posture.sources.debian_tracker.curl_get", fake_curl_get)
-    w = DebianTrackerWitness(live=True)
+    w = DebianTrackerObserver(live=True)
     pol = _inline_policy()
     device = {
         "id": "debian-host",
@@ -260,7 +260,7 @@ def test_witness_live_fetch_mocked(monkeypatch):
     assert seen and "security-tracker.debian.org" in seen[0]
 
 
-def test_witness_live_fetch_failure_is_absent_not_incomplete(monkeypatch):
+def test_observer_live_fetch_failure_is_absent_not_incomplete(monkeypatch):
     """A failed/absent bulk fetch is a complete, zero-verdict no-op (NVD stands
     in the engine). It must NOT mark the fetch incomplete (no-wipe: a failed
     download is a no-op, never a source failure that wipes stored verdicts)."""
@@ -269,7 +269,7 @@ def test_witness_live_fetch_failure_is_absent_not_incomplete(monkeypatch):
         return None, 0, ""   # timeout / network failure
 
     monkeypatch.setattr("posture.sources.debian_tracker.curl_get", fake_curl_get)
-    w = DebianTrackerWitness(live=True)
+    w = DebianTrackerObserver(live=True)
     pol = _inline_policy()
     device = {
         "id": "debian-host",

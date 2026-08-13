@@ -1,9 +1,9 @@
-"""Shared curl helper for networked witnesses.
+"""Shared curl helper for networked observers.
 
-Centralizing curl keeps every witness honest about the same rules inherited
+Centralizing curl keeps every observer honest about the same rules inherited
 from Forebode's NVD fetcher (forebode/sources/nvd.py): header-only auth, the
 `__HTTP__%{http_code}` status-split, no credentials in the URL. Kept in its
-own module so it has no import dependency on the witness layer (avoids the
+own module so it has no import dependency on the observer layer (avoids the
 base <-> nvd_cve import cycle).
 """
 

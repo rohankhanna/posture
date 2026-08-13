@@ -1,6 +1,6 @@
 """Provenance tests — stamp, audit, retroactive distrust (marks, not deletes)."""
 from posture.axis import Axis
-from posture.witness import Verdict, Provenance
+from posture.observer import Verdict, Provenance
 from posture import store, provenance as _prov, engine
 
 
@@ -8,7 +8,7 @@ def _conn_with_nvd_verdicts():
     conn = store.connect(":memory:")
     v = Verdict(axis="vulnerability", key="CVE-1", status="unpatched",
                 detail="d", severity="HIGH", fixed_in="6.18.5",
-                provenance=Provenance(witness="nvd", policy_version="2026-08-01.1",
+                provenance=Provenance(observer="nvd", policy_version="2026-08-01.1",
                                        fetched_at="2026-01-01T00:00:00+00:00",
                                        complete=True, raw_ref="ref"))
     stamped = _prov.stamp([v], policy_version="2026-08-01.1",
@@ -23,19 +23,19 @@ def _conn_with_nvd_verdicts():
 
 def test_stamp_fills_policy_version_and_ts():
     v = Verdict(axis="vulnerability", key="CVE-1", status="unpatched",
-                provenance=Provenance(witness="nvd", policy_version="",
+                provenance=Provenance(observer="nvd", policy_version="",
                                       fetched_at="", complete=True))
     out = _prov.stamp([v], policy_version="P1", fetched_at="T1", complete=True)
     assert out[0].provenance.policy_version == "P1"
     assert out[0].provenance.fetched_at == "T1"
 
 
-def test_audit_lists_verdicts_by_witness():
+def test_audit_lists_verdicts_by_observer():
     conn = _conn_with_nvd_verdicts()
     rows = _prov.audit(conn, "nvd")
     assert len(rows) == 1
     assert rows[0]["key"] == "CVE-1"
-    assert rows[0]["witness"] == "nvd"
+    assert rows[0]["observer"] == "nvd"
 
 
 def test_distrust_marks_not_deletes():
@@ -55,7 +55,7 @@ def test_distrust_log_recorded():
     conn.commit()
     marks = _prov.distrust_log(conn)
     assert len(marks) == 1
-    assert marks[0]["witness"] == "nvd"
+    assert marks[0]["observer"] == "nvd"
 
 
 def test_distrust_idempotent_count():

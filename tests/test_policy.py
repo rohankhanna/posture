@@ -8,7 +8,7 @@ version: "2026-08-01.1"
 supersedes: null
 dated: 2026-08-01
 rationale: test
-witnesses:
+observers:
   nvd: {axes: [vulnerability], weight: high, bias: false-alarm, order: 10, conditions: []}
 degradation:
   nvd: {if_silent_for_days: 14, fallback: [osv]}
@@ -22,9 +22,9 @@ def test_load_valid_policy():
     p = Policy.from_yaml(VALID)
     assert p.version == "2026-08-01.1"
     assert p.supersedes is None
-    assert p.has_witness("nvd")
-    assert p.witness_order("nvd") == 10
-    assert p.witness_bias("nvd") == "false-alarm"
+    assert p.has_observer("nvd")
+    assert p.observer_order("nvd") == 10
+    assert p.observer_bias("nvd") == "false-alarm"
     assert p.degradation_for("nvd").if_silent_for_days == 14
     # the spine is the alias graph now: no primary_key/role, crosswalk is advisory
     assert not hasattr(p.spine, "primary_key")
@@ -58,8 +58,8 @@ def test_missing_dated_rejected():
 def test_bundled_default_policy_loads():
     p = Policy.from_file(default_policy_path())
     assert p.version == "2026-08-06.3"
-    # all six axes are covered by the bundled witness entries
-    covered = {a for wp in p.witnesses.values() for a in wp.axes}
+    # all six axes are covered by the bundled observer entries
+    covered = {a for wp in p.observers.values() for a in wp.axes}
     assert covered == {"vulnerability", "configuration", "exposure",
                        "inventory", "threat", "trust"}
 
@@ -68,7 +68,7 @@ def test_to_summary_roundtrip_shape():
     p = Policy.from_yaml(VALID)
     s = p.to_summary()
     assert s["version"] == "2026-08-01.1"
-    assert "witnesses" in s and "degradation" in s and "spine" in s
+    assert "observers" in s and "degradation" in s and "spine" in s
 
 
 def test_date_literal_coerced_from_yaml_date_object():

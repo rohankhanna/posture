@@ -1,9 +1,9 @@
 """The six axes — the stable body of the posture map.
 
 The single most important design fact in this package: **axes are stable,
-sources churn**. The system reasons about axes; a source is one *witness* to
+sources churn**. The system reasons about axes; a source is one *observer* to
 an axis. When a source is captured, defunded, or superseded, you swap the
-witness; the axis and its verdict logic stay.
+observer; the axis and its verdict logic stay.
 
 The six axes are the categories of posture signal a real security pillar
 tracks. CVEs (the spine) feed exactly one of them (vulnerability); the other
@@ -11,7 +11,7 @@ five are the territory a CVE-only tool is blind to — misconfiguration, network
 exposure, what's installed, what's being attacked, and whether you can trust
 what you installed.
 
-A clean axis is NEVER read as "flawless". An axis with no witness is UNKNOWN
+A clean axis is NEVER read as "flawless". An axis with no observer is UNKNOWN
 and loud, not silent/clean. (See engine.py's loud-degradation rule.)
 """
 

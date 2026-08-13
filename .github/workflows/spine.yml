@@ -177,7 +177,7 @@ jobs:
 
       # Apple advisory fix-version overlay (apple_fixes). Apple's own advisories
       # are authoritative for iOS/iPadOS/macOS fix versions (NVD's Apple coverage
-      # is thin: it records the CPE but often no version range -> the NVD witness
+      # is thin: it records the CPE but often no version range -> the NVD observer
       # silently skips most Apple CVEs). Per-product full refresh over Apple's
       # live security-releases index. No secret — Apple's support pages are
       # public. `--history` is OFF in CI by default (the Wayback-historical
@@ -239,13 +239,13 @@ jobs:
         # item 6 "both"; the signature layer is the non-negotiable one).
 
   # --- Credentialed lane scaffold --------------------------------------------
-  # Runs gated vendor witnesses (SAP/Snyk/Tenable/Qualys/Cisco/VMware) into a
+  # Runs gated vendor observers (SAP/Snyk/Tenable/Qualys/Cisco/VMware) into a
   # SEPARATE PRIVATE repo (rohankhanna/posture-cred), never into this repo's
   # history — so the later public flip of this repo can't leak credentialed
   # content (some of which, e.g. SAP, is non-redistributable).
   #
   # Dormant by default (vars.CREDENTIALED_READY != 'true') until the first vendor
-  # witness is wired + its secret added. Wiring order = credential friction:
+  # observer is wired + its secret added. Wiring order = credential friction:
   # Cisco openVuln + VMware (free reg/account) -> Snyk/Tenable/Qualys (commercial)
   # -> SAP (contract, non-redistributable, confined here).
   credentialed:
@@ -271,11 +271,11 @@ jobs:
           restore-keys: posture-db-v1-
           enableCrossOsArchive: true
 
-      # TODO(future): run credentialed vendor witnesses here (none wired yet).
-      # Each adds: a new Witness declaring its key_kind + a repo secret for its
+      # TODO(future): run credentialed vendor observers here (none wired yet).
+      # Each adds: a new Observer declaring its key_kind + a repo secret for its
       # credential + provenance stamp 'credentialed'. Non-redistributable output
       # stays in posture-cred (this job), never in the public repo.
-      - name: Export credentialed spine (empty until witnesses wired)
+      - name: Export credentialed spine (empty until observers wired)
         run: |
           mkdir -p spine
           posture spine export --db "$DB_PATH" --out .

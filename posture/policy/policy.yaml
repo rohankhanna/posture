@@ -13,25 +13,25 @@ dated: 2026-08-06
 rationale: |
   Initial skeleton policy (2026-08-01.1): NVD is the CVE spine today — a
   foreign (US NIST) coordinate system that over-reports for backport distros
-  (false-alarm); a vendor witness, when present, overrides it. MITRE CVE id
+  (false-alarm); a vendor observer, when present, overrides it. MITRE CVE id
   assignment nearly lapsed in 2024, so the spine is kept redundant (crosswalk).
-  The other five axes have no wired witness yet -> they are UNKNOWN and loud,
+  The other five axes have no wired observer yet -> they are UNKNOWN and loud,
   never silently clean. Bias directions are working assumptions pending the
   alignment exercise; re-evaluate with evidence.
-  2026-08-02.1: first real VENDOR witness — ubuntu_tracker on the
+  2026-08-02.1: first real VENDOR observer — ubuntu_tracker on the
   vulnerability axis, authoritative for Ubuntu kernel CVEs (NVD records them
   with no fix boundary, over-reporting unknown-fix). order 5 < nvd 10 so the
   engine runs it LAST and it overrides NVD on the same CVE key. Candidate CVEs
   come from the device (cve_candidates), not the NVD pass — the fan-out stays
-  pure. debian/apple vendor witnesses follow the same shape when wired.
-  2026-08-02.2: the remaining vendor witnesses — debian_tracker (Debian
+  pure. debian/apple vendor observers follow the same shape when wired.
+  2026-08-02.2: the remaining vendor observers — debian_tracker (Debian
   security-tracker bulk JSON; status mapping resolved/open/undetermined, device
   assumed fully-updated latest) and apple_advisory (Apple security advisories;
   iOS/iPadOS/macOS CVE->fixed_in, device_version>=fixed_in->patched). Same
   shape + override-by-policy-order as ubuntu_tracker. The vulnerability axis
-  now has three real vendor witnesses covering the common distros; the other
+  now has three real vendor observers covering the common distros; the other
   five axes remain stubbed/UNKNOWN until wired.
-  2026-08-02.3: first real witnesses on previously-STUBBED axes — cyclonedx_sbom
+  2026-08-02.3: first real observers on previously-STUBBED axes — cyclonedx_sbom
   (inventory: reads a CycloneDX SBOM the device supplies, emits one present
   Verdict per component keyed <name>@<version>; the measured floor) and
   cis_checker (configuration: runs a bundled CIS-style benchmark against a
@@ -41,7 +41,7 @@ rationale: |
   trust remain stubbed.
   2026-08-06.1: pruned the redundant sbom/cis stub policy entries now that
   cyclonedx_sbom (inventory) and cis_checker (configuration) are wired real
-  witnesses; the stub registrations were removed to stop duplicate axis
+  observers; the stub registrations were removed to stop duplicate axis
   entries. exposure/threat/trust remain stubbed.
   2026-08-06.2: the spine is the alias↔alias graph, not a swappable join key.
   cve is one peer among many (ghsa/osv/rustsec/pysec/go/…), NOT a primary key
@@ -50,8 +50,8 @@ rationale: |
   cve-centric (cve,alias,kind) -> alias-centric (flaw_id,alias,kind) so a non-cve
   flaw with no cve anchors as a first-class peer. Ingestion peers (cvelistV5
   back-fill + OSV + GHSA + CISA KEV) are being wired on this foundation. No
-  witness order/bias changes; the witness layer is unaffected.
-  2026-08-06.3: the last three stubbed axes are now wired with REAL witnesses —
+  observer order/bias changes; the observer layer is unaffected.
+  2026-08-06.3: the last three stubbed axes are now wired with REAL observers —
   local_exposure (exposure: reads a local socket capture the device supplies,
   emits exposed/closed per proto/port; loopback bind = closed, wildcard or
   non-loopback or missing bind = exposed; false-safe), kev (threat: overlays
@@ -64,18 +64,18 @@ rationale: |
   device supplies input, and is an honest no-op (UNKNOWN) otherwise. The three
   stub registrations + stubs.py are gone. No axis is left at a stub. Heavier
   credentialed variants (real Shodan external view, MISP/STIX IOC feeds,
-  SLSA/cosign keyless attestation) are future, separately-id'd witnesses, not
-  replacements. No witness order changes; each new witness is order 10 (no
+  SLSA/cosign keyless attestation) are future, separately-id'd observers, not
+  replacements. No observer order changes; each new observer is order 10 (no
   override partner on its axis).
 
-witnesses:
+observers:
   nvd:
     axes: [vulnerability]
     weight: high
     bias: false-alarm          # over-reports for backport distros (wrong yardstick)
     order: 10
     conditions:
-      - "backport distros: defer to a vendor witness when one is present"
+      - "backport distros: defer to a vendor observer when one is present"
       - "header-only apiKey (never query string) — the run-#10 wipe root cause"
   ubuntu_tracker:
     axes: [vulnerability]
@@ -124,7 +124,7 @@ witnesses:
       - "device supplies cve_candidates + a KEV cve_id set (device['kev'] inline list or device['kev_path'] local JSON file); the client gets the set from the imported spine's kev.jsonl"
       - "CVE in KEV set -> targeted (HIGH); not in set -> clear"
       - "no cve candidates, OR candidates with NO KEV overlay supplied -> honest no-op (axis UNKNOWN); an explicitly-empty KEV set -> all clear"
-      - "this is the territory device-assessment witness (emits verdicts); distinct from the CI ingest overlay sources/kev.py (populates store.kev, never emits verdicts)"
+      - "this is the territory device-assessment observer (emits verdicts); distinct from the CI ingest overlay sources/kev.py (populates store.kev, never emits verdicts)"
   sigverify:
     axes: [trust]
     weight: high
@@ -135,8 +135,8 @@ witnesses:
       - "verifies signature over payload under public_key via the cryptography lib; ed25519 (default) or rsa-pss; PEM or raw keys, hex/base64 signatures"
       - "valid -> trusted; invalid or missing payload/signature/public_key or unsupported algorithm -> untrusted (HIGH; false-safe)"
       - "no artifacts supplied -> honest no-op (zero verdicts); axis falls to UNKNOWN via loud degradation"
-      - "SLSA/cosign keyless attestation is a future separately-id'd 'slsa' witness; this is honest generic signature verification"
-  # First REAL witnesses on previously-stubbed axes (turn UNKNOWN into a real
+      - "SLSA/cosign keyless attestation is a future separately-id'd 'slsa' observer; this is honest generic signature verification"
+  # First REAL observers on previously-stubbed axes (turn UNKNOWN into a real
   # status when the device supplies input; honest no-op / UNKNOWN otherwise).
   cyclonedx_sbom:
     axes: [inventory]

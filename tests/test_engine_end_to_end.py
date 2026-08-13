@@ -1,4 +1,4 @@
-"""End-to-end tests: the real NVD witness through the engine, the full
+"""End-to-end tests: the real NVD observer through the engine, the full
 6-axis posture, and the audit/distrust round-trip."""
 import json
 from pathlib import Path
@@ -10,7 +10,7 @@ from posture.axis import Axis
 from posture.policy import default_policy_path, Policy
 from posture import store, engine, provenance as _prov
 from posture.sources import build_default_registry
-from posture.sources.nvd_cve import NvdCveWitness
+from posture.sources.nvd_cve import NvdCveObserver
 
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "posture" / "fixtures"
 SAMPLE_DEVICE = FIXTURE_DIR / "sample_device.yaml"
@@ -20,8 +20,8 @@ def _sample_device():
     return yaml.safe_load(SAMPLE_DEVICE.read_text())
 
 
-def test_nvd_witness_offline_fixture_produces_expected_verdicts():
-    w = NvdCveWitness(live=False)
+def test_nvd_observer_offline_fixture_produces_expected_verdicts():
+    w = NvdCveObserver(live=False)
     pol = Policy.from_file(default_policy_path())
     result = w.assess(_sample_device(), pol)
     assert result.complete is True
@@ -35,8 +35,8 @@ def test_nvd_witness_offline_fixture_produces_expected_verdicts():
     assert by_key["CVE-2026-99903"].status == "unpatched"
     assert by_key["CVE-2026-99903"].fixed_in == "6.18"
     assert by_key["CVE-2026-99904"].status == "not_affected"
-    # provenance carries the witness + a citable raw_ref
-    assert by_key["CVE-2026-99901"].provenance.witness == "nvd"
+    # provenance carries the observer + a citable raw_ref
+    assert by_key["CVE-2026-99901"].provenance.observer == "nvd"
     assert by_key["CVE-2026-99901"].provenance.raw_ref
 
 
@@ -49,14 +49,14 @@ def test_full_six_axis_posture_one_real_five_unknown():
     by_axis = {a.axis: a for a in dp.axes}
     # the one real axis
     assert by_axis["vulnerability"].status == "unpatched"
-    assert by_axis["vulnerability"].deciding_witness == "nvd"
+    assert by_axis["vulnerability"].deciding_observer == "nvd"
     assert by_axis["vulnerability"].commit_state == "swapped"
     # the five stubbed axes are loud UNKNOWN
     for axis in ("configuration", "exposure", "inventory", "threat", "trust"):
         assert by_axis[axis].status == "unknown", axis
         assert by_axis[axis].gap
-    # NVD attribution is emitted for the actually-used witness
-    assert "nvd" in dp.used_witnesses
+    # NVD attribution is emitted for the actually-used observer
+    assert "nvd" in dp.used_observers
 
 
 def test_audit_and_distrust_roundtrip_through_store():
@@ -77,7 +77,7 @@ def test_audit_and_distrust_roundtrip_through_store():
     assert len(store.verdicts_for_device_axis(conn, "demo-host", "vulnerability")) == 4
 
 
-def test_nvd_witness_live_curl_mocked(monkeypatch):
+def test_nvd_observer_live_curl_mocked(monkeypatch):
     """The live fetch path works end-to-end with curl_get mocked to return a
     canned NVD page. Verifies header-only auth + totalResults completeness +
     the __HTTP__-split contract are honored (we never inspect the key in the
@@ -93,7 +93,7 @@ def test_nvd_witness_live_curl_mocked(monkeypatch):
 
     monkeypatch.setattr("posture.sources.nvd_cve.curl_get", fake_curl_get)
     monkeypatch.setenv("NVD_API_KEY", "test-secret-key")
-    w = NvdCveWitness(live=True)
+    w = NvdCveObserver(live=True)
     pol = Policy.from_file(default_policy_path())
     result = w.assess(_sample_device(), pol)
     assert result.complete is True
@@ -106,9 +106,9 @@ def test_nvd_witness_live_curl_mocked(monkeypatch):
 
 
 def test_nvd_attribution_constant_present():
-    from posture.sources.nvd_cve import NvdCveWitness
+    from posture.sources.nvd_cve import NvdCveObserver
     from posture.attribution import NVD_ATTRIBUTION
-    assert NvdCveWitness.attribution() == NVD_ATTRIBUTION
+    assert NvdCveObserver.attribution() == NVD_ATTRIBUTION
     assert "not endorsed or certified by the NVD" in NVD_ATTRIBUTION
 
 

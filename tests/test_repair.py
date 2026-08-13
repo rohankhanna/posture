@@ -13,7 +13,7 @@ def _pol():
     return Policy.from_file(default_policy_path())
 
 
-def test_orphan_distrusted_witness_raises_proposal():
+def test_orphan_distrusted_observer_raises_proposal():
     conn = _conn()
     # nvd is policy-authorized; distrust it -> orphan_distrusted
     from posture import provenance as _prov
@@ -32,7 +32,7 @@ version: "2020-01-01.1"
 supersedes: null
 dated: 2020-01-01
 rationale: ancient
-witnesses:
+observers:
   nvd: {axes: [vulnerability], weight: high, bias: false-alarm, order: 10, conditions: []}
 spine: {role: vulnerability_join_key, primary_key: cve, crosswalk: [[cve, ghsa]]}
 """
