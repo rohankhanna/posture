@@ -147,7 +147,7 @@ jobs:
           mkdir -p cache
           posture stream --db "$DB_PATH"
 
-      # --- aggregator peers (the spine is ALL flaws, cve one peer among many) -
+      # --- aggregator peers (the spine is ALL defects, cve one peer among many) -
       # Back-fill the cvelistV5 back-catalog (history the forward-only stream
       # can't take). Self-disables after the first full run (BACKFILL_DONE_KEY),
       # so daily CI calls it cheaply as a no-op thereafter. Only-adds skeletons

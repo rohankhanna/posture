@@ -47,8 +47,8 @@ rationale: |
   cve is one peer among many (ghsa/osv/rustsec/pysec/go/…), NOT a primary key
   and NOT rebindable. The `spine.primary_key`/`spine.role` fields (the old
   CVE-replacement rebind mechanism) are retired; the crosswalk table is renamed
-  cve-centric (cve,alias,kind) -> alias-centric (flaw_id,alias,kind) so a non-cve
-  flaw with no cve anchors as a first-class peer. Ingestion peers (cvelistV5
+  cve-centric (cve,alias,kind) -> alias-centric (defect_id,alias,kind) so a non-cve
+  defect with no cve anchors as a first-class peer. Ingestion peers (cvelistV5
   back-fill + OSV + GHSA + CISA KEV) are being wired on this foundation. No
   observer order/bias changes; the observer layer is unaffected.
   2026-08-06.3: the last three stubbed axes are now wired with REAL observers —
@@ -167,7 +167,7 @@ degradation:
     fallback: [ghsa, osv_id]
 
 spine:
-  # The spine is the alias↔alias graph (see spine.py): every flaw_id is a peer,
+  # The spine is the alias↔alias graph (see spine.py): every defect_id is a peer,
   # cve is NOT a primary key and NOT rebindable. There is no `primary_key` or
   # `role` here anymore — the old CVE-replacement rebind mechanism is retired
   # (the alias graph keeps old joins resolving without a rebind). `crosswalk` is

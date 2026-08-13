@@ -26,8 +26,8 @@ OSV rows are **self-enriched on ingest** (they carry cvss + affected ranges), so
 they land with ``enrich_state='osv'`` (NOT ``'mitre'`` pending — only cvelistV5
 skeletons stay ``'mitre'`` for NVD enrichment). Each record's aliases are
 registered as symmetric crosswalk edges against the OSV id via
-:func:`posture.store.add_flaw_alias` (the peer's own id is NOT in the alias
-list — it is the flaw_id of the row itself), so a cve-less OSV record still
+:func:`posture.store.add_defect_alias` (the peer's own id is NOT in the alias
+list — it is the defect_id of the row itself), so a cve-less OSV record still
 anchors as a first-class peer.
 
 Only-adds catalog rows + alias-graph edges; **never touches ``verdicts``**. The
@@ -105,13 +105,13 @@ def osv_ingest_tick(conn, cap: int = 1000, policy_version: str = "",
     ``modified_id.csv`` and re-fetch+upsert records whose ``modified`` is past
     the cursor. Advances the cursor to the max ``modified`` seen.
 
-    Per record: ``store.upsert_flaw``, ``store.set_enrich_state(., ., "osv")``,
-    ``store.add_flaw_alias`` for each alias (symmetric, so a cve-less OSV record
+    Per record: ``store.upsert_defect``, ``store.set_enrich_state(., ., "osv")``,
+    ``store.add_defect_alias`` for each alias (symmetric, so a cve-less OSV record
     anchors as a first-class peer), ``store.mark_seen``, and ``conn.commit()``
     (mirrors stream/refresh per-record commit).
 
     Idempotent + only-adds + no-wipe: writes only ``cves`` catalog rows +
-    ``crosswalk`` alias edges + ``seen_flaws``; never touches ``verdicts`` (the
+    ``crosswalk`` alias edges + ``seen_defects``; never touches ``verdicts`` (the
     map is not the territory). On ``ecosystems.txt`` fetch failure returns
     ``error`` and touches nothing (no catalog to walk). A single ecosystem's
     ``all.zip`` / ``modified_id.csv`` fetch failure is BEST-EFFORT: that ecosystem
@@ -257,10 +257,10 @@ def _backfill_tick(conn, ecosystems, done_set, base, cap, policy_version,
                 count += 1
                 continue
             row, aliases = skel
-            _store.upsert_flaw(conn, row)
+            _store.upsert_defect(conn, row)
             _store.set_enrich_state(conn, row["id"], "osv")
             for alias in aliases:
-                _store.add_flaw_alias(conn, row["id"], "osv", alias,
+                _store.add_defect_alias(conn, row["id"], "osv", alias,
                                       _alias_kind(alias))
             _store.mark_seen(conn, [row["id"]])
             conn.commit()  # release the write lock per record (mirrors stream/refresh)
@@ -352,10 +352,10 @@ def _incremental_tick(conn, ecosystems, base, cap, policy_version, fetched_at,
                 count += 1
                 continue
             row_data, aliases = skel
-            _store.upsert_flaw(conn, row_data)
+            _store.upsert_defect(conn, row_data)
             _store.set_enrich_state(conn, row_data["id"], "osv")
             for alias in aliases:
-                _store.add_flaw_alias(conn, row_data["id"], "osv", alias,
+                _store.add_defect_alias(conn, row_data["id"], "osv", alias,
                                       _alias_kind(alias))
             _store.mark_seen(conn, [row_data["id"]])
             conn.commit()  # release the write lock per record (mirrors stream/refresh)

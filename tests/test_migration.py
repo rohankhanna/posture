@@ -1,9 +1,9 @@
-"""Migration tests — the in-place schema migrations (v0 -> v1 -> v2 -> v3 -> v4).
+"""Migration tests — the in-place schema migrations (v0 -> v1 -> v2 -> v3 -> v4 -> v5).
 
-v0: the cve-centric crosswalk (cve, alias, kind) + cves with no flaw_type.
-v1: the alias graph crosswalk (flaw_id, alias, kind) + cves.flaw_type backfilled.
-v2: de-cve the flaw-catalog layer's names — cves -> flaws, seen_cves -> seen_flaws
-    (+ its cve_id column -> flaw_id). KEV keeps cve_id (genuinely cve-keyed).
+v0: the cve-centric crosswalk (cve, alias, kind) + cves with no defect_type.
+v1: the alias graph crosswalk (defect_id, alias, kind) + cves.defect_type backfilled.
+v2: de-cve the defect-catalog layer's names — cves -> defects, seen_cves -> seen_defects
+    (+ its cve_id column -> defect_id). KEV keeps cve_id (genuinely cve-keyed).
 v3: discovery candidates become idempotent on url — dedup any accumulated dups
     (CI runs `posture discover` daily) + raise candidates_url_uq so add_candidate
     can upsert without bloating the exported spine. No-op on a fresh db.
@@ -12,10 +12,16 @@ v4: assessors are *observers* — the five id-carrying columns named `witness`
     health_dossier.witness, distrust_marks.witness) rename to `observer`. The
     column DATA is preserved (only the name moves); the `state` table (stream
     cursor) is untouched. No-op on a fresh db (columns are already `observer`).
+v5: the catalog layer's words move flaw -> defect — on a real v4 db the legacy
+    names still live (table `flaws` with `flaw_type`, table `seen_flaws` with
+    `flaw_id`, crosswalk column `flaw_id`); they rename to `defects` /
+    `seen_defects` / `defect_type` / `defect_id`. No-op on a fresh db (already
+    `defect*`) and on a db that reached v2 via the current code (which produces
+    `defect*` directly, never `flaw*`).
 
 The migrations must be (a) introspection-guarded + idempotent (safe to re-run on
 an already-migrated db), (b) safe on a fresh db created with the current SCHEMA,
-and (c) touch ONLY crosswalk/cves/flaws/seen_*/candidates — PLUS the v4 column
+and (c) touch ONLY crosswalk/cves/defects/seen_*/candidates — PLUS the v4 column
 renames, which change verdicts/device_posture/health/distrust column NAMES but
 preserve their DATA (territory rows are never deleted).
 """
@@ -98,21 +104,21 @@ def _make_v0_db(path):
     conn.close()
 
 
-# A v1 db: crosswalk already renamed (flaw_id), cves already has flaw_type, AND a
+# A v1 db: crosswalk already renamed (defect_id), cves already has defect_type, AND a
 # seen_cves table with the cve_id column (the v1->v2 rename target). Used to test
 # the v1->v2 step specifically (v0->v1 is a no-op on this shape).
 _V1_SCHEMA = """
 CREATE TABLE crosswalk (
-    flaw_id TEXT,
+    defect_id TEXT,
     alias   TEXT,
     kind    TEXT,
-    PRIMARY KEY (flaw_id, alias, kind)
+    PRIMARY KEY (defect_id, alias, kind)
 );
 CREATE INDEX ix_crosswalk_alias ON crosswalk(alias);
 
 CREATE TABLE cves (
     id              TEXT PRIMARY KEY,
-    flaw_type       TEXT,
+    defect_type       TEXT,
     published       TEXT,
     cvss            REAL,
     severity        TEXT,
@@ -162,10 +168,10 @@ def _make_v1_db(path):
     """Build a v1 db by hand (already past v0->v1; user_version=1)."""
     conn = sqlite3.connect(path)
     conn.executescript(_V1_SCHEMA)
-    conn.execute("INSERT INTO cves (id, flaw_type, published, source, "
+    conn.execute("INSERT INTO cves (id, defect_type, published, source, "
                  "enrich_state, complete) VALUES (?,?,?,?,?,?)",
                  ("CVE-2026-1", "cve", "2026-07-01", "mitre", "mitre", 1))
-    conn.execute("INSERT INTO cves (id, flaw_type, published, source, "
+    conn.execute("INSERT INTO cves (id, defect_type, published, source, "
                  "enrich_state, complete) VALUES (?,?,?,?,?,?)",
                  ("GHSA-aaaa", "ghsa", "2026-07-02", "ghsa", "ghsa", 1))
     conn.execute("INSERT INTO seen_cves (cve_id, first_seen) VALUES (?,?)",
@@ -187,59 +193,59 @@ def _make_v1_db(path):
 
 # --- v0 -> v2 (runs both steps) ---------------------------------------------
 
-def test_v0_db_migrates_to_flaws_and_alias_graph(tmp_path):
+def test_v0_db_migrates_to_defects_and_alias_graph(tmp_path):
     db = tmp_path / "v0.db"
     _make_v0_db(str(db))
 
     # posture.connect runs the new SCHEMA (IF NOT EXISTS -> no-op on existing
-    # tables; creates empty flaws/seen_flaws placeholders) then _migrate applies
+    # tables; creates empty defects/seen_defects placeholders) then _migrate applies
     # v0->v1 then v1->v2, gated by PRAGMA user_version.
     conn = store.connect(str(db))
 
-    # crosswalk renamed: cve -> flaw_id, old row preserved
+    # crosswalk renamed: cve -> defect_id, old row preserved
     cols = {r[1] for r in conn.execute("PRAGMA table_info(crosswalk)")}
-    assert "flaw_id" in cols and "cve" not in cols
-    rows = conn.execute("SELECT flaw_id, alias, kind FROM crosswalk").fetchall()
+    assert "defect_id" in cols and "cve" not in cols
+    rows = conn.execute("SELECT defect_id, alias, kind FROM crosswalk").fetchall()
     assert [tuple(r) for r in rows] == [("CVE-2026-1", "GHSA-aaaa", "ghsa")]
 
-    # cves renamed to flaws; flaw_type added + backfilled 'cve' for the row
+    # cves renamed to defects; defect_type added + backfilled 'cve' for the row
     assert not store._has_table(conn, "cves")
-    fcols = {r[1] for r in conn.execute("PRAGMA table_info(flaws)")}
-    assert "flaw_type" in fcols
-    row = conn.execute("SELECT id, flaw_type, enrich_state FROM flaws").fetchone()
+    fcols = {r[1] for r in conn.execute("PRAGMA table_info(defects)")}
+    assert "defect_type" in fcols
+    row = conn.execute("SELECT id, defect_type, enrich_state FROM defects").fetchone()
     assert row[0] == "CVE-2026-1" and row[1] == "cve" and row[2] == "mitre"
 
-    # seen_flaws exists (fresh, empty — v0 had no seen_cves)
-    assert store._has_table(conn, "seen_flaws")
-    scol = {r[1] for r in conn.execute("PRAGMA table_info(seen_flaws)")}
-    assert "flaw_id" in scol and "cve_id" not in scol
+    # seen_defects exists (fresh, empty — v0 had no seen_cves)
+    assert store._has_table(conn, "seen_defects")
+    scol = {r[1] for r in conn.execute("PRAGMA table_info(seen_defects)")}
+    assert "defect_id" in scol and "cve_id" not in scol
 
-    # the migrations ran exactly once each + bumped user_version to 3
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    # the migrations ran exactly once each + bumped user_version to 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
     conn.close()
 
 
 # --- v1 -> v2 (the table + column rename) ----------------------------------
 
-def test_v1_db_renames_cves_to_flaws_and_seen_cves_cve_id_to_flaw_id(tmp_path):
+def test_v1_db_renames_cves_to_defects_and_seen_cves_cve_id_to_defect_id(tmp_path):
     db = tmp_path / "v1.db"
     _make_v1_db(str(db))
     conn = store.connect(str(db))
 
-    # cves -> flaws, data preserved (both the cve and the ghsa peer row)
+    # cves -> defects, data preserved (both the cve and the ghsa peer row)
     assert not store._has_table(conn, "cves")
-    rows = conn.execute("SELECT id, flaw_type FROM flaws ORDER BY id").fetchall()
+    rows = conn.execute("SELECT id, defect_type FROM defects ORDER BY id").fetchall()
     assert [tuple(r) for r in rows] == [("CVE-2026-1", "cve"), ("GHSA-aaaa", "ghsa")]
 
-    # seen_cves -> seen_flaws, cve_id column -> flaw_id, sighting rows preserved
+    # seen_cves -> seen_defects, cve_id column -> defect_id, sighting rows preserved
     assert not store._has_table(conn, "seen_cves")
-    scol = {r[1] for r in conn.execute("PRAGMA table_info(seen_flaws)")}
-    assert "flaw_id" in scol and "cve_id" not in scol
-    seen = conn.execute("SELECT flaw_id, first_seen FROM seen_flaws ORDER BY flaw_id").fetchall()
+    scol = {r[1] for r in conn.execute("PRAGMA table_info(seen_defects)")}
+    assert "defect_id" in scol and "cve_id" not in scol
+    seen = conn.execute("SELECT defect_id, first_seen FROM seen_defects ORDER BY defect_id").fetchall()
     assert [tuple(r) for r in seen] == [("CVE-2026-1", "2026-08-01"),
                                        ("GHSA-aaaa", "2026-08-02")]
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
     conn.close()
 
 
@@ -262,32 +268,34 @@ def test_migration_is_idempotent(tmp_path):
     _make_v0_db(str(db))
     store.connect(str(db)).close()
     conn = store.connect(str(db))
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
-    rows = conn.execute("SELECT flaw_id, alias, kind FROM crosswalk").fetchall()
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    rows = conn.execute("SELECT defect_id, alias, kind FROM crosswalk").fetchall()
     assert len(rows) == 1
     # a v1 db re-opened after migration is also a no-op
     db2 = tmp_path / "v1.db"
     _make_v1_db(str(db2))
     store.connect(str(db2)).close()
     conn2 = store.connect(str(db2))
-    assert conn2.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert conn2.execute("PRAGMA user_version").fetchone()[0] == 5
     assert not store._has_table(conn2, "cves")
     conn2.close()
 
 
-def test_fresh_db_is_already_at_v4():
-    """A fresh db created with the current SCHEMA is at user_version 4 after
+def test_fresh_db_is_already_at_v5():
+    """A fresh db created with the current SCHEMA is at user_version 5 after
     connect; v0->v1 + v1->v2 + v3 are safe no-ops on it, v4 is a no-op (the
-    id columns are already `observer`), and v3 raises the candidates unique
-    index (a no-op dedup on an empty table)."""
+    id columns are already `observer`), v5 is a no-op (the catalog layer is
+    already `defect*`), and v3 raises the candidates unique index (a no-op
+    dedup on an empty table)."""
     conn = store.connect(":memory:")
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
-    # current shape: flaws (not cves), seen_flaws with flaw_id, crosswalk flaw_id
-    assert store._has_table(conn, "flaws") and not store._has_table(conn, "cves")
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    # current shape: defects (not cves/flaws), seen_defects with defect_id, crosswalk defect_id
+    assert store._has_table(conn, "defects") and not store._has_table(conn, "cves")
+    assert not store._has_table(conn, "flaws") and not store._has_table(conn, "seen_flaws")
     ccols = {r[1] for r in conn.execute("PRAGMA table_info(crosswalk)")}
-    assert "flaw_id" in ccols and "cve" not in ccols
-    scol = {r[1] for r in conn.execute("PRAGMA table_info(seen_flaws)")}
-    assert "flaw_id" in scol
+    assert "defect_id" in ccols and "cve" not in ccols and "flaw_id" not in ccols
+    scol = {r[1] for r in conn.execute("PRAGMA table_info(seen_defects)")}
+    assert "defect_id" in scol and "flaw_id" not in scol
     # v3: candidates has the url unique index on a fresh db (enables idempotent upsert)
     idx = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='index' AND name='candidates_url_uq'"
@@ -406,5 +414,160 @@ def test_v3_db_renames_witness_columns_to_observer(tmp_path):
     # the stream cursor (state table) is untouched by the rename
     assert conn.execute("SELECT value FROM state WHERE key='stream_cursor'").fetchone()[0] == "abc123"
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    conn.close()
+
+
+# --- v4 -> v5 (the flaw -> defect catalog-layer rename) ---------------------
+
+# A real v4 db (built under the pre-defect code) carried the legacy catalog
+# names: table `flaws` (column `flaw_type`), table `seen_flaws` (column
+# `flaw_id`), and crosswalk column `flaw_id` (renamed from `cve` by the
+# historical v0->v1 step). The v4 observer rename is already done on this db
+# (the id columns are already `observer`), so this fixture isolates v4->v5.
+_V4_FLAW_SCHEMA = """
+CREATE TABLE crosswalk (
+    flaw_id TEXT,
+    alias   TEXT,
+    kind    TEXT,
+    PRIMARY KEY (flaw_id, alias, kind)
+);
+CREATE INDEX ix_crosswalk_alias ON crosswalk(alias);
+
+CREATE TABLE flaws (
+    id              TEXT PRIMARY KEY,
+    flaw_type       TEXT,
+    published       TEXT,
+    cvss            REAL,
+    severity        TEXT,
+    cvss_vector     TEXT,
+    description     TEXT,
+    fixed_raw       TEXT,
+    refs            TEXT,
+    cwe             TEXT,
+    ref_tags        TEXT,
+    enrich_state    TEXT,
+    source          TEXT,
+    fetched_at      TEXT,
+    policy_version  TEXT,
+    complete        INTEGER,
+    distrusted      INTEGER DEFAULT 0,
+    distrust_reason TEXT,
+    discovered_at   TEXT
+);
+CREATE INDEX ix_flaws_enrich_state ON flaws(enrich_state);
+CREATE INDEX ix_flaws_published ON flaws(published);
+
+CREATE TABLE seen_flaws (
+    flaw_id     TEXT PRIMARY KEY,
+    first_seen  TEXT
+);
+
+CREATE TABLE verdicts (
+    device_id     TEXT,
+    axis          TEXT,
+    key           TEXT,
+    status        TEXT,
+    severity      TEXT,
+    fixed_in      TEXT,
+    detail        TEXT,
+    observer      TEXT,
+    policy_version TEXT,
+    fetched_at    TEXT,
+    complete      INTEGER,
+    raw_ref       TEXT,
+    computed_at   TEXT,
+    distrusted    INTEGER DEFAULT 0,
+    distrust_reason TEXT,
+    PRIMARY KEY (device_id, axis, key, observer)
+);
+
+CREATE TABLE state (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+"""
+
+
+def test_v4_db_renames_flaw_layer_to_defect(tmp_path):
+    db = tmp_path / "v4.db"
+    raw = sqlite3.connect(str(db))
+    raw.executescript(_V4_FLAW_SCHEMA)
+    raw.execute("INSERT INTO crosswalk (flaw_id, alias, kind) VALUES (?,?,?)",
+                ("CVE-2026-1", "GHSA-aaaa", "ghsa"))
+    raw.execute("INSERT INTO flaws (id, flaw_type, published, source, "
+                "enrich_state, complete) VALUES (?,?,?,?,?,?)",
+                ("CVE-2026-1", "cve", "2026-07-01", "mitre", "mitre", 1))
+    raw.execute("INSERT INTO flaws (id, flaw_type, published, source, "
+                "enrich_state, complete) VALUES (?,?,?,?,?,?)",
+                ("GHSA-aaaa", "ghsa", "2026-07-02", "ghsa", "ghsa", 1))
+    raw.execute("INSERT INTO seen_flaws (flaw_id, first_seen) VALUES (?,?)",
+                ("CVE-2026-1", "2026-08-01"))
+    raw.execute("INSERT INTO seen_flaws (flaw_id, first_seen) VALUES (?,?)",
+                ("GHSA-aaaa", "2026-08-02"))
+    raw.execute(
+        """INSERT INTO verdicts
+           (device_id, axis, key, status, observer, policy_version, fetched_at,
+            complete, computed_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        ("host-TERRITORY", "vulnerability", "CVE-2026-1", "unpatched", "nvd",
+         "v4", "t0", 1, "t0"))
+    raw.execute("INSERT INTO state (key, value) VALUES (?,?)",
+                ("stream:mitre_cursor", "tipSHA"))
+    raw.execute("PRAGMA user_version = 4")
+    raw.commit(); raw.close()
+
+    conn = store.connect(str(db))              # runs v4 -> v5
+
+    # flaws -> defects (data preserved: both the cve and the ghsa peer row)
+    assert not store._has_table(conn, "flaws") and store._has_table(conn, "defects")
+    rows = conn.execute("SELECT id, defect_type FROM defects ORDER BY id").fetchall()
+    assert [tuple(r) for r in rows] == [("CVE-2026-1", "cve"), ("GHSA-aaaa", "ghsa")]
+
+    # seen_flaws -> seen_defects, flaw_id -> defect_id, sighting rows preserved
+    assert not store._has_table(conn, "seen_flaws") and store._has_table(conn, "seen_defects")
+    scol = {r[1] for r in conn.execute("PRAGMA table_info(seen_defects)")}
+    assert "defect_id" in scol and "flaw_id" not in scol
+    seen = conn.execute("SELECT defect_id, first_seen FROM seen_defects ORDER BY defect_id").fetchall()
+    assert [tuple(r) for r in seen] == [("CVE-2026-1", "2026-08-01"),
+                                       ("GHSA-aaaa", "2026-08-02")]
+
+    # crosswalk flaw_id -> defect_id, the alias row preserved
+    ccols = {r[1] for r in conn.execute("PRAGMA table_info(crosswalk)")}
+    assert "defect_id" in ccols and "flaw_id" not in ccols
+    cw = conn.execute("SELECT defect_id, alias, kind FROM crosswalk").fetchall()
+    assert [tuple(r) for r in cw] == [("CVE-2026-1", "GHSA-aaaa", "ghsa")]
+
+    # defects has the new indices (not the legacy ix_flaws_*)
+    def _idx(name):
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (name,)
+        ).fetchone() is not None
+    assert _idx("ix_defects_enrich_state") and _idx("ix_defects_published")
+    assert not _idx("ix_flaws_enrich_state") and not _idx("ix_flaws_published")
+
+    # territory (verdicts) + the stream cursor (state) are byte-untouched
+    v = conn.execute("SELECT observer, key, status FROM verdicts").fetchone()
+    assert tuple(v) == ("nvd", "CVE-2026-1", "unpatched")
+    assert conn.execute("SELECT value FROM state WHERE key='stream:mitre_cursor'").fetchone()[0] == "tipSHA"
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    conn.close()
+
+
+def test_v4_to_v5_is_idempotent(tmp_path):
+    """Re-opening an already-v5 db (and a fresh db) leaves the flaw->defect
+    step as a guarded no-op."""
+    db = tmp_path / "v4.db"
+    raw = sqlite3.connect(str(db))
+    raw.executescript(_V4_FLAW_SCHEMA)
+    raw.execute("INSERT INTO flaws (id, flaw_type, source, enrich_state, complete) "
+                "VALUES (?,?,?,?,?)", ("CVE-2026-1", "cve", "mitre", "mitre", 1))
+    raw.execute("PRAGMA user_version = 4")
+    raw.commit(); raw.close()
+    store.connect(str(db)).close()            # migrate to v5
+    conn = store.connect(str(db))              # re-open -> no-op
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert store._has_table(conn, "defects") and not store._has_table(conn, "flaws")
+    assert conn.execute("SELECT defect_type FROM defects").fetchone()[0] == "cve"
     conn.close()

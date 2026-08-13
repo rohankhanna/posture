@@ -7,7 +7,7 @@ and is published in the **OSV schema** (one schema for all vulnerability
 databases), so this peer reuses :func:`posture.sources.osv_schema.osv_skeleton`
 for record parsing — the same normalizer the OSV.dev hub peer will use.
 
-GHSA is a **peer** of CVE (``flaw_type='ghsa'``), not a CVE-keyed overlay like
+GHSA is a **peer** of CVE (``defect_type='ghsa'``), not a CVE-keyed overlay like
 KEV: a GHSA id owns its own catalog row. It is **self-enriched on ingest**
 (``enrich_state='ghsa'``, NOT ``'mitre'`` pending NVD) — the record already
 carries CVSS + affected ranges, so it lands complete and the incremental
@@ -141,12 +141,12 @@ def _alias_kind(alias: str) -> str:
 def _upsert_one(conn, row: dict, aliases: list[str]) -> None:
     """Upsert one GHSA catalog row + register its alias-graph edges. The row is
     self-enriched (``enrich_state='ghsa'``); each alias becomes a symmetric
-    crosswalk edge via :func:`posture.store.add_flaw_alias` so resolve works in
-    both directions. Marks the flaw seen (drives the "new since tick" signal)."""
-    _store.upsert_flaw(conn, row)
+    crosswalk edge via :func:`posture.store.add_defect_alias` so resolve works in
+    both directions. Marks the defect seen (drives the "new since tick" signal)."""
+    _store.upsert_defect(conn, row)
     _store.set_enrich_state(conn, row["id"], "ghsa")
     for alias in aliases:
-        _store.add_flaw_alias(conn, row["id"], "ghsa", alias, _alias_kind(alias))
+        _store.add_defect_alias(conn, row["id"], "ghsa", alias, _alias_kind(alias))
     _store.mark_seen(conn, [row["id"]])
 
 
@@ -161,11 +161,11 @@ def ghsa_ingest_tick(
     (cap-resumed across ticks) and then incrementally diffs new/changed
     advisories on subsequent ticks. Returns a stats dict.
 
-    Idempotent + only-adds + no-wipe: it ``upsert_flaw`` / ``set_enrich_state`` /
-    ``add_flaw_alias`` / ``mark_seen`` per advisory and never touches
+    Idempotent + only-adds + no-wipe: it ``upsert_defect`` / ``set_enrich_state`` /
+    ``add_defect_alias`` / ``mark_seen`` per advisory and never touches
     ``verdicts``. The cursor advances only after a sweep succeeds, so a tick
     killed mid-sweep retries the same range idempotently next time (re-upserts
-    are harmless — ``upsert_flaw`` is keyed on id and ``mark_seen`` is idempotent).
+    are harmless — ``upsert_defect`` is keyed on id and ``mark_seen`` is idempotent).
 
     Two phases:
 
@@ -179,7 +179,7 @@ def ghsa_ingest_tick(
          changed file. Advance ``GHSA_TIP_KEY`` after the sweep.
 
     Each record is parsed via :func:`posture.sources.osv_schema.osv_skeleton`
-    with ``source='ghsa'`` / ``flaw_type='ghsa'``; the row is self-enriched
+    with ``source='ghsa'`` / ``defect_type='ghsa'``; the row is self-enriched
     (``enrich_state='ghsa'``, NOT pending mitre).
     """
     repo = Path(repo_path) if repo_path else ghsa_repo_path()

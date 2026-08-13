@@ -8,20 +8,20 @@ cosign-signs and commits. A client clones the signed repo, verifies the
 signature, and imports the JSONL back into its own SQLite DB to run ``assess``
 locally over its private devices (the territory half — never exported).
 
-**Data-only.** The spine is the MAP: ``flaws``, ``crosswalk``, ``candidates``,
-``distrust_marks``, ``seen_flaws``. It NEVER serializes ``verdicts`` /
+**Data-only.** The spine is the MAP: ``defects``, ``crosswalk``, ``candidates``,
+``distrust_marks``, ``seen_defects``. It NEVER serializes ``verdicts`` /
 ``device_posture`` / ``health_*`` / ``glossary`` / ``repair_proposals`` — those
 are territory (device-specific) or engine-internal. No device data ever leaves CI.
 
 Layout under ``--out DIR`` (default ``.``)::
 
     DIR/spine/manifest.json          # cosign signs THIS -> state.sig
-    DIR/spine/flaws/2026-07.jsonl    # sharded by published month (100MB-file
-    DIR/spine/flaws/unknown.jsonl    #   limit; rows with no date -> 'unknown')
+    DIR/spine/defects/2026-07.jsonl    # sharded by published month (100MB-file
+    DIR/spine/defects/unknown.jsonl    #   limit; rows with no date -> 'unknown')
     DIR/spine/crosswalk.jsonl
     DIR/spine/candidates.jsonl
     DIR/spine/distrust_marks.jsonl
-    DIR/spine/seen_flaws.jsonl
+    DIR/spine/seen_defects.jsonl
 
 The manifest carries a per-file ``sha256`` + ``count`` for every shard, so
 tamper-evidence lives in the signature over the manifest, NOT in git history.
@@ -49,7 +49,7 @@ SPINE_DIR = "spine"
 # The MAP tables — the spine. Territory/engine-internal tables are deliberately
 # absent: verdicts, device_posture, health_*, glossary, term_signals,
 # spine_bindings, repair_proposals, policy_versions, state.
-FLAT_TABLES = ("crosswalk", "candidates", "distrust_marks", "seen_flaws", "kev",
+FLAT_TABLES = ("crosswalk", "candidates", "distrust_marks", "seen_defects", "kev",
                "apple_fixes")
 
 
@@ -57,8 +57,8 @@ def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
 
 
-def _flaw_shard_key(row: dict) -> str:
-    """YYYY-MM bucket from a flaws row's ``published`` (e.g. '2026-07-31' ->
+def _defect_shard_key(row: dict) -> str:
+    """YYYY-MM bucket from a defects row's ``published`` (e.g. '2026-07-31' ->
     '2026-07'). Rows with no parseable date land in 'unknown' so nothing is
     dropped — the spine is a complete snapshot."""
     pub = row.get("published") or ""
@@ -114,22 +114,22 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
     files: list[dict] = []
     counts: dict[str, int] = {}
 
-    # --- flaws: sharded by published month ---
-    flaws = _store.catalog_all(conn)
-    counts["flaws"] = len(flaws)
+    # --- defects: sharded by published month ---
+    defects = _store.catalog_all(conn)
+    counts["defects"] = len(defects)
     buckets: dict[str, list[dict]] = {}
-    for row in flaws:
-        buckets.setdefault(_flaw_shard_key(row), []).append(row)
+    for row in defects:
+        buckets.setdefault(_defect_shard_key(row), []).append(row)
     for shard, rows in sorted(buckets.items()):
-        sha, n = _write_jsonl(root / "flaws" / f"{shard}.jsonl", rows)
-        files.append({"path": f"flaws/{shard}.jsonl", "sha256": sha, "count": n})
+        sha, n = _write_jsonl(root / "defects" / f"{shard}.jsonl", rows)
+        files.append({"path": f"defects/{shard}.jsonl", "sha256": sha, "count": n})
 
     # --- flat tables ---
     loaders = {
         "crosswalk": _store.crosswalk_all,
         "candidates": _store.candidates,
         "distrust_marks": _store.distrust_marks,
-        "seen_flaws": _store.seen_flaws,
+        "seen_defects": _store.seen_defects,
         "kev": _store.kev_all,
         "apple_fixes": _store.apple_fixes_all,
     }
@@ -141,11 +141,11 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
 
     # --- self-clean: drop any *.jsonl shard under root that this export did NOT
     #     write. Makes export idempotent w.r.t. format renames (a prior run's
-    #     spine/cves/*.jsonl or seen_cves.jsonl is removed instead of lingering
-    #     beside the new spine/flaws/*.jsonl). manifest.json is regenerated below.
+    #     spine/flaws/*.jsonl or seen_flaws.jsonl is removed instead of lingering
+    #     beside the new spine/defects/*.jsonl). manifest.json is regenerated below.
     #     Materialize the rglob FIRST: it is a generator, and unlinking/rmtree-ing
     #     shards mid-iteration removes a directory rglob still intends to descend
-    #     into -> FileNotFoundError on the old shard dir (e.g. 'spine/cves').
+    #     into -> FileNotFoundError on the old shard dir (e.g. 'spine/flaws').
     written = {entry["path"] for entry in files}
     import shutil as _shutil
     for path in list(root.rglob("*.jsonl")):
@@ -208,7 +208,7 @@ def verify_spine(from_dir: os.PathLike | str = ".") -> dict:
 def import_spine(conn, from_dir: os.PathLike | str = ".",
                  verify_manifest: bool = True) -> dict:
     """Load ``<from_dir>/spine/*.jsonl`` into the SQLite DB (the client
-    consumption path; also enables the round-trip test). Idempotent: flaws use
+    consumption path; also enables the round-trip test). Idempotent: defects use
     INSERT OR REPLACE (the client's catalog mirrors the signed spine — the
     client does not enrich independently), the flat tables use INSERT OR
     REPLACE/IGNORE on their primary keys. If ``verify_manifest``, recompute
@@ -220,24 +220,24 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
         verify_spine(from_dir)
     manifest = json.loads((root / "manifest.json").read_text())
 
-    stats = {k: 0 for k in ("flaws", "crosswalk", "candidates",
-                           "distrust_marks", "seen_flaws", "kev",
+    stats = {k: 0 for k in ("defects", "crosswalk", "candidates",
+                           "distrust_marks", "seen_defects", "kev",
                            "apple_fixes")}
 
-    # --- flaws: full INSERT OR REPLACE (all columns, including enrich_state,
+    # --- defects: full INSERT OR REPLACE (all columns, including enrich_state,
     #     distrusted, distrust_reason, discovered_at — a faithful mirror of
-    #     the signed map; upsert_flaw would drop those) ---
-    for shard_path in sorted((root / "flaws").glob("*.jsonl")):
+    #     the signed map; upsert_defect would drop those) ---
+    for shard_path in sorted((root / "defects").glob("*.jsonl")):
         for row in _read_jsonl(shard_path):
             conn.execute(
-                """INSERT OR REPLACE INTO flaws
-                     (id, flaw_type, published, cvss, severity, cvss_vector,
+                """INSERT OR REPLACE INTO defects
+                     (id, defect_type, published, cvss, severity, cvss_vector,
                       description, fixed_raw, refs, cwe, ref_tags, enrich_state,
                       source, fetched_at, policy_version, complete, distrusted,
                       distrust_reason, discovered_at)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    row["id"], row.get("flaw_type"), row.get("published"),
+                    row["id"], row.get("defect_type"), row.get("published"),
                     row.get("cvss"),
                     row.get("severity"), row.get("cvss_vector"),
                     row.get("description", ""),
@@ -253,13 +253,13 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
                     row.get("distrust_reason"), row.get("discovered_at"),
                 ),
             )
-            stats["flaws"] += 1
+            stats["defects"] += 1
 
-    # --- crosswalk: INSERT OR IGNORE (PK flaw_id,alias,kind — idempotent) ---
+    # --- crosswalk: INSERT OR IGNORE (PK defect_id,alias,kind — idempotent) ---
     for row in _read_jsonl(root / "crosswalk.jsonl"):
         conn.execute(
-            "INSERT OR IGNORE INTO crosswalk (flaw_id, alias, kind) VALUES (?,?,?)",
-            (row["flaw_id"], row["alias"], row["kind"]),
+            "INSERT OR IGNORE INTO crosswalk (defect_id, alias, kind) VALUES (?,?,?)",
+            (row["defect_id"], row["alias"], row["kind"]),
         )
         stats["crosswalk"] += 1
 
@@ -283,13 +283,13 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
         )
         stats["distrust_marks"] += 1
 
-    # --- seen_flaws: INSERT OR REPLACE (flaw_id PK) ---
-    for row in _read_jsonl(root / "seen_flaws.jsonl"):
+    # --- seen_defects: INSERT OR REPLACE (defect_id PK) ---
+    for row in _read_jsonl(root / "seen_defects.jsonl"):
         conn.execute(
-            "INSERT OR REPLACE INTO seen_flaws (flaw_id, first_seen) VALUES (?,?)",
-            (row["flaw_id"], row.get("first_seen")),
+            "INSERT OR REPLACE INTO seen_defects (defect_id, first_seen) VALUES (?,?)",
+            (row["defect_id"], row.get("first_seen")),
         )
-        stats["seen_flaws"] += 1
+        stats["seen_defects"] += 1
 
     # --- kev: INSERT OR REPLACE (cve_id PK) — the exploitability_signal overlay
     for row in _read_jsonl(root / "kev.jsonl"):

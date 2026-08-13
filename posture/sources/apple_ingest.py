@@ -17,7 +17,7 @@ but is (cve_id, product)-keyed rather than cve-keyed, and per-product full-
 refresh (DELETE WHERE product + INSERT) so advisories aged off Apple's rolling
 index leave no stale rows. ``apple_ingest_tick`` is a free function over a
 passed-in ``conn`` (``(conn, ...) -> stats``): it writes ONLY the ``apple_fixes``
-overlay — never ``flaws`` / ``verdicts`` / territory.
+overlay — never ``defects`` / ``verdicts`` / territory.
 
 Real ingestion runs ONLY in CI — never from a local machine (the no-local-
 feeding rule). Tests monkeypatch ``curl_get`` (here + ``apple_advisory.curl_get``)
@@ -88,7 +88,7 @@ def apple_ingest_tick(conn, product: str = "iphone_os", history: bool = False,
     Idempotent full refresh per product (``store.replace_apple_fixes`` =
     DELETE WHERE product + INSERT), so a re-run replaces, never appends, and
     advisories aged off the rolling index leave no stale rows. No-wipe: writes
-    ONLY the ``apple_fixes`` overlay — never ``flaws`` / ``verdicts`` / territory.
+    ONLY the ``apple_fixes`` overlay — never ``defects`` / ``verdicts`` / territory.
 
     ``history=True`` augments the index map with pre-index advisories discovered
     via the Wayback Machine's archived yearly snapshots of Apple's cumulative

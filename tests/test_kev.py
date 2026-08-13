@@ -1,6 +1,6 @@
 """CISA KEV overlay tests — the exploitability_signal.
 
-KEV is a CVE-keyed **overlay** (not a new flaw_type): the static CISA catalog
+KEV is a CVE-keyed **overlay** (not a new defect_type): the static CISA catalog
 JSON maps a cveID to known-exploited metadata (required action, due date,
 ransomware use). ``kev_ingest_tick`` does an idempotent full refresh; the spine
 export serializes ``kev`` as a flat table. All local fixtures — no network:

@@ -95,7 +95,7 @@ def _ensure_clone(repo: Path) -> None:
 
 
 def _skeleton(rec: dict, policy_version: str, fetched_at: str) -> dict | None:
-    """Build an ``upsert_flaw``-shape skeleton from a parsed MITRE record.
+    """Build an ``upsert_defect``-shape skeleton from a parsed MITRE record.
 
     ``cvss``/``severity`` are None — MITRE doesn't give the numeric score in the
     NVD-attested form; the incremental refresh's ``nvd_query_cve`` fills them.
@@ -154,11 +154,11 @@ def stream_tick(
     """One stream tick. Detects newly-published/changed CVEs since the last
     cursor and upserts skeleton rows. Returns a stats dict.
 
-    Idempotent + no-wipe: it only ``upsert_flaw`` / ``mark_seen`` /
+    Idempotent + no-wipe: it only ``upsert_defect`` / ``mark_seen`` /
     ``set_enrich_state`` per CVE and never touches ``verdicts``. The cursor
     advances only after the parse sweep succeeds, so a tick killed mid-sweep
     retries the same range next time (already-upserted skeletons are re-upserted
-    harmlessly — ``upsert_flaw`` is idempotent and ``mark_seen`` is keyed on id).
+    harmlessly — ``upsert_defect`` is idempotent and ``mark_seen`` is keyed on id).
 
     Bootstrap is O(1): a first run (no cursor) records the current tip and
     produces nothing — the daily ``assess``/``refresh`` owns the back-catalog;
@@ -221,7 +221,7 @@ def stream_tick(
         if not skel:
             stats["skipped"] += 1
             continue
-        _store.upsert_flaw(conn, skel)
+        _store.upsert_defect(conn, skel)
         _store.set_enrich_state(conn, skel["id"], "mitre")
         # mark_seen returns the newly-seen set; a changed (re-published) CVE
         # already seen stays seen — only truly-new ids drive "new since tick".
@@ -234,7 +234,7 @@ def stream_tick(
     # Advance the cursor only after the sweep. Skeletons already upserted are
     # durable; if the process dies here the next tick re-diffs the same range
     # and re-upserts them idempotently (no double-count: mark_seen is idempotent
-    # and upsert_flaw is keyed on id).
+    # and upsert_defect is keyed on id).
     _set_cursor(conn, repo, new, fetched_at)
     _store.set_state(conn, LAST_SUMMARY_KEY, json.dumps(stats, default=str))
     return stats
@@ -317,7 +317,7 @@ def backfill_tick(
         if not skel:
             stats["skipped"] += 1
             continue
-        _store.upsert_flaw(conn, skel)
+        _store.upsert_defect(conn, skel)
         _store.set_enrich_state(conn, skel["id"], "mitre")
         _store.mark_seen(conn, [skel["id"]])
         stats["upserted"] += 1

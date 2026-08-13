@@ -36,7 +36,7 @@ class Axis(StrEnum):
 # verdicts are keyed by (the join key within the axis).
 AXIS_META: dict[Axis, dict[str, str]] = {
     Axis.VULNERABILITY: {
-        "desc": "Known flaws (CVEs + advisories).",
+        "desc": "Known defects (CVEs + advisories).",
         "key_kind": "cve id (the spine)",
         "status_set": "unpatched | patched | not_affected | unknown",
     },

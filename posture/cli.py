@@ -307,16 +307,16 @@ def _cmd_audit(args) -> int:
 def _cmd_crosswalk(args) -> int:
     with _open_db(args.db) as conn:
         if args.sub == "add":
-            _spine.register(conn, args.flaw_id, args.alias, args.kind)
+            _spine.register(conn, args.defect_id, args.alias, args.kind)
             conn.commit()
-            print(f"crosswalk: {args.flaw_id} = {args.alias} ({args.kind})")
+            print(f"crosswalk: {args.defect_id} = {args.alias} ({args.kind})")
             return 0
         if args.sub == "show":
-            aliases = _spine.resolve(conn, args.flaw_id)
+            aliases = _spine.resolve(conn, args.defect_id)
             if not aliases:
-                print(f"{args.flaw_id}: no aliases recorded")
+                print(f"{args.defect_id}: no aliases recorded")
             else:
-                print(f"{args.flaw_id}:")
+                print(f"{args.defect_id}:")
                 for a in aliases:
                     print(f"  {a['alias']}  ({a['kind']})")
             return 0
@@ -496,16 +496,16 @@ def _cmd_spine(args) -> int:
         _glossary.ensure_seeded(conn)
         conn.commit()
         if args.sub == "show":
-            # the spine is the alias graph: show the peer registry (flaw_type
+            # the spine is the alias graph: show the peer registry (defect_type
             # counts) + crosswalk edge counts, not a rebindable primary key.
-            counts = _store.flaw_type_counts(conn)
-            n_flaws = sum(r["n"] for r in counts)
+            counts = _store.defect_type_counts(conn)
+            n_defects = sum(r["n"] for r in counts)
             n_edges = len(_store.crosswalk_all(conn))
-            print(f"spine: alias↔alias graph  ({n_flaws} flaw(s), {n_edges} crosswalk edge(s))")
-            print("flaw-type registry (peer counts):")
+            print(f"spine: alias↔alias graph  ({n_defects} defect(s), {n_edges} crosswalk edge(s))")
+            print("defect-type registry (peer counts):")
             if counts:
                 for r in counts:
-                    print(f"  {(r['flaw_type'] or '-'):12} {r['n']}")
+                    print(f"  {(r['defect_type'] or '-'):12} {r['n']}")
             else:
                 print("  (catalog empty)")
             print(f"crosswalk edges: {n_edges}")
@@ -713,12 +713,12 @@ def _cmd_refresh(args) -> int:
 def _cmd_catalog(args) -> int:
     with _open_db(args.db, readonly=True) as conn:
         if args.sub == "show":
-            row = _store.get_flaw(conn, args.flaw_id)
+            row = _store.get_defect(conn, args.defect_id)
             if not row:
-                print(f"{args.flaw_id}: not in catalog")
+                print(f"{args.defect_id}: not in catalog")
                 return 1
             print(json.dumps(row, indent=2, default=str))
-            first = _store.seen_first_seen(conn, args.flaw_id)
+            first = _store.seen_first_seen(conn, args.defect_id)
             if first:
                 print(f"first seen by stream: {first}")
             # emit the required attribution for whichever foreign source
@@ -737,7 +737,7 @@ def _cmd_catalog(args) -> int:
                   f"{'cvss':5} {'sev':9} src")
             print("-" * 84)
             for r in rows:
-                print(f"{r['id']:22} {(r['flaw_type'] or '-'):5} "
+                print(f"{r['id']:22} {(r['defect_type'] or '-'):5} "
                       f"{(r['enrich_state'] or '-'):6} "
                       f"{(r['published'] or '-'):12} "
                       f"{(str(r['cvss']) if r['cvss'] is not None else '-'):5} "
@@ -803,7 +803,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("crosswalk", help="spine alias graph: add | show")
     sp.add_argument("sub", choices=["add", "show"])
-    sp.add_argument("flaw_id"); sp.add_argument("alias", nargs="?", default=None); sp.add_argument("kind", nargs="?", default="ghsa")
+    sp.add_argument("defect_id"); sp.add_argument("alias", nargs="?", default=None); sp.add_argument("kind", nargs="?", default="ghsa")
     db_arg(sp); sp.set_defaults(func=_cmd_crosswalk)
 
     sp = sub.add_parser("discover", help="horizon scan: surface candidate sources for review")
@@ -876,9 +876,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="catalog-only enrichment: no fleet, no verdicts, no vendor trackers (for CI)")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_refresh)
 
-    sp = sub.add_parser("catalog", help="flaw catalog: show <flaw_id> | list | pending")
+    sp = sub.add_parser("catalog", help="defect catalog: show <defect_id> | list | pending")
     sp.add_argument("sub", choices=["show", "list", "pending"])
-    sp.add_argument("flaw_id", nargs="?", default=None, help="flaw id (show)")
+    sp.add_argument("defect_id", nargs="?", default=None, help="defect id (show)")
     sp.add_argument("--state", choices=["mitre", "nvd", "ghsa", "osv"], default=None, help="filter list by enrich state")
     sp.add_argument("--limit", type=int, default=100)
     sp.add_argument("--offset", type=int, default=0)

@@ -84,7 +84,7 @@ def _all_ranges(cve: dict) -> list[dict]:
 
 
 def _enriched_record(cve: dict, policy_version: str, fetched_at: str) -> dict:
-    """Build the full NVD-enriched ``upsert_flaw`` row from one NVD cve object."""
+    """Build the full NVD-enriched ``upsert_defect`` row from one NVD cve object."""
     score, sev, vec = _metrics(cve)
     ranges = _all_ranges(cve)
     return {
@@ -120,7 +120,7 @@ def _pending_within_ttl(conn, cve_ids: list[str], now: str) -> list[str]:
               - _dt.timedelta(days=PENDING_TTL_DAYS)).isoformat()
     out: list[str] = []
     for cid in cve_ids:
-        row = _store.get_flaw(conn, cid)
+        row = _store.get_defect(conn, cid)
         if not row:
             continue
         disc = row.get("discovered_at") or row.get("fetched_at") or ""
@@ -190,7 +190,7 @@ def refresh_tick(
         if not rec["id"]:
             stats["errors"].append(f"{cid}: enriched record has no id")
             continue
-        _store.upsert_flaw(conn, rec)
+        _store.upsert_defect(conn, rec)
         _store.set_enrich_state(conn, rec["id"], "nvd")
         enriched.append((rec["id"], cve))
         stats["enriched"] += 1

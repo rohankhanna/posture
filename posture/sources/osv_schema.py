@@ -10,7 +10,7 @@ hub) cover a large fraction of the aggregator peer space. This is the mirror of
 A record::
 
     {
-      "id": "GHSA-xxxx-xxxx-xxxx",        # the flaw_id under this peer's scheme
+      "id": "GHSA-xxxx-xxxx-xxxx",        # the defect_id under this peer's scheme
       "aliases": ["CVE-2026-1001"],       # equivalent ids (often a CVE)
       "published": "2026-07-04T...", "modified": "2026-08-06T...",
       "summary": "...", "details": "...",
@@ -23,7 +23,7 @@ A record::
     }
 
 ``osv_record`` returns the normalized fields; ``osv_skeleton`` builds the
-``upsert_flaw`` row + the alias list a peer tick should register. OSV/GHSA rows
+``upsert_defect`` row + the alias list a peer tick should register. OSV/GHSA rows
 are **self-enriched on ingest** (they carry cvss + ranges), so they land with
 ``enrich_state = source`` (NOT ``'mitre'`` pending) and the incremental refresh
 leaves them alone — only cvelistV5 skeletons stay ``'mitre'`` for NVD enrichment.
@@ -184,17 +184,17 @@ def osv_record(rec: dict) -> dict | None:
     }
 
 
-def osv_skeleton(rec: dict, source: str, flaw_type: str,
+def osv_skeleton(rec: dict, source: str, defect_type: str,
                  policy_version: str, fetched_at: str) -> tuple[dict, list[str]] | None:
-    """Build ``(upsert_flaw_row, aliases_to_register)`` from an OSV-schema record.
+    """Build ``(upsert_defect_row, aliases_to_register)`` from an OSV-schema record.
 
-    The row is **self-enriched**: ``source``/``flaw_type``/``enrich_state`` all
+    The row is **self-enriched**: ``source``/``defect_type``/``enrich_state`` all
     record the peer scheme, and ``fixed_raw`` carries the affected ranges (the
     per-source extension point). The caller sets ``enrich_state = source``
     separately (it is preserved across re-upsert) and registers each alias in
     ``aliases_to_register`` as a symmetric crosswalk edge against ``rec['id']``
-    via :func:`posture.store.add_flaw_alias` (the peer's own id is NOT in the
-    alias list — it is the flaw_id of the row itself).
+    via :func:`posture.store.add_defect_alias` (the peer's own id is NOT in the
+    alias list — it is the defect_id of the row itself).
 
     Returns None for a record with no id.
     """
@@ -206,7 +206,7 @@ def osv_skeleton(rec: dict, source: str, flaw_type: str,
 
     row = {
         "id": rid,
-        "flaw_type": flaw_type,
+        "defect_type": defect_type,
         "published": parsed["published"],
         "cvss": parsed["cvss"],
         "severity": parsed["severity"],

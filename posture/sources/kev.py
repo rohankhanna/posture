@@ -4,9 +4,9 @@ CISA's Known Exploited Vulnerabilities catalog is a static JSON file
 (``cisa.gov/.../known_exploited_vulnerabilities.json``) of ~1,660 entries, no
 rate limit, business-day updates. Each entry carries only a ``cveID``, so KEV is
 a CVE-keyed **overlay** — the ``exploitability_signal`` role — NOT a new
-flaw_type. It annotates an existing cve catalog row ("this CVE is
+defect_type. It annotates an existing cve catalog row ("this CVE is
 known-exploited; required action X; due date Y; ransomware-linked Z") without
-owning the flaw_id.
+owning the defect_id.
 
 ``kev_ingest_tick`` is an idempotent full refresh: fetch the static JSON via
 :func:`posture.sources._net.curl_get`, upsert one ``kev`` row per

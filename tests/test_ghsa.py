@@ -1,7 +1,7 @@
 """GHSA ingestion tests — the GitHub Advisory Database git-clone tick (Phase 4).
 
 Reuses the test_stream git fixture (bare upstream + blobless work clone). The
-GHSA peer is a self-enriched OSV peer (``flaw_type='ghsa'``,
+GHSA peer is a self-enriched OSV peer (``defect_type='ghsa'``,
 ``enrich_state='ghsa'``): it only-adds catalog rows + symmetric alias edges,
 never touches verdicts. The backfill is cap-resumed across ticks and self-
 disables once exhausted; subsequent ticks take the incremental diff path. All
@@ -92,13 +92,13 @@ def test_ghsa_backfill_populates_rows_and_crosswalk(conn, tmp_path):
     assert stats["done"] is True
     assert stats["incremental"] is False
 
-    ids = {r[0] for r in conn.execute("SELECT id FROM flaws")}
+    ids = {r[0] for r in conn.execute("SELECT id FROM defects")}
     ghsa_ids = {f"GHSA-{i:04d}-{i:04d}-{i:04d}" for i in range(3)}
     assert ids == ghsa_ids
 
     gid = "GHSA-0000-0000-0000"
-    row = store.get_flaw(conn, gid)
-    assert row["flaw_type"] == "ghsa"
+    row = store.get_defect(conn, gid)
+    assert row["defect_type"] == "ghsa"
     assert row["enrich_state"] == "ghsa"          # self-enriched, NOT pending mitre
     assert row["source"] == "ghsa"
     assert row["cvss_vector"].startswith("CVSS:3.1")
@@ -115,7 +115,7 @@ def test_ghsa_backfill_populates_rows_and_crosswalk(conn, tmp_path):
     assert store.resolve_crosswalk(conn, gid) == [
         {"alias": "CVE-2026-10000", "kind": "cve"}]
     assert store.reverse_crosswalk(conn, "CVE-2026-10000") == [
-        {"flaw_id": gid, "kind": "cve"}]
+        {"defect_id": gid, "kind": "cve"}]
 
 
 # --- cap-resumed across ticks ------------------------------------------------
@@ -129,7 +129,7 @@ def test_ghsa_backfill_cap_resumed_across_ticks(conn, tmp_path):
     assert s2["upserted"] == 2 and s2["done"] is False
     s3 = _tick(conn, work, cap=2)
     assert s3["upserted"] == 1 and s3["done"] is True  # only 1 left
-    assert conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0] == 5
+    assert conn.execute("SELECT COUNT(*) FROM defects").fetchone()[0] == 5
     assert store.get_state(conn, ghsa.GHSA_DONE_KEY) == "1"
     assert store.get_state(conn, ghsa.GHSA_TIP_KEY) is not None
 
@@ -159,12 +159,12 @@ def test_ghsa_incremental_after_backfill(conn, tmp_path):
     assert store.get_state(conn, ghsa.GHSA_TIP_KEY) != tip_after_backfill
 
     # both advisories present, the new one too
-    row = store.get_flaw(conn, new_id)
-    assert row is not None and row["flaw_type"] == "ghsa"
+    row = store.get_defect(conn, new_id)
+    assert row is not None and row["defect_type"] == "ghsa"
     assert store.resolve_crosswalk(conn, new_id) == [
         {"alias": "CVE-2026-99999", "kind": "cve"}]
     # 3 total catalog rows (2 backfill + 1 new)
-    assert conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0] == 3
+    assert conn.execute("SELECT COUNT(*) FROM defects").fetchone()[0] == 3
 
 
 # --- idempotent on re-diff ---------------------------------------------------
@@ -179,7 +179,7 @@ def test_ghsa_incremental_idempotent_on_re_diff(conn, tmp_path):
     }, "c2")
     s1 = _tick(conn, work, cap=1000)  # incremental: 1 change
     assert s1["upserted"] == 1
-    count_after = conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0]
+    count_after = conn.execute("SELECT COUNT(*) FROM defects").fetchone()[0]
 
     # rewind the tip cursor (simulate a tick killed mid-sweep retrying the range)
     old_tip = subprocess.run(["git", "-C", str(seed), "rev-parse", "HEAD~1"],
@@ -188,7 +188,7 @@ def test_ghsa_incremental_idempotent_on_re_diff(conn, tmp_path):
     s2 = _tick(conn, work, cap=1000)
     # re-diffed the same range — upsert is keyed on id, mark_seen idempotent
     assert s2["incremental"] is True
-    assert count_after == conn.execute("SELECT COUNT(*) FROM flaws").fetchone()[0]
+    assert count_after == conn.execute("SELECT COUNT(*) FROM defects").fetchone()[0]
     assert store.seen_first_seen(conn, new_id) is not None  # still seen, not re-counted
 
 
@@ -219,12 +219,12 @@ def test_ghsa_cve_less_advisory_anchors(conn, tmp_path):
     assert stats["upserted"] == 1
 
     gid = "GHSA-0000-0000-0000"
-    row = store.get_flaw(conn, gid)
+    row = store.get_defect(conn, gid)
     assert row is not None
-    assert row["flaw_type"] == "ghsa"
+    assert row["defect_type"] == "ghsa"
     assert row["enrich_state"] == "ghsa"
     # no crosswalk edge for a cve-less advisory
     assert store.resolve_crosswalk(conn, gid) == []
     # but it still counts as a ghsa peer in the catalog
-    counts = {c["flaw_type"]: c["n"] for c in store.flaw_type_counts(conn)}
+    counts = {c["defect_type"]: c["n"] for c in store.defect_type_counts(conn)}
     assert counts.get("ghsa") == 1

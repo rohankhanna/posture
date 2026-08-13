@@ -79,17 +79,17 @@ CREATE TABLE IF NOT EXISTS health_dossier (
     added_at   TEXT
 );
 
--- The alias graph (alias↔alias). Every flaw_id — cve, ghsa, osv, rustsec, pysec,
+-- The alias graph (alias↔alias). Every defect_id — cve, ghsa, osv, rustsec, pysec,
 -- go, … — is a peer; cve is NOT a primary key. A row is ONE directed edge
--- (flaw_id, alias, kind): "flaw_id is also known as alias under scheme kind".
--- Ingestion uses add_flaw_alias() to write BOTH directed edges of an equivalence
+-- (defect_id, alias, kind): "defect_id is also known as alias under scheme kind".
+-- Ingestion uses add_defect_alias() to write BOTH directed edges of an equivalence
 -- so resolve returns correctly-typed aliases in both directions. The spine
 -- entity (the equivalence class) is a LOGICAL view over this graph, not a row.
 CREATE TABLE IF NOT EXISTS crosswalk (
-    flaw_id TEXT,
+    defect_id TEXT,
     alias   TEXT,
     kind    TEXT,
-    PRIMARY KEY (flaw_id, alias, kind)
+    PRIMARY KEY (defect_id, alias, kind)
 );
 CREATE INDEX IF NOT EXISTS ix_crosswalk_alias ON crosswalk(alias);
 
@@ -174,9 +174,9 @@ CREATE TABLE IF NOT EXISTS repair_proposals (
     status         TEXT DEFAULT 'open'-- open | applied | dismissed
 );
 
--- The flaw catalog — the spine as a stream, not just a per-pull result. `id`
--- is a flaw_id under any peer scheme (cve, ghsa, osv, rustsec, pysec, go, …);
--- `flaw_type` records which. Rows arrive many ways: (a) MITRE stream skeletons
+-- The defect catalog — the spine as a stream, not just a per-pull result. `id`
+-- is a defect_id under any peer scheme (cve, ghsa, osv, rustsec, pysec, go, …);
+-- `defect_type` records which. Rows arrive many ways: (a) MITRE stream skeletons
 -- (enrich_state='mitre', the foreign-authored map point with no verdict), (b)
 -- NVD-enriched CVE rows (enrich_state='nvd', CVSS + affected ranges), and (c)
 -- self-enriched peer rows (enrich_state='osv'/'ghsa', carrying their own
@@ -185,9 +185,9 @@ CREATE TABLE IF NOT EXISTS repair_proposals (
 -- can be retroactively distrusted rather than deleted. The map is not the
 -- territory: a skeleton says "MITRE published this; NVD has not yet enriched
 -- it" — never "this device is vulnerable."
-CREATE TABLE IF NOT EXISTS flaws (
+CREATE TABLE IF NOT EXISTS defects (
     id              TEXT PRIMARY KEY,
-    flaw_type       TEXT,             -- 'cve' | 'ghsa' | 'osv' | 'rustsec' | ... (the peer scheme)
+    defect_type       TEXT,             -- 'cve' | 'ghsa' | 'osv' | 'rustsec' | ... (the peer scheme)
     published       TEXT,
     cvss            REAL,
     severity        TEXT,
@@ -204,24 +204,24 @@ CREATE TABLE IF NOT EXISTS flaws (
     complete        INTEGER,          -- provenance: was the underlying fetch provably whole
     distrusted      INTEGER DEFAULT 0,
     distrust_reason TEXT,
-    discovered_at   TEXT              -- when the stream first sighted this flaw
+    discovered_at   TEXT              -- when the stream first sighted this defect
 );
-CREATE INDEX IF NOT EXISTS ix_flaws_enrich_state ON flaws(enrich_state);
-CREATE INDEX IF NOT EXISTS ix_flaws_published ON flaws(published);
+CREATE INDEX IF NOT EXISTS ix_defects_enrich_state ON defects(enrich_state);
+CREATE INDEX IF NOT EXISTS ix_defects_published ON defects(published);
 
 -- First-sighting timestamps, driving the "new since last tick" signal. Kept
--- separate from the catalog so a re-upsert of a flaws row (enrichment) never
--- clobbers when the stream first saw it. `flaw_id` is any peer-scheme id (not
--- just cve) — every ingested flaw is marked seen here.
-CREATE TABLE IF NOT EXISTS seen_flaws (
-    flaw_id    TEXT PRIMARY KEY,
+-- separate from the catalog so a re-upsert of a defects row (enrichment) never
+-- clobbers when the stream first saw it. `defect_id` is any peer-scheme id (not
+-- just cve) — every ingested defect is marked seen here.
+CREATE TABLE IF NOT EXISTS seen_defects (
+    defect_id    TEXT PRIMARY KEY,
     first_seen TEXT
 );
 
 -- CISA KEV overlay — the exploitability_signal. KEV entries carry only a cveID,
--- so this is a CVE-keyed OVERLAY (not a new flaw_type): it adds "this CVE is
+-- so this is a CVE-keyed OVERLAY (not a new defect_type): it adds "this CVE is
 -- known-exploited, required-action X, due-date Y, ransomware-linked Z" to an
--- existing cve row without owning the flaw_id. Idempotent full refresh (the
+-- existing cve row without owning the defect_id. Idempotent full refresh (the
 -- static JSON is ~1,660 entries, tiny) — INSERT OR REPLACE on cve_id.
 CREATE TABLE IF NOT EXISTS kev (
     cve_id           TEXT PRIMARY KEY,
@@ -243,7 +243,7 @@ CREATE TABLE IF NOT EXISTS kev (
 -- security advisories are authoritative for iOS/iPadOS/macOS fix versions
 -- (NVD's Apple coverage is thin: it records the CPE but often no version
 -- range, so the NVD observer silently skips most Apple CVEs). This is a
--- (cve_id, product)-keyed OVERLAY (not a new flaw_type): it records the
+-- (cve_id, product)-keyed OVERLAY (not a new defect_type): it records the
 -- earliest Apple version that fixed each CVE for each product, plus the
 -- advisory article id that states it, so a observer (or territory assess)
 -- can read a durable fix map instead of replaying Apple's index + every
@@ -296,57 +296,60 @@ def _migrate(conn: sqlite3.Connection) -> None:
     The schema is `CREATE TABLE IF NOT EXISTS` (idempotent for FRESH dbs), but
     that cannot rename a column or add one to an EXISTING db. This runner does
     the additive, introspection-guarded ALTERs that older dbs need, then bumps
-    `user_version`. It touches ONLY the crosswalk rename + the cves flaw_type
-    add — never verdicts / device_posture / territory, which are byte-untouched.
-    Each step is guarded so it is safe to re-run on an already-migrated db
-    (and a no-op on a fresh db created with the current SCHEMA).
+    `user_version`. v0->v1 + v1->v2 reshape the catalog/crosswalk; v3 dedups
+    candidates; v4 renames the five id columns witness->observer; v5 renames the
+    catalog layer flaw->defect (tables + three columns). Territory rows
+    (verdicts / device_posture values) are never deleted — v4 changes their
+    column NAMES but preserves their DATA. Each step is guarded so it is safe to
+    re-run on an already-migrated db (and a no-op on a fresh db created with the
+    current SCHEMA).
     """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
 
     if version < 1:
         # v0 -> v1: the spine becomes the alias graph.
-        #   (a) crosswalk: cve-centric (cve, alias, kind) -> (flaw_id, alias, kind)
-        #       so a non-cve flaw with no cve can anchor as a first-class peer.
-        #   (b) cves: add flaw_type so peer rows record their scheme; backfill
+        #   (a) crosswalk: cve-centric (cve, alias, kind) -> (defect_id, alias, kind)
+        #       so a non-cve defect with no cve can anchor as a first-class peer.
+        #   (b) cves: add defect_type so peer rows record their scheme; backfill
         #       'cve' for pre-existing CVE rows.
-        if "cve" in _columns(conn, "crosswalk") and "flaw_id" not in _columns(conn, "crosswalk"):
-            conn.execute("ALTER TABLE crosswalk RENAME COLUMN cve TO flaw_id")
-        # On a v0 db the catalog table is still `cves`; add flaw_type + backfill.
-        # On a fresh db (or one already at v2) the table is `flaws` with flaw_type
+        if "cve" in _columns(conn, "crosswalk") and "defect_id" not in _columns(conn, "crosswalk"):
+            conn.execute("ALTER TABLE crosswalk RENAME COLUMN cve TO defect_id")
+        # On a v0 db the catalog table is still `cves`; add defect_type + backfill.
+        # On a fresh db (or one already at v2) the table is `defects` with defect_type
         # already present, so this step is a guarded no-op.
-        if _has_table(conn, "cves") and "flaw_type" not in _columns(conn, "cves"):
-            conn.execute("ALTER TABLE cves ADD COLUMN flaw_type TEXT")
-            conn.execute("UPDATE cves SET flaw_type='cve' WHERE flaw_type IS NULL")
+        if _has_table(conn, "cves") and "defect_type" not in _columns(conn, "cves"):
+            conn.execute("ALTER TABLE cves ADD COLUMN defect_type TEXT")
+            conn.execute("UPDATE cves SET defect_type='cve' WHERE defect_type IS NULL")
         conn.execute("PRAGMA user_version = 1")
         conn.commit()
 
     if version < 2:
-        # v1 -> v2: de-cve the flaw-catalog layer's names.
-        #   (a) cves -> flaws (the catalog holds flaws of every peer scheme, not
+        # v1 -> v2: de-cve the defect-catalog layer's names.
+        #   (a) cves -> defects (the catalog holds defects of every peer scheme, not
         #       just cve; the table name lied).
-        #   (b) seen_cves -> seen_flaws + its cve_id column -> flaw_id (it tracks
-        #       first-sighting of ANY flaw_id, not just cve).
+        #   (b) seen_cves -> seen_defects + its cve_id column -> defect_id (it tracks
+        #       first-sighting of ANY defect_id, not just cve).
         # connect() runs SCHEMA first, so on a v1 db `CREATE TABLE IF NOT EXISTS
-        # flaws` already made an EMPTY flaws placeholder. Drop it, then rename the
+        # defects` already made an EMPTY defects placeholder. Drop it, then rename the
         # data-bearing legacy table over it. Guarded by `_has_table('cves')` so a
         # v2 re-open (cves gone) and a fresh db (cves never existed) both skip.
         # Territory (verdicts / device_posture) is byte-untouched, as in v0->v1.
         if _has_table(conn, "cves"):
-            conn.execute("DROP TABLE IF EXISTS flaws")           # empty SCHEMA placeholder
-            conn.execute("ALTER TABLE cves RENAME TO flaws")
+            conn.execute("DROP TABLE IF EXISTS defects")           # empty SCHEMA placeholder
+            conn.execute("ALTER TABLE cves RENAME TO defects")
             # indices are reparented to the renamed table under their old names; drop
-            # the old ix_cves_* and create ix_flaws_* (the placeholder's ix_flaws_*
+            # the old ix_cves_* and create ix_defects_* (the placeholder's ix_defects_*
             # were dropped with the placeholder table above).
             conn.execute("DROP INDEX IF EXISTS ix_cves_enrich_state")
             conn.execute("DROP INDEX IF EXISTS ix_cves_published")
-            conn.execute("CREATE INDEX IF NOT EXISTS ix_flaws_enrich_state ON flaws(enrich_state)")
-            conn.execute("CREATE INDEX IF NOT EXISTS ix_flaws_published ON flaws(published)")
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_defects_enrich_state ON defects(enrich_state)")
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_defects_published ON defects(published)")
         if _has_table(conn, "seen_cves"):
-            conn.execute("DROP TABLE IF EXISTS seen_flaws")      # empty placeholder
-            conn.execute("ALTER TABLE seen_cves RENAME TO seen_flaws")
-        if _has_table(conn, "seen_flaws") and "cve_id" in _columns(conn, "seen_flaws") \
-                and "flaw_id" not in _columns(conn, "seen_flaws"):
-            conn.execute("ALTER TABLE seen_flaws RENAME COLUMN cve_id TO flaw_id")
+            conn.execute("DROP TABLE IF EXISTS seen_defects")      # empty placeholder
+            conn.execute("ALTER TABLE seen_cves RENAME TO seen_defects")
+        if _has_table(conn, "seen_defects") and "cve_id" in _columns(conn, "seen_defects") \
+                and "defect_id" not in _columns(conn, "seen_defects"):
+            conn.execute("ALTER TABLE seen_defects RENAME COLUMN cve_id TO defect_id")
         conn.execute("PRAGMA user_version = 2")
         conn.commit()
 
@@ -392,6 +395,43 @@ def _migrate(conn: sqlite3.Connection) -> None:
                     f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}"
                 )
         conn.execute("PRAGMA user_version = 4")
+        conn.commit()
+
+    if version < 5:
+        # v4 -> v5: the catalog layer's words move flaw -> defect (the word the
+        # rest of the code already uses). On a real v4 db the legacy names still
+        # live: table `flaws` (with column `flaw_type`), table `seen_flaws` (with
+        # `flaw_id`), and crosswalk column `flaw_id` (renamed from `cve` by the
+        # historical v0->v1 step). connect() ran the current SCHEMA first, so
+        # empty `defects`/`seen_defects` placeholders already exist; drop them and
+        # rename the data-bearing legacy tables over them (the v1->v2 pattern).
+        # Then rename the three `flaw_*` columns. Guarded + idempotent: a fresh db
+        # (created with the current SCHEMA, where these are already `defect*`)
+        # and a re-open of a v5 db (version>=5, never enters) both no-op.
+        # Territory (verdicts / device_posture) is byte-untouched, as always.
+        if _has_table(conn, "flaws"):
+            conn.execute("DROP TABLE IF EXISTS defects")          # empty SCHEMA placeholder
+            conn.execute("ALTER TABLE flaws RENAME TO defects")
+            # indices reparent to the renamed table under their old names; drop
+            # the legacy ix_flaws_* and create ix_defects_* (the placeholder's
+            # ix_defects_* were dropped with the placeholder table above).
+            conn.execute("DROP INDEX IF EXISTS ix_flaws_enrich_state")
+            conn.execute("DROP INDEX IF EXISTS ix_flaws_published")
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_defects_enrich_state ON defects(enrich_state)")
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_defects_published ON defects(published)")
+        if _has_table(conn, "seen_flaws"):
+            conn.execute("DROP TABLE IF EXISTS seen_defects")     # empty placeholder
+            conn.execute("ALTER TABLE seen_flaws RENAME TO seen_defects")
+        if _has_table(conn, "defects") and "flaw_type" in _columns(conn, "defects") \
+                and "defect_type" not in _columns(conn, "defects"):
+            conn.execute("ALTER TABLE defects RENAME COLUMN flaw_type TO defect_type")
+        if _has_table(conn, "seen_defects") and "flaw_id" in _columns(conn, "seen_defects") \
+                and "defect_id" not in _columns(conn, "seen_defects"):
+            conn.execute("ALTER TABLE seen_defects RENAME COLUMN flaw_id TO defect_id")
+        if _has_table(conn, "crosswalk") and "flaw_id" in _columns(conn, "crosswalk") \
+                and "defect_id" not in _columns(conn, "crosswalk"):
+            conn.execute("ALTER TABLE crosswalk RENAME COLUMN flaw_id TO defect_id")
+        conn.execute("PRAGMA user_version = 5")
         conn.commit()
 
 
@@ -611,60 +651,60 @@ def dossier(conn, observer: str) -> list[dict]:
 # Spine alias graph (alias↔alias crosswalk)
 # ---------------------------------------------------------------------------
 
-def add_crosswalk(conn, flaw_id: str, alias: str, kind: str) -> None:
-    """Record ONE directed edge: flaw_id is also known as `alias` under scheme
-    `kind`. Idempotent. Most callers want the symmetric :func:`add_flaw_alias`
+def add_crosswalk(conn, defect_id: str, alias: str, kind: str) -> None:
+    """Record ONE directed edge: defect_id is also known as `alias` under scheme
+    `kind`. Idempotent. Most callers want the symmetric :func:`add_defect_alias`
     so resolve returns correctly-typed aliases in BOTH directions."""
     conn.execute(
-        "INSERT OR IGNORE INTO crosswalk (flaw_id, alias, kind) VALUES (?,?,?)",
-        (flaw_id, alias, kind),
+        "INSERT OR IGNORE INTO crosswalk (defect_id, alias, kind) VALUES (?,?,?)",
+        (defect_id, alias, kind),
     )
 
 
-def add_flaw_alias(conn, a: str, kind_a: str, b: str, kind_b: str) -> None:
-    """Record the symmetric equivalence of two flaw_ids: `a` (scheme `kind_a`)
+def add_defect_alias(conn, a: str, kind_a: str, b: str, kind_b: str) -> None:
+    """Record the symmetric equivalence of two defect_ids: `a` (scheme `kind_a`)
     and `b` (scheme `kind_b`). Writes BOTH directed edges
     (a -> b@kind_b) + (b -> a@kind_a) so `resolve(a)` returns b typed as
     kind_b AND `resolve(b)` returns a typed as kind_a. This is the correctness
-    fix a single directed edge cannot give, and the reason a non-cve flaw with
+    fix a single directed edge cannot give, and the reason a non-cve defect with
     no cve can still anchor as a first-class peer. Idempotent."""
     add_crosswalk(conn, a, b, kind_b)
     add_crosswalk(conn, b, a, kind_a)
 
 
-def resolve_crosswalk(conn, flaw_id: str) -> list[dict]:
-    """All known aliases of a flaw_id (each {alias, kind})."""
+def resolve_crosswalk(conn, defect_id: str) -> list[dict]:
+    """All known aliases of a defect_id (each {alias, kind})."""
     rows = conn.execute(
-        "SELECT alias, kind FROM crosswalk WHERE flaw_id=? ORDER BY kind, alias",
-        (flaw_id,),
+        "SELECT alias, kind FROM crosswalk WHERE defect_id=? ORDER BY kind, alias",
+        (defect_id,),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
 def crosswalk_all(conn) -> list[dict]:
-    """All crosswalk rows, ordered by (flaw_id, kind, alias) — the stable shape
+    """All crosswalk rows, ordered by (defect_id, kind, alias) — the stable shape
     the spine export serializes and the round-trip test compares against."""
     rows = conn.execute(
-        "SELECT flaw_id, alias, kind FROM crosswalk ORDER BY flaw_id, kind, alias"
+        "SELECT defect_id, alias, kind FROM crosswalk ORDER BY defect_id, kind, alias"
     ).fetchall()
     return [dict(r) for r in rows]
 
 
 def reverse_crosswalk(conn, alias: str) -> list[dict]:
-    """All flaw_ids known to share this alias (each {flaw_id, kind})."""
+    """All defect_ids known to share this alias (each {defect_id, kind})."""
     rows = conn.execute(
-        "SELECT flaw_id, kind FROM crosswalk WHERE alias=? ORDER BY kind, flaw_id",
+        "SELECT defect_id, kind FROM crosswalk WHERE alias=? ORDER BY kind, defect_id",
         (alias,),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def flaw_type_counts(conn) -> list[dict]:
-    """Distinct flaw_type values in the catalog + their row counts — the
-    peer registry `posture spine show` renders. Ordered by flaw_type."""
+def defect_type_counts(conn) -> list[dict]:
+    """Distinct defect_type values in the catalog + their row counts — the
+    peer registry `posture spine show` renders. Ordered by defect_type."""
     rows = conn.execute(
-        "SELECT flaw_type, COUNT(*) AS n FROM flaws "
-        "GROUP BY flaw_type ORDER BY flaw_type"
+        "SELECT defect_type, COUNT(*) AS n FROM defects "
+        "GROUP BY defect_type ORDER BY defect_type"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -906,10 +946,10 @@ def set_repair_proposal_status(conn, p_id: str, status: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Flaw catalog — the spine as a stream (provenance-stamped, no-wipe)
+# Defect catalog — the spine as a stream (provenance-stamped, no-wipe)
 # ---------------------------------------------------------------------------
 
-def upsert_flaw(conn, rec: dict) -> None:
+def upsert_defect(conn, rec: dict) -> None:
     """Upsert one catalog row. Provenance is stamped on every write
     (source/fetched_at/policy_version/complete).
 
@@ -919,17 +959,17 @@ def upsert_flaw(conn, rec: dict) -> None:
     a re-skeleton cannot un-distrust a row, and first-sighting is permanent.
     (Mirrors the product CLI's catalog upsert preserving kev/epss; here the
     preserved fields are the stream/enrichment provenance.) Set those via
-    :func:`set_enrich_state` / :func:`mark_flaw_distrust` / :func:`mark_seen`.
+    :func:`set_enrich_state` / :func:`mark_defect_distrust` / :func:`mark_seen`.
     """
     import json as _json
     conn.execute(
-        """INSERT INTO flaws
-             (id, flaw_type, published, cvss, severity, cvss_vector, description,
+        """INSERT INTO defects
+             (id, defect_type, published, cvss, severity, cvss_vector, description,
               fixed_raw, refs, cwe, ref_tags, source, fetched_at,
               policy_version, complete)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
-             flaw_type=excluded.flaw_type, published=excluded.published,
+             defect_type=excluded.defect_type, published=excluded.published,
              cvss=excluded.cvss, severity=excluded.severity,
              cvss_vector=excluded.cvss_vector, description=excluded.description,
              fixed_raw=excluded.fixed_raw, refs=excluded.refs, cwe=excluded.cwe,
@@ -938,7 +978,7 @@ def upsert_flaw(conn, rec: dict) -> None:
              policy_version=excluded.policy_version, complete=excluded.complete""",
         (
             rec["id"],
-            rec.get("flaw_type", "cve"),
+            rec.get("defect_type", "cve"),
             rec.get("published"),
             rec.get("cvss"),
             rec.get("severity"),
@@ -956,30 +996,30 @@ def upsert_flaw(conn, rec: dict) -> None:
         ),
     )
     # first sighting of a brand-new id (no row existed -> INSERT happened)
-    if conn.execute("SELECT discovered_at FROM flaws WHERE id=?", (rec["id"],)).fetchone()["discovered_at"] is None:
-        conn.execute("UPDATE flaws SET discovered_at=? WHERE id=? AND discovered_at IS NULL",
+    if conn.execute("SELECT discovered_at FROM defects WHERE id=?", (rec["id"],)).fetchone()["discovered_at"] is None:
+        conn.execute("UPDATE defects SET discovered_at=? WHERE id=? AND discovered_at IS NULL",
                       (_now(), rec["id"]))
 
 
-def set_enrich_state(conn, flaw_id: str, state: str | None) -> None:
-    """Set the stream/enrichment stratum of one flaw: 'mitre' (skeleton, NVD not
-    yet seen), 'nvd' (enriched), or NULL. Explicit only — upsert_flaw won't flip
+def set_enrich_state(conn, defect_id: str, state: str | None) -> None:
+    """Set the stream/enrichment stratum of one defect: 'mitre' (skeleton, NVD not
+    yet seen), 'nvd' (enriched), or NULL. Explicit only — upsert_defect won't flip
     it, so an NVD re-upsert can't accidentally erase the stream provenance."""
-    conn.execute("UPDATE flaws SET enrich_state=? WHERE id=?", (state, flaw_id))
+    conn.execute("UPDATE defects SET enrich_state=? WHERE id=?", (state, defect_id))
 
 
 def pending_enrichment_ids(conn, limit: int | None = None) -> list[str]:
-    """Flaw ids the stream sighted via MITRE but NVD hasn't enriched yet — the
+    """Defect ids the stream sighted via MITRE but NVD hasn't enriched yet — the
     per-tick retry pool for incremental NVD enrichment. Most-recent first."""
-    sql = "SELECT id FROM flaws WHERE enrich_state='mitre' ORDER BY published DESC"
+    sql = "SELECT id FROM defects WHERE enrich_state='mitre' ORDER BY published DESC"
     if limit:
         sql += f" LIMIT {int(limit)}"
     return [r[0] for r in conn.execute(sql)]
 
 
-def _parse_flaw_row(row) -> dict:
-    """Parse one flaws row's JSON columns (fixed_raw/refs/cwe/ref_tags) back to
-    Python values. Shared by :func:`get_flaw` and :func:`catalog_all` so the spine
+def _parse_defect_row(row) -> dict:
+    """Parse one defects row's JSON columns (fixed_raw/refs/cwe/ref_tags) back to
+    Python values. Shared by :func:`get_defect` and :func:`catalog_all` so the spine
     export/import and the CLI read through ONE parse path."""
     import json as _json
     d = dict(row)
@@ -1002,12 +1042,12 @@ def _parse_flaw_row(row) -> dict:
     return d
 
 
-def get_flaw(conn, flaw_id: str) -> dict | None:
+def get_defect(conn, defect_id: str) -> dict | None:
     """One catalog row with fixed_raw/refs parsed back to Python values."""
-    r = conn.execute("SELECT * FROM flaws WHERE id=?", (flaw_id,)).fetchone()
+    r = conn.execute("SELECT * FROM defects WHERE id=?", (defect_id,)).fetchone()
     if not r:
         return None
-    return _parse_flaw_row(r)
+    return _parse_defect_row(r)
 
 
 def catalog_list(conn, enrich_state: str | None = None, limit: int = 100,
@@ -1016,12 +1056,12 @@ def catalog_list(conn, enrich_state: str | None = None, limit: int = 100,
     'nvd' skeletons/enriched rows when given."""
     if enrich_state:
         rows = conn.execute(
-            "SELECT * FROM flaws WHERE enrich_state=? ORDER BY published DESC "
+            "SELECT * FROM defects WHERE enrich_state=? ORDER BY published DESC "
             "LIMIT ? OFFSET ?", (enrich_state, limit, offset),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM flaws ORDER BY published DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM defects ORDER BY published DESC LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
     return [dict(r) for r in rows]
@@ -1035,37 +1075,37 @@ def catalog_all(conn, enrich_state: str | None = None) -> list[dict]:
     given, mirroring :func:`catalog_list`."""
     if enrich_state:
         rows = conn.execute(
-            "SELECT * FROM flaws WHERE enrich_state=? ORDER BY id", (enrich_state,)
+            "SELECT * FROM defects WHERE enrich_state=? ORDER BY id", (enrich_state,)
         ).fetchall()
     else:
-        rows = conn.execute("SELECT * FROM flaws ORDER BY id").fetchall()
-    return [_parse_flaw_row(r) for r in rows]
+        rows = conn.execute("SELECT * FROM defects ORDER BY id").fetchall()
+    return [_parse_defect_row(r) for r in rows]
 
 
-def mark_flaw_distrust(conn, flaw_id: str, reason: str) -> bool:
+def mark_defect_distrust(conn, defect_id: str, reason: str) -> bool:
     """Retroactive distrust MARK on one catalog row (never a delete — you keep
     the fact that you no longer trust this row's provenance, auditable). Returns
     True if a row was newly marked."""
     cur = conn.execute(
-        "UPDATE flaws SET distrusted=1, distrust_reason=? "
+        "UPDATE defects SET distrusted=1, distrust_reason=? "
         "WHERE id=? AND (distrusted IS NULL OR distrusted=0)",
-        (reason, flaw_id),
+        (reason, defect_id),
     )
     return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------
-# seen_flaws — first-sighting drives the "new since last tick" signal
+# seen_defects — first-sighting drives the "new since last tick" signal
 # ---------------------------------------------------------------------------
 
-def mark_seen(conn, flaw_ids: list[str]) -> set[str]:
-    """Record first-sighting for any flaw not seen before; return the set that
+def mark_seen(conn, defect_ids: list[str]) -> set[str]:
+    """Record first-sighting for any defect not seen before; return the set that
     was *newly* seen in this call (first_seen just set = new since last tick)."""
     newly: set[str] = set()
     now = _now()
-    for fid in flaw_ids:
+    for fid in defect_ids:
         cur = conn.execute(
-            "INSERT INTO seen_flaws(flaw_id, first_seen) VALUES (?, ?) "
+            "INSERT INTO seen_defects(defect_id, first_seen) VALUES (?, ?) "
             "ON CONFLICT DO NOTHING", (fid, now),
         )
         if cur.rowcount:
@@ -1073,21 +1113,21 @@ def mark_seen(conn, flaw_ids: list[str]) -> set[str]:
     return newly
 
 
-def seen_first_seen(conn, flaw_id: str) -> str | None:
-    row = conn.execute("SELECT first_seen FROM seen_flaws WHERE flaw_id=?",
-                       (flaw_id,)).fetchone()
+def seen_first_seen(conn, defect_id: str) -> str | None:
+    row = conn.execute("SELECT first_seen FROM seen_defects WHERE defect_id=?",
+                       (defect_id,)).fetchone()
     return row["first_seen"] if row else None
 
 
-def seen_flaws(conn) -> list[dict]:
-    """All first-sighting rows, ordered by flaw_id — the spine export serializes
+def seen_defects(conn) -> list[dict]:
+    """All first-sighting rows, ordered by defect_id — the spine export serializes
     these so a client can restore the 'new since last tick' timeline."""
-    rows = conn.execute("SELECT flaw_id, first_seen FROM seen_flaws ORDER BY flaw_id").fetchall()
+    rows = conn.execute("SELECT defect_id, first_seen FROM seen_defects ORDER BY defect_id").fetchall()
     return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
-# CISA KEV overlay — the exploitability_signal (CVE-keyed overlay, not a flaw_type)
+# CISA KEV overlay — the exploitability_signal (CVE-keyed overlay, not a defect_type)
 # ---------------------------------------------------------------------------
 
 def upsert_kev(conn, row: dict) -> None:
@@ -1143,7 +1183,7 @@ def kev_for_cve(conn, cve_id: str) -> dict | None:
 
 # ---------------------------------------------------------------------------
 # Apple advisory fix-version overlay — the apple_fixes map
-# ((cve_id, product)-keyed overlay, not a flaw_type)
+# ((cve_id, product)-keyed overlay, not a defect_type)
 # ---------------------------------------------------------------------------
 
 def replace_apple_fixes(conn, product: str, rows: list[dict],
@@ -1154,7 +1194,7 @@ def replace_apple_fixes(conn, product: str, rows: list[dict],
     number inserted. Deleting-then-inserting (rather than INSERT OR REPLACE)
     means advisories aged off Apple's rolling index do not leave stale rows —
     the overlay always reflects the current rebuild. No-wipe: touches ONLY
-    ``apple_fixes`` — never ``flaws`` / ``verdicts`` / territory."""
+    ``apple_fixes`` — never ``defects`` / ``verdicts`` / territory."""
     conn.execute("DELETE FROM apple_fixes WHERE product=?", (product,))
     n = 0
     for r in rows:
