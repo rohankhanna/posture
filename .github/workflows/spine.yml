@@ -7,10 +7,12 @@ name: spine
 
 on:
   schedule:
-    # 03:17 UTC daily — off-zero minute, off-top-of-hour (docs/sources.md item 7:
-    # high-load may delay/drop round-number cron). The daily push is also the
-    # keepalive against GitHub's 60-day auto-disable of scheduled workflows.
-    - cron: "17 3 * * *"
+    # Every 6h at :07 UTC while private (00:07, 06:07, 12:07, 18:07) — off-zero
+    # minute, off-top-of-hour (docs/sources.md item 7: high-load may delay/drop
+    # round-number cron). Switch to "7 * * * *" (hourly) once the repo is public.
+    # The periodic push is also the keepalive against GitHub's 60-day auto-disable
+    # of scheduled workflows.
+    - cron: "7 */6 * * *"
   push:
     branches: [main]
     paths:
@@ -30,12 +32,6 @@ permissions:
   id-token: write           # cosign keyless via GitHub OIDC
   actions: read             # restore cache
 
-concurrency:
-  group: spine-ingest
-  # never cancel a mid-ingest run — mirrors the engine's no-wwipe rule. A killed
-  # run mid-fetch could leave the cached posture.db half-written; let it finish.
-  cancel-in-progress: false
-
 env:
   DB_PATH: ${{ github.workspace }}/cache/posture.db
   # POSTURE_CVELIST_DIR is the PARENT of the cvelistV5 clone (mirrors the default
@@ -48,9 +44,56 @@ env:
   POSTURE_GHSA_DIR: ${{ github.workspace }}/cache/ghsa
 
 jobs:
+  # Skip-if-already-running guard. Native workflow concurrency with
+  # cancel-in-progress: false QUEUES; we want to SKIP a run when an ingest is
+  # already in flight. This guard queries the runs API and exports should_run;
+  # the ingest job gates on it. The job-level concurrency on ingest (below) is a
+  # safety net (queue, never cancel) for the rare race where two guards both see
+  # "idle" — the guard makes queueing the rare case, not the rule.
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read          # `gh run list` needs actions: read on the auto token
+      contents: none
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      active_other: ${{ steps.check.outputs.active_other }}
+    steps:
+      - name: Detect in-flight ingest (skip, do not queue)
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Count spine runs that are not this run and not completed (in_progress,
+          # queued, waiting, pending, requested, ...). Any such run means an
+          # ingest is already in flight (or about to start) -> skip, do not queue.
+          active=$(gh run list --workflow spine.yml --repo "$GITHUB_REPOSITORY" \
+            --json databaseId,status --limit 50 \
+            | jq -r --arg self "$GITHUB_RUN_ID" \
+               '[ .[] | select( (.databaseId|tostring) != $self
+                              and (.status != "completed") ) ] | length')
+          echo "active_other=$active" >> "$GITHUB_OUTPUT"
+          if [ "$active" -gt 0 ]; then
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping ingest: $active in-flight spine run(s) detected."
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "No in-flight spine run; proceeding to ingest."
+          fi
+
   ingest:
     runs-on: ubuntu-latest   # ephemeral + safe (no PR-pwn on a public repo)
     timeout-minutes: 30
+    needs: [guard]
+    if: ${{ needs.guard.outputs.should_run == 'true' }}
+    # Safety net for the guard's rare race: if two guards both see "idle", the
+    # second ingest queues (never cancel — mirrors the engine's no-wipe rule; a
+    # killed run mid-fetch could leave the cached posture.db half-written).
+    concurrency:
+      group: spine-ingest
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
@@ -209,7 +252,7 @@ jobs:
     needs: ingest
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${{ vars.CREDENTIALED_READY == 'true' && github.event_name != 'pull_request' }}
+    if: ${{ vars.CREDENTIALED_READY == 'true' && needs.ingest.result == 'success' && github.event_name != 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
 
