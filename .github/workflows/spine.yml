@@ -1,4 +1,4 @@
-name: spine
+name: CI
 # CI = ingestion (public + signed + auditable MAP). No device data here.
 # The map/territory split made concrete: this workflow feeds & enriches the
 # catalog (the spine, the MAP); clients git clone + verify + `posture assess`
