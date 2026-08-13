@@ -1,14 +1,14 @@
 """Apple advisory fix-version ingestion — the apple_fixes spine overlay.
 
-The Apple vendor witness (``apple_advisory``) replays Apple's live security-
+The Apple vendor observer (``apple_advisory``) replays Apple's live security-
 releases index + every per-release advisory page per ``assess()`` (posture
-witnesses are pure fan-out, no shared DB across runs). That is correct for
+observers are pure fan-out, no shared DB across runs). That is correct for
 per-device decision but expensive + rate-fragile when the catalog is wanted
 durable in the signed spine. This module is the CI-side ingestion counterpart:
 a free-function ``apple_ingest_tick`` that builds the same earliest-fix-
 version-wins ``cve -> fixed_in`` map (live index, plus optional Wayback-
 historical recovery of pre-index CVEs) and writes it once per product to the
-``apple_fixes`` overlay (the map, not the territory). A witness — or a future
+``apple_fixes`` overlay (the map, not the territory). A observer — or a future
 territory assess — can then read the durable fix map via ``store.apple_fixes_for``
 instead of replaying Apple per run.
 
@@ -30,14 +30,14 @@ from datetime import datetime, timezone
 
 from . import apple_advisory as _aa
 
-# CI ingests every Apple product the witness recognizes. iphone_os + ipados
+# CI ingests every Apple product the observer recognizes. iphone_os + ipados
 # share one joint advisory row ("iOS X and iPadOS X"), so both resolve from the
 # same index walk; macOS is its own.
 PRODUCTS = tuple(_aa.PRODUCTS)              # ("iphone_os", "ipados", "macos")
 
 # NOTE on curl routing: every network read here goes through ``_aa.curl_get``
 # (attribute access on the apple_advisory module, resolved at call time) — the
-# SAME binding the witness + the historical-recovery paths use. Tests then
+# SAME binding the observer + the historical-recovery paths use. Tests then
 # monkeypatch one name (``posture.sources.apple_advisory.curl_get``) to fake the
 # index, the advisories, AND the Wayback CDX/snapshots, exactly as the iteration-1
 # backfill tests already do.
@@ -73,8 +73,8 @@ def _fetch_advisory_html(url: str) -> str | None:
 
 def _fetch_wayback_snapshot(url: str) -> str | None:
     """Live Wayback snapshot page (HTML). Best-effort: ``None`` on failure.
-    Delegates to the witness's ``_wayback_fetch`` so the snapshot read path is
-    identical across witness + ingestion."""
+    Delegates to the observer's ``_wayback_fetch`` so the snapshot read path is
+    identical across observer + ingestion."""
     return _aa._wayback_fetch(url)
 
 
@@ -119,7 +119,7 @@ def apple_ingest_tick(conn, product: str = "iphone_os", history: bool = False,
 
     # The index pass builds the map + collects per-CVE advisory provenance.
     # build_fix_map's advisory getter has the (version, url, adv_id) signature
-    # the witness uses; adapt the single-arg live fetcher to it.
+    # the observer uses; adapt the single-arg live fetcher to it.
     adv_of: dict[str, str] = {}
     fixed = _aa.build_fix_map(
         index_html, lambda _v, url, _a: _fetch_advisory_html(url), product,

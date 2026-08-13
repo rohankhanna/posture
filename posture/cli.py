@@ -4,14 +4,14 @@
   posture assess <device.yaml> [--live] [--db PATH]
   posture axes
   posture policy {show|log|validate} [file]
-  posture witnesses
-  posture health [witness] / posture health add-dossier ...
-  posture distrust <witness> [--reason]
-  posture audit <witness>
+  posture observers
+  posture health [observer] / posture health add-dossier ...
+  posture distrust <observer> [--reason]
+  posture audit <observer>
   posture crosswalk {add|show} ...
   posture discover
 
-The report footer emits NVD attribution whenever the NVD witness was actually
+The report footer emits NVD attribution whenever the NVD observer was actually
 used (project rule: the map is foreign-authored; say so).
 """
 
@@ -40,14 +40,14 @@ from . import stream as _stream
 from . import refresh as _refresh
 from . import export as _export
 from .sources import build_default_registry
-from .sources.nvd_cve import NvdCveWitness
+from .sources.nvd_cve import NvdCveObserver
 from .sources import kev as _kev_mod
 from .sources import ghsa as _ghsa_mod
 from .sources import osv as _osv_mod
 from .sources import apple_ingest as _apple_ingest_mod
-from .sources.ubuntu_tracker import UbuntuTrackerWitness
-from .sources.debian_tracker import DebianTrackerWitness
-from .sources.apple_advisory import AppleAdvisoryWitness
+from .sources.ubuntu_tracker import UbuntuTrackerObserver
+from .sources.debian_tracker import DebianTrackerObserver
+from .sources.apple_advisory import AppleAdvisoryObserver
 
 DEFAULT_DB = str(Path.home() / ".local/share/posture/posture.db")
 DEFAULT_DEVICES = str(Path.home() / ".config/posture/devices.yaml")
@@ -83,8 +83,8 @@ def _install_policy_if_needed(conn, policy) -> None:
 
 def _inject_catalog_overlays(device: dict, conn) -> None:
     """Territory-side pre-pass: load signed-spine catalog overlays a device's
-    witnesses consume (the MAP half of the map/territory split) and inject them
-    as device INPUTS before ``assess``. The witness contract forbids DB access
+    observers consume (the MAP half of the map/territory split) and inject them
+    as device INPUTS before ``assess``. The observer contract forbids DB access
     in ``assess()`` (no ``conn``), so the territory pre-loads overlays here —
     this is the "consume locally" half of "feed and enrich in CI, consume
     locally".
@@ -92,11 +92,11 @@ def _inject_catalog_overlays(device: dict, conn) -> None:
     Additive and never clobbers: a device that already supplies an overlay
     (explicit operator input, hermetic tests) is left untouched. No-op when the
     device declares no ``apple_product`` or the local store has no overlay rows
-    for that product (the witness then falls back to its per-assess replay).
+    for that product (the observer then falls back to its per-assess replay).
 
     Today the only catalog overlay consumed this way is ``apple_fixes`` (the
     Apple fix-version map); kev remains operator-supplied (``device["kev"]`` /
-    ``kev_path``), mirroring its witness contract.
+    ``kev_path``), mirroring its observer contract.
     """
     product = str(device.get("apple_product") or "").strip().lower()
     if not product or "apple_fixes" in device:
@@ -104,7 +104,7 @@ def _inject_catalog_overlays(device: dict, conn) -> None:
     try:
         rows = _store.apple_fixes_for_product(conn, product)
     except Exception:
-        return  # no overlay table / unreadable -> skip; witness falls back to replay
+        return  # no overlay table / unreadable -> skip; observer falls back to replay
     if rows:
         device["apple_fixes"] = {r["cve_id"]: r["fixed_in"]
                                  for r in rows if r.get("fixed_in")}
@@ -124,16 +124,16 @@ def _render_posture(dp: "_engine.DevicePosture", out=sys.stdout) -> None:
         flag = "!" if ap.status in {"unpatched", "fail", "exposed", "targeted",
                                     "untrusted", "unknown"} else " "
         gap = f"   GAP: {ap.gap}" if ap.gap else ""
-        dec = f"  (decided by {ap.deciding_witness}"
+        dec = f"  (decided by {ap.deciding_observer}"
         if ap.bias:
             dec += f", bias={ap.bias}"
-        dec += ")" if ap.deciding_witness else ")"
+        dec += ")" if ap.deciding_observer else ")"
         print(f"{flag} [{ap.axis}] {ap.status.upper()}"
               f"  ({len(ap.verdicts)} verdicts, complete={ap.complete}, "
               f"commit={ap.commit_state})", file=out)
         print(f"     {meta.get('desc', '')}", file=out)
-        if ap.deciding_witness:
-            print(f"     decided by {ap.deciding_witness}"
+        if ap.deciding_observer:
+            print(f"     decided by {ap.deciding_observer}"
                   f"{f' (bias={ap.bias})' if ap.bias else ''}", file=out)
         if gap:
             print(gap, file=out)
@@ -145,8 +145,8 @@ def _render_posture(dp: "_engine.DevicePosture", out=sys.stdout) -> None:
         if len(ap.verdicts) > 5:
             print(f"       ... +{len(ap.verdicts) - 5} more", file=out)
     print("=" * 72, file=out)
-    # attribution: only for witnesses actually used that require it
-    for line in _attr.all_attributions(dp.used_witnesses):
+    # attribution: only for observers actually used that require it
+    for line in _attr.all_attributions(dp.used_observers):
         print(f"  {line}", file=out)
 
 
@@ -173,8 +173,8 @@ def _cmd_assess(args) -> int:
     device = _load_device(args.device)
     reg = build_default_registry()
     if args.live:
-        # swap the offline NVD witness for a live one
-        nvd_live = NvdCveWitness(live=True)
+        # swap the offline NVD observer for a live one
+        nvd_live = NvdCveObserver(live=True)
         # registry has the offline one at id "nvd"; replace it
         reg._by_id["nvd"] = nvd_live  # type: ignore[attr-defined]
     with _open_db(args.db) as conn:
@@ -200,7 +200,7 @@ def _cmd_policy(args) -> int:
         return 0
     if args.sub == "validate":
         policy = _load_policy(args.file)
-        print(f"OK  version={policy.version}  witnesses={len(policy.witnesses)}  "
+        print(f"OK  version={policy.version}  observers={len(policy.observers)}  "
               f"degradation={len(policy.degradation)}")
         return 0
     if args.sub == "log":
@@ -214,17 +214,17 @@ def _cmd_policy(args) -> int:
     return 2
 
 
-def _cmd_witnesses(args) -> int:
+def _cmd_observers(args) -> int:
     policy = _load_policy(args.policy)
     reg = build_default_registry()
     with _open_db(args.db, readonly=True) as conn:
         now = _engine._now()
         for w in reg.all():
-            in_policy = policy.has_witness(w.id)
+            in_policy = policy.has_observer(w.id)
             deg = _health.degradation_action(conn, w.id, policy, now) if in_policy else "n/a"
             axes = ",".join(a.value for a in w.axes)
-            print(f"{w.id:12} axes=[{axes:24}] bias={policy.witness_bias(w.id):12} "
-                  f"weight={policy.witness_weight(w.id):7} order={policy.witness_order(w.id):3} "
+            print(f"{w.id:12} axes=[{axes:24}] bias={policy.observer_bias(w.id):12} "
+                  f"weight={policy.observer_weight(w.id):7} order={policy.observer_order(w.id):3} "
                   f"policy={'yes' if in_policy else 'NO ':3} health={deg}")
     return 0
 
@@ -233,29 +233,29 @@ def _cmd_health(args) -> int:
     policy = _load_policy(args.policy)
     with _open_db(args.db) as conn:
         if args.add_dossier:
-            if not (args.witness and args.date and args.claim and args.citation):
+            if not (args.observer and args.date and args.claim and args.citation):
                 raise SystemExit(
-                    "health --add-dossier requires <witness> --date --claim --citation"
+                    "health --add-dossier requires <observer> --date --claim --citation"
                 )
             _health.add_dossier_entry(
-                conn, args.witness, args.date, args.axis, args.claim,
+                conn, args.observer, args.date, args.axis, args.claim,
                 args.citation, args.direction,
             )
             conn.commit()
-            print(f"recorded dossier entry for {args.witness}")
+            print(f"recorded dossier entry for {args.observer}")
             return 0
         # default: show health report
-        witness = args.witness
-        if not witness:
-            # show all witnesses that have any samples
+        observer = args.observer
+        if not observer:
+            # show all observers that have any samples
             rows = conn.execute(
-                "SELECT DISTINCT witness FROM health_samples ORDER BY witness"
+                "SELECT DISTINCT observer FROM health_samples ORDER BY observer"
             ).fetchall()
-            witnesses = [r["witness"] for r in rows] or [w.id for w in build_default_registry().all()]
+            observers = [r["observer"] for r in rows] or [w.id for w in build_default_registry().all()]
         else:
-            witnesses = [witness]
+            observers = [observer]
         now = _engine._now()
-        for wid in witnesses:
+        for wid in observers:
             rep = _health.health_report(conn, wid, policy, now)
             op = rep["operational"]
             print(f"== {wid} ==")
@@ -279,12 +279,12 @@ def _cmd_health(args) -> int:
 
 def _cmd_distrust(args) -> int:
     with _open_db(args.db) as conn:
-        affected = _prov.audit(conn, args.witness)
-        n = _prov.distrust(conn, args.witness, args.reason or "(unspecified)")
+        affected = _prov.audit(conn, args.observer)
+        n = _prov.distrust(conn, args.observer, args.reason or "(unspecified)")
         conn.commit()
-        print(f"marked {n} verdict(s) resting on '{args.witness}' as distrusted "
+        print(f"marked {n} verdict(s) resting on '{args.observer}' as distrusted "
               f"(reason: {args.reason or '(unspecified)'}).")
-        print(f"({len(affected)} total verdicts audit on this witness; "
+        print(f"({len(affected)} total verdicts audit on this observer; "
               f"records retained, not deleted.)")
         if args.verbose:
             for v in affected[:20]:
@@ -295,8 +295,8 @@ def _cmd_distrust(args) -> int:
 
 def _cmd_audit(args) -> int:
     with _open_db(args.db, readonly=True) as conn:
-        rows = _prov.audit(conn, args.witness)
-        print(f"{len(rows)} verdict(s) rest on witness '{args.witness}':")
+        rows = _prov.audit(conn, args.observer)
+        print(f"{len(rows)} verdict(s) rest on observer '{args.observer}':")
         for v in rows:
             mark = " DISTRUSTED" if v["distrusted"] else ""
             print(f"  {v['device_id']} [{v['axis']}] {v['key']} {v['status']}"
@@ -680,12 +680,12 @@ def _cmd_refresh(args) -> int:
     else:
         devices = _load_devices(args.devices)
         reg = build_default_registry()
-        # refresh is a LIVE run: swap the offline vendor witnesses (fixtures, for
+        # refresh is a LIVE run: swap the offline vendor observers (fixtures, for
         # tests) for live ones so they actually fetch tracker pages and clear NVD
         # false alarms in this tick. Mirrors the assess command's nvd->live swap.
-        reg._by_id["ubuntu_tracker"] = UbuntuTrackerWitness(live=True)  # type: ignore[attr-defined]
-        reg._by_id["debian_tracker"] = DebianTrackerWitness(live=True)  # type: ignore[attr-defined]
-        reg._by_id["apple_advisory"] = AppleAdvisoryWitness(live=True)  # type: ignore[attr-defined]
+        reg._by_id["ubuntu_tracker"] = UbuntuTrackerObserver(live=True)  # type: ignore[attr-defined]
+        reg._by_id["debian_tracker"] = DebianTrackerObserver(live=True)  # type: ignore[attr-defined]
+        reg._by_id["apple_advisory"] = AppleAdvisoryObserver(live=True)  # type: ignore[attr-defined]
     with _open_db(args.db) as conn:
         _install_policy_if_needed(conn, policy)
         stats = _refresh.refresh_tick(conn, devices, policy_version=policy.version,
@@ -780,12 +780,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("file", nargs="?", default=None, help="policy YAML (validate/show)")
     db_arg(sp); sp.set_defaults(func=_cmd_policy)
 
-    sp = sub.add_parser("witnesses", help="list registered witnesses + health state")
-    db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_witnesses)
+    sp = sub.add_parser("observers", help="list registered observers + health state")
+    db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_observers)
 
     sp = sub.add_parser("health", help="source-health (operational + dossier + drift)")
-    sp.add_argument("witness", nargs="?", default=None,
-                    help="witness id (omit to show all)")
+    sp.add_argument("observer", nargs="?", default=None,
+                    help="observer id (omit to show all)")
     sp.add_argument("--add-dossier", action="store_true",
                     help="record a dossier entry (requires --date/--claim/--citation)")
     sp.add_argument("--axis", default="vulnerability")
@@ -793,13 +793,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--direction", default="other")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_health)
 
-    sp = sub.add_parser("distrust", help="mark a witness's verdicts distrusted (retroactive)")
-    sp.add_argument("witness"); sp.add_argument("--reason", default=None)
+    sp = sub.add_parser("distrust", help="mark a observer's verdicts distrusted (retroactive)")
+    sp.add_argument("observer"); sp.add_argument("--reason", default=None)
     sp.add_argument("-v", "--verbose", action="store_true")
     db_arg(sp); sp.set_defaults(func=_cmd_distrust)
 
-    sp = sub.add_parser("audit", help="list verdicts resting on a witness")
-    sp.add_argument("witness"); db_arg(sp); sp.set_defaults(func=_cmd_audit)
+    sp = sub.add_parser("audit", help="list verdicts resting on a observer")
+    sp.add_argument("observer"); db_arg(sp); sp.set_defaults(func=_cmd_audit)
 
     sp = sub.add_parser("crosswalk", help="spine alias graph: add | show")
     sp.add_argument("sub", choices=["add", "show"])

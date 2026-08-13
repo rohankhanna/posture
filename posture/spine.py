@@ -9,7 +9,7 @@ each anchor their own catalog row, and the crosswalk edges between them are what
 joins resolve.
 
 This module is the thin store-backed API over that graph; the heavy lifting
-(joining across witnesses by alias) lives in the engine. Ingestion peers
+(joining across observers by alias) lives in the engine. Ingestion peers
 (`stream`/`osv`/`ghsa`/`kev`) write equivalence edges via :func:`register_alias`
 (the symmetric double-edge), not the old single-direction :func:`register`.
 

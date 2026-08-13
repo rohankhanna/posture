@@ -1,17 +1,17 @@
-"""CIS-style configuration checker — the first REAL witness on the
+"""CIS-style configuration checker — the first REAL observer on the
 configuration axis.
 
-Why this witness exists (the gap it closes): the configuration axis has been
+Why this observer exists (the gap it closes): the configuration axis has been
 stubbed/UNKNOWN since the skeleton. A real host carries a *config snapshot*
 (``device["config"]`` — a flat dict of setting->value) that says how the box is
-actually set up, but nothing was reading it. This witness reads that snapshot
+actually set up, but nothing was reading it. This observer reads that snapshot
 against a small CIS-style benchmark (``CIS_BENCHMARK`` below) and emits one
 configuration-axis ``Verdict`` per check, keyed by check id (e.g.
 ``CIS-6.2.1``), with status ``fail`` / ``pass``. The engine's per-axis loud-
 degradation rule then turns "no verdicts" into UNKNOWN (never "clean"), and a
 failed check drives the configuration axis to ``fail`` (worst present).
 
-This is a LOCAL witness — it reads a config the device supplies. NO network,
+This is a LOCAL observer — it reads a config the device supplies. NO network,
 NO curl_get, NO live mode. The benchmark itself is a module constant (a
 broadened CIS-style subset covering SSH server, /tmp mount, audit logging,
 password policy, sysctl hardening, and world-writable-file checks — fuller
@@ -20,7 +20,7 @@ than the original demo-scope set, though still NOT the complete CIS Benchmark).
 Contract: Forebode had a hardcoded "CIS check" pass over /etc config files.
 Posture keeps the same decide logic (compare observed setting to expected) but
 the config is a DEVICE INPUT (``device["config"]``), not a live filesystem
-read, so the fan-out stays pure and the witness stays offline + deterministic.
+read, so the fan-out stays pure and the observer stays offline + deterministic.
 
 Missing-setting decision: a check whose setting is absent from
 ``device["config"]`` is recorded as ``fail`` (a missing control is not a pass
@@ -32,7 +32,7 @@ setting than silently pass it. See ``assess`` for the explicit branch.
 from __future__ import annotations
 
 from ..axis import Axis
-from ..witness import Witness, WitnessResult, Verdict
+from ..observer import Observer, ObserverResult, Verdict
 
 # ---------------------------------------------------------------------------
 # The benchmark — a broadened CIS-style subset (NOT the full CIS Benchmark).
@@ -40,7 +40,7 @@ from ..witness import Witness, WitnessResult, Verdict
 # This is NOT the complete CIS Benchmark suite. It is a realistic, broader
 # Linux/server check set (sshd, /tmp mount, audit logging, password policy,
 # sysctl hardening, world-writable files) so the configuration axis has a real
-# witness driving it. Each entry is keyed by check id and carries:
+# observer driving it. Each entry is keyed by check id and carries:
 #   setting    -> the config key to look up in device["config"]
 #   expected   -> the expected value (string, or a number for numeric compares)
 #   severity   -> high | medium | low
@@ -230,8 +230,8 @@ def _compare(actual, expected: str, comparator: str) -> bool:
     return False
 
 
-class CisCheckerWitness(Witness):
-    """The CIS-style configuration witness on the configuration axis.
+class CisCheckerObserver(Observer):
+    """The CIS-style configuration observer on the configuration axis.
 
     Reads ``device["config"]`` (a dict of setting->value) and emits one
     configuration-axis ``Verdict`` per benchmark check, keyed by check id.
@@ -250,17 +250,17 @@ class CisCheckerWitness(Witness):
 
     # -- the uniform contract ------------------------------------------------
 
-    def assess(self, device: dict, policy) -> WitnessResult:
+    def assess(self, device: dict, policy) -> ObserverResult:
         config = device.get("config")
         # No config snapshot -> honest no-op. Zero verdicts, complete=True, a
         # reason. The engine keeps the configuration axis UNKNOWN (loud), never
         # silently clean. A device that didn't supply a config simply has
-        # nothing for this witness to say. Note: an empty dict {} IS a supplied
+        # nothing for this observer to say. Note: an empty dict {} IS a supplied
         # config (just an empty one) — every requested setting is missing -> all
         # fail (a missing control is not a pass). Only a missing/None/non-dict
         # config is the honest no-op.
         if config is None or not isinstance(config, dict):
-            return WitnessResult(
+            return ObserverResult(
                 verdicts=[], complete=True,
                 reason="no config supplied (device lacks a 'config' dict)",
             )
@@ -310,7 +310,7 @@ class CisCheckerWitness(Witness):
                 provenance=self._prov(complete=True, raw_ref=raw_ref),
             ))
 
-        return WitnessResult(
+        return ObserverResult(
             verdicts=verdicts, complete=True,
             reason=f"cis benchmark: {len(verdicts)} check(s) evaluated",
         )

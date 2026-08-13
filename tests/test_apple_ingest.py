@@ -1,7 +1,7 @@
 """Apple fix-version ingestion tests — the ``apple_fixes`` spine overlay.
 
 ``apple_ingest_tick`` is the CI-side counterpart to the per-device
-``apple_advisory`` witness: it builds the same earliest-fix-version-wins
+``apple_advisory`` observer: it builds the same earliest-fix-version-wins
 ``cve -> fixed_in`` map from Apple's live index (+ optional Wayback historical
 recovery) and writes it as a per-product full refresh to the ``apple_fixes``
 overlay — the durable fix map in the signed spine. It mirrors the KEV overlay
@@ -227,7 +227,7 @@ def test_apple_ingest_does_not_touch_verdicts(conn, monkeypatch):
     store.upsert_verdict(conn, {
         "device_id": "host", "axis": "vulnerability", "key": "CVE-2026-99910",
         "status": "unpatched", "severity": "HIGH", "fixed_in": None,
-        "detail": "prior", "provenance": {"witness": "nvd",
+        "detail": "prior", "provenance": {"observer": "nvd",
                                           "policy_version": "v",
                                           "fetched_at": "t", "complete": 1},
     }, "t")

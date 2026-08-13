@@ -1,21 +1,21 @@
-"""Tests for the CycloneDX SBOM witness — the first REAL witness on the
+"""Tests for the CycloneDX SBOM observer — the first REAL observer on the
 inventory axis.
 
 These pin four things:
   1. the parser turns an inline CycloneDX components list into one ``present``
      Verdict per component, keyed ``<name>@<version>``, and skips nameless
      components;
-  2. the witness emits honest ``present`` verdicts from a device's inline SBOM
+  2. the observer emits honest ``present`` verdicts from a device's inline SBOM
      and from a ``sbom_path`` pointing at the bundled fixture, with provenance
-     wired (witness == "cyclonedx_sbom", raw_ref set);
-  3. the witness is an honest no-op (zero verdicts, complete=True) when the
+     wired (observer == "cyclonedx_sbom", raw_ref set);
+  3. the observer is an honest no-op (zero verdicts, complete=True) when the
      device gives no SBOM and when a ``sbom_path`` file is missing — never a
      crash, never 'clean';
   4. in the engine, the inventory axis gets a REAL status ("present", not
      "unknown") when an SBOM is supplied, stays "unknown" when none is, and the
-     committed per-verdict rows attribute to witness "cyclonedx_sbom".
+     committed per-verdict rows attribute to observer "cyclonedx_sbom".
 
-SELF-CONTAINED: builds its own WitnessRegistry + Policy inline (no reliance on
+SELF-CONTAINED: builds its own ObserverRegistry + Policy inline (no reliance on
 the shared default registry / policy file, which a sibling agent may be
 editing concurrently). Mirrors test_ubuntu_tracker.py's style.
 """
@@ -26,8 +26,8 @@ import yaml
 from posture.axis import Axis
 from posture.policy import Policy
 from posture import store, engine
-from posture.witness import WitnessRegistry
-from posture.sources.cyclonedx_sbom import CyclonedxSbomWitness
+from posture.observer import ObserverRegistry
+from posture.sources.cyclonedx_sbom import CyclonedxSbomObserver
 
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "posture" / "fixtures"
 SBOM_FIXTURE = FIXTURE_DIR / "sbom" / "sample.json"
@@ -42,8 +42,8 @@ version: "2026-08-02.3"
 supersedes: "2026-08-02.2"
 dated: 2026-08-02
 rationale: |
-  test policy for the cyclonedx_sbom inventory witness (self-contained test).
-witnesses:
+  test policy for the cyclonedx_sbom inventory observer (self-contained test).
+observers:
   cyclonedx_sbom:
     axes: [inventory]
     weight: high
@@ -57,9 +57,9 @@ def _policy() -> Policy:
     return Policy.from_yaml(_INLINE_POLICY_YAML)
 
 
-def _registry() -> WitnessRegistry:
-    reg = WitnessRegistry()
-    reg.register(CyclonedxSbomWitness())
+def _registry() -> ObserverRegistry:
+    reg = ObserverRegistry()
+    reg.register(CyclonedxSbomObserver())
     return reg
 
 
@@ -73,7 +73,7 @@ def test_parse_components_emits_present_verdicts_keyed_name_at_version():
         {"name": "nginx", "version": "1.25.3"},
         {"name": "busybox", "version": "1.36"},
     ]
-    w = CyclonedxSbomWitness()
+    w = CyclonedxSbomObserver()
     verdicts = w.parse(components, {"id": "h"}, _policy())
     assert [(v.key, v.status) for v in verdicts] == [
         ("openssl@3.0.2", "present"),
@@ -82,7 +82,7 @@ def test_parse_components_emits_present_verdicts_keyed_name_at_version():
     ]
     for v in verdicts:
         assert v.axis == Axis.INVENTORY.value
-        assert v.provenance.witness == "cyclonedx_sbom"
+        assert v.provenance.observer == "cyclonedx_sbom"
         assert v.provenance.raw_ref == "inline:device.sbom"
 
 
@@ -93,18 +93,18 @@ def test_parse_skips_nameless_components_and_defaults_empty_version():
         {"name": "libc"},              # no version -> key "libc@"
         {"foo": "bar"},                # not a component dict shape, but has no name -> skipped
     ]
-    w = CyclonedxSbomWitness()
+    w = CyclonedxSbomObserver()
     verdicts = w.parse(components, {"id": "h"}, _policy())
     assert [v.key for v in verdicts] == ["openssl@3.0.2", "libc@"]
     assert verdicts[1].detail == "libc installed (SBOM)"
 
 
 # ---------------------------------------------------------------------------
-# witness (offline): inline sbom + sbom_path fixture + honest no-op
+# observer (offline): inline sbom + sbom_path fixture + honest no-op
 # ---------------------------------------------------------------------------
 
-def test_witness_inline_sbom_emits_present_verdicts():
-    w = CyclonedxSbomWitness()
+def test_observer_inline_sbom_emits_present_verdicts():
+    w = CyclonedxSbomObserver()
     pol = _policy()
     device = {
         "id": "host",
@@ -124,12 +124,12 @@ def test_witness_inline_sbom_emits_present_verdicts():
     assert sorted(by_key) == ["busybox@1.36", "nginx@1.25.3", "openssl@3.0.2"]
     for v in result.verdicts:
         assert v.status == "present"
-        assert v.provenance.witness == "cyclonedx_sbom"
+        assert v.provenance.observer == "cyclonedx_sbom"
         assert v.provenance.raw_ref == "inline:device.sbom"
 
 
-def test_witness_sbom_path_reads_fixture_file():
-    w = CyclonedxSbomWitness()
+def test_observer_sbom_path_reads_fixture_file():
+    w = CyclonedxSbomObserver()
     pol = _policy()
     device = {"id": "host", "sbom_path": str(SBOM_FIXTURE)}
     result = w.assess(device, pol)
@@ -138,14 +138,14 @@ def test_witness_sbom_path_reads_fixture_file():
     assert sorted(by_key) == ["busybox@1.36", "nginx@1.25.3", "openssl@3.0.2"]
     for v in result.verdicts:
         assert v.status == "present"
-        assert v.provenance.witness == "cyclonedx_sbom"
+        assert v.provenance.observer == "cyclonedx_sbom"
         assert v.provenance.raw_ref == str(SBOM_FIXTURE)
 
 
-def test_witness_sbom_path_bare_filename_falls_back_to_fixture_dir():
+def test_observer_sbom_path_bare_filename_falls_back_to_fixture_dir():
     """A bare filename in device['sbom_path'] is resolved against the bundled
     fixture dir (offline-test fallback) — 'sample.json' lands on the fixture."""
-    w = CyclonedxSbomWitness()
+    w = CyclonedxSbomObserver()
     pol = _policy()
     device = {"id": "host", "sbom_path": "sample.json"}
     result = w.assess(device, pol)
@@ -155,11 +155,11 @@ def test_witness_sbom_path_bare_filename_falls_back_to_fixture_dir():
     }
 
 
-def test_witness_no_sbom_is_honest_noop():
-    """A device with no SBOM gives the witness nothing to say. It returns ZERO
+def test_observer_no_sbom_is_honest_noop():
+    """A device with no SBOM gives the observer nothing to say. It returns ZERO
     verdicts (complete=True) so the engine's loud-degradation rule makes the
     inventory axis UNKNOWN, never silently 'clean' — and never crashes."""
-    w = CyclonedxSbomWitness()
+    w = CyclonedxSbomObserver()
     pol = _policy()
     device = {"id": "host"}
     result = w.assess(device, pol)
@@ -168,10 +168,10 @@ def test_witness_no_sbom_is_honest_noop():
     assert "no sbom supplied" in result.reason
 
 
-def test_witness_missing_sbom_path_is_complete_zero_not_failure():
+def test_observer_missing_sbom_path_is_complete_zero_not_failure():
     """A missing sbom_path file is a local no-input, not a source failure:
     complete=True, zero verdicts (must NOT trip the no-wipe gate)."""
-    w = CyclonedxSbomWitness()
+    w = CyclonedxSbomObserver()
     pol = _policy()
     device = {"id": "host", "sbom_path": "/no/such/sbom.json"}
     result = w.assess(device, pol)
@@ -186,9 +186,9 @@ def test_witness_missing_sbom_path_is_complete_zero_not_failure():
 
 def test_engine_inventory_axis_present_with_sbom_and_attributed_rows():
     """With cyclonedx_sbom registered and an inline SBOM, the engine commits
-    per-package verdicts (witness=cyclonedx_sbom, status=present) and the
+    per-package verdicts (observer=cyclonedx_sbom, status=present) and the
     inventory AxisPosture status becomes 'present' — not 'unknown'. Proven at
-    the per-verdict row level for witness attribution."""
+    the per-verdict row level for observer attribution."""
     reg = _registry()
     pol = _policy()
     conn = store.connect(":memory:")
@@ -211,24 +211,24 @@ def test_engine_inventory_axis_present_with_sbom_and_attributed_rows():
             store.verdicts_for_device_axis(conn, "demo-host", "inventory")}
     assert sorted(rows) == ["nginx@1.25.3", "openssl@3.0.2"]
     for r in rows.values():
-        assert r["witness"] == "cyclonedx_sbom"
+        assert r["observer"] == "cyclonedx_sbom"
         assert r["status"] == "present"
         assert r["complete"] == 1   # the SBOM fetch is provably whole
 
     # axis posture: 'present' (a real status), not 'unknown'
     inv = {a.axis: a for a in dp.axes}["inventory"]
     assert inv.status == "present"
-    assert inv.deciding_witness == "cyclonedx_sbom"
-    assert "cyclonedx_sbom" in dp.used_witnesses
+    assert inv.deciding_observer == "cyclonedx_sbom"
+    assert "cyclonedx_sbom" in dp.used_observers
 
     # persisted axis posture row agrees
     ap = store.axis_posture(conn, "demo-host", "inventory")
     assert ap["status"] == "present"
-    assert ap["deciding_witness"] == "cyclonedx_sbom"
+    assert ap["deciding_observer"] == "cyclonedx_sbom"
 
 
 def test_engine_inventory_axis_unknown_without_sbom():
-    """The other direction: with no SBOM the witness no-ops, the inventory axis
+    """The other direction: with no SBOM the observer no-ops, the inventory axis
     has zero verdicts -> status 'unknown' (loud), gap set, not 'present' or
     'clear'. Proves the loud-degradation rule holds for inventory."""
     reg = _registry()
@@ -243,12 +243,12 @@ def test_engine_inventory_axis_unknown_without_sbom():
     assert inv.gap is not None       # loud, not silent-clean
     # no verdict rows committed for inventory
     assert store.verdicts_for_device_axis(conn, "demo-host", "inventory") == []
-    # the witness ran but produced no verdicts -> not a 'used' witness
-    assert "cyclonedx_sbom" not in dp.used_witnesses
+    # the observer ran but produced no verdicts -> not a 'used' observer
+    assert "cyclonedx_sbom" not in dp.used_observers
 
 
 def test_engine_default_demo_device_inventory_stays_unknown():
-    """The shipped demo device has no sbom fields -> the new witness no-ops, so
+    """The shipped demo device has no sbom fields -> the new observer no-ops, so
     the inventory axis is unchanged (UNKNOWN). Guards against the registration
     accidentally altering the demo's behavior on this axis."""
     reg = _registry()

@@ -1,10 +1,10 @@
-"""Local listening-surface reader — the first REAL witness on the exposure axis.
+"""Local listening-surface reader — the first REAL observer on the exposure axis.
 
 The exposure axis answers "what is
 network-reachable on this device". A real host carries a *socket capture*
 (``device["exposure"]`` — a list of ``{proto, port, bind, service?}`` dicts,
 e.g. from ``ss -tulpn``) that says which sockets are listening and where they
-bind; nothing was reading it. This witness reads that capture and emits one
+bind; nothing was reading it. This observer reads that capture and emits one
 exposure-axis ``Verdict`` per socket, keyed ``proto/port`` (e.g. ``tcp/22``),
 with status ``exposed`` / ``closed``:
 
@@ -23,11 +23,11 @@ per-axis loud-degradation rule turns "no verdicts" into UNKNOWN (never
 "clean"), and an exposed socket drives the exposure axis to ``exposed``
 (worst present); all-closed drives it to ``closed``.
 
-This is a LOCAL witness — it reads a socket capture the device supplies. NO
+This is a LOCAL observer — it reads a socket capture the device supplies. NO
 network, NO curl_get, NO live mode. The capture is a DEVICE INPUT
 (``device["exposure"]`` inline or ``device["exposure_path"]`` to a local JSON
-file), so the fan-out stays pure and the witness stays offline + deterministic.
-A future live ``ss`` runner is a deferred, separately-id'd witness, not a
+file), so the fan-out stays pure and the observer stays offline + deterministic.
+A future live ``ss`` runner is a deferred, separately-id'd observer, not a
 replacement.
 
 Contract mirrors cyclonedx_sbom: inline dict takes precedence; a bare/relative
@@ -43,7 +43,7 @@ import json
 from pathlib import Path
 
 from ..axis import Axis
-from ..witness import Witness, WitnessResult, Verdict
+from ..observer import Observer, ObserverResult, Verdict
 
 # Bundled offline fixture dir. Tests point device["exposure_path"] here (or
 # rely on the fixture-dir fallback in _read_file) for deterministic, network-
@@ -71,7 +71,7 @@ def _is_loopback(bind) -> bool:
     return False
 
 
-class LocalExposureWitness(Witness):
+class LocalExposureObserver(Observer):
     """Local listening-surface reader on the exposure axis.
 
     Reads a socket capture the device supplies (inline list or local JSON file)
@@ -84,13 +84,13 @@ class LocalExposureWitness(Witness):
     id = "local_exposure"
     axes = (Axis.EXPOSURE,)
     bias = "false-safe"   # a missing bind is assumed exposed, not closed
-    # Declares the identifier kind this witness emits, so the vocab monitor
+    # Declares the identifier kind this observer emits, so the vocab monitor
     # records "proto/port" keys under a known kind ("port") cleanly instead of
     # surfacing them as an unknown scheme.
     key_kind = "port"
 
     def __init__(self, fixture_dir: Path | str | None = None) -> None:
-        # `Witness` is a dataclass; pass the identity fields (incl. key_kind)
+        # `Observer` is a dataclass; pass the identity fields (incl. key_kind)
         # up so they are stamped on the INSTANCE, not just the class — the
         # dataclass-generated __init__ would otherwise shadow the class-level
         # key_kind with None.
@@ -101,7 +101,7 @@ class LocalExposureWitness(Witness):
 
     # -- the uniform contract ------------------------------------------------
 
-    def assess(self, device: dict, policy) -> WitnessResult:
+    def assess(self, device: dict, policy) -> ObserverResult:
         surface = device.get("exposure")
         if isinstance(surface, list):
             sockets = surface
@@ -111,7 +111,7 @@ class LocalExposureWitness(Witness):
             if path:
                 sockets = self._read_file(path)
                 if sockets is None:
-                    return WitnessResult(
+                    return ObserverResult(
                         verdicts=[], complete=True, reason="exposure path not found",
                     )
                 src_ref = str(path)
@@ -119,7 +119,7 @@ class LocalExposureWitness(Witness):
                 # No capture supplied -> honest no-op. Zero verdicts,
                 # complete=True so the engine keeps the exposure axis UNKNOWN
                 # (loud), never silently 'clean' — and never crashes.
-                return WitnessResult(
+                return ObserverResult(
                     verdicts=[], complete=True, reason="no exposure surface supplied",
                 )
 
@@ -163,7 +163,7 @@ class LocalExposureWitness(Witness):
                     provenance=self._prov(complete=True, raw_ref=src_ref),
                 ))
 
-        return WitnessResult(
+        return ObserverResult(
             verdicts=verdicts, complete=True,
             reason=f"local exposure: {len(verdicts)} socket(s) read",
         )

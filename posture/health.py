@@ -1,7 +1,7 @@
-"""Source-health as a living thing — the witness monitor.
+"""Source-health as a living thing — the observer monitor.
 
-The trust in the spine (and every other witness) is a moving target, not a
-one-time decision. This subsystem watches the WITNESSES, not the
+The trust in the spine (and every other observer) is a moving target, not a
+one-time decision. This subsystem watches the OBSERVERS, not the
 vulnerabilities. Three signal types, mirroring the `source-alignment`
 rubric:
 
@@ -17,7 +17,7 @@ rubric:
   3. Drift — a source's verdict distribution shifting over time is a capture
      signal (the disagreement-map technique: sources that used to disagree
      suddenly converging, or one drifting vs the others). Skeleton stores
-     per-witness distribution snapshots and flags movement; full statistics is
+     per-observer distribution snapshots and flags movement; full statistics is
      an extension point with a clear interface.
 
 Plus: pre-declared degradation/fallback decided from the policy BEFORE a
@@ -32,7 +32,7 @@ from typing import Iterable
 
 @dataclass
 class OperationalHealth:
-    witness: str
+    observer: str
     samples: int
     success_rate: float          # fraction of recent samples with complete=True
     mean_latency_ms: float
@@ -40,28 +40,28 @@ class OperationalHealth:
     last_reason: str             # reason from the most recent sample
 
 
-def record_sample(conn, witness: str, device_id: str, axis: str,
+def record_sample(conn, observer: str, device_id: str, axis: str,
                   complete: bool, latency_ms: int, reason: str,
                   fetched_at: str) -> None:
     from . import store as _store
-    _store.record_health_sample(conn, witness, device_id, axis, complete,
+    _store.record_health_sample(conn, observer, device_id, axis, complete,
                                  latency_ms, reason, fetched_at)
 
 
-def operational_health(conn, witness: str, window: int = 50) -> OperationalHealth:
+def operational_health(conn, observer: str, window: int = 50) -> OperationalHealth:
     from . import store as _store
-    samples = _store.health_samples(conn, witness, limit=window)
+    samples = _store.health_samples(conn, observer, limit=window)
     n = len(samples)
     if n == 0:
-        return OperationalHealth(witness=witness, samples=0, success_rate=0.0,
+        return OperationalHealth(observer=observer, samples=0, success_rate=0.0,
                                   mean_latency_ms=0.0, last_complete_at=None,
                                   last_reason="no samples yet")
     complete = sum(1 for s in samples if s["complete"])
     lat = [s["latency_ms"] or 0 for s in samples]
-    last_complete = _store.last_complete_sample(conn, witness)
+    last_complete = _store.last_complete_sample(conn, observer)
     last = samples[0]  # most recent (samples ordered DESC)
     return OperationalHealth(
-        witness=witness, samples=n,
+        observer=observer, samples=n,
         success_rate=complete / n,
         mean_latency_ms=sum(lat) / n,
         last_complete_at=last_complete["fetched_at"] if last_complete else None,
@@ -69,22 +69,22 @@ def operational_health(conn, witness: str, window: int = 50) -> OperationalHealt
     )
 
 
-def add_dossier_entry(conn, witness: str, date: str, axis: str, claim: str,
+def add_dossier_entry(conn, observer: str, date: str, axis: str, claim: str,
                        citation: str, direction: str) -> None:
     if direction not in {"false-alarm", "false-safe", "neutral", "capture",
                          "funding", "governance", "other"}:
         raise ValueError(f"bad direction {direction!r}")
     from . import store as _store
-    _store.add_dossier_entry(conn, witness, date, axis, claim, citation, direction)
+    _store.add_dossier_entry(conn, observer, date, axis, claim, citation, direction)
 
 
-def dossier(conn, witness: str) -> list[dict]:
+def dossier(conn, observer: str) -> list[dict]:
     from . import store as _store
-    return _store.dossier(conn, witness)
+    return _store.dossier(conn, observer)
 
 
-def degradation_action(conn, witness: str, policy, now_iso: str) -> str:
-    """Decide the witness's state from the policy's pre-declared degradation
+def degradation_action(conn, observer: str, policy, now_iso: str) -> str:
+    """Decide the observer's state from the policy's pre-declared degradation
     rule + measured freshness. Returns 'ok' | 'fallback' | 'offline'.
 
     Decided from policy (the rule was written BEFORE a crisis), not ad-hoc:
@@ -93,16 +93,16 @@ def degradation_action(conn, witness: str, policy, now_iso: str) -> str:
                        lists alternates to consult.
       - 'offline'   — silent with no declared fallback.
     """
-    rule = policy.degradation_for(witness)
+    rule = policy.degradation_for(observer)
     if rule is None or rule.if_silent_for_days <= 0:
         return "ok"
     from . import store as _store
     import datetime as _dt
-    last = _store.last_complete_sample(conn, witness)
+    last = _store.last_complete_sample(conn, observer)
     if not last:
-        # No successful fetch ever recorded. If the witness has any samples,
+        # No successful fetch ever recorded. If the observer has any samples,
         # they were all incomplete -> treat as failing its window.
-        samples = _store.health_samples(conn, witness, limit=1)
+        samples = _store.health_samples(conn, observer, limit=1)
         if not samples:
             return "ok"  # never tried; not yet degraded
         return "fallback" if rule.fallback else "offline"
@@ -114,10 +114,10 @@ def degradation_action(conn, witness: str, policy, now_iso: str) -> str:
     return "fallback" if rule.fallback else "offline"
 
 
-def health_report(conn, witness: str, policy, now_iso: str) -> dict:
-    op = operational_health(conn, witness)
+def health_report(conn, observer: str, policy, now_iso: str) -> dict:
+    op = operational_health(conn, observer)
     return {
-        "witness": witness,
+        "observer": observer,
         "operational": {
             "samples": op.samples,
             "success_rate": round(op.success_rate, 3),
@@ -125,14 +125,14 @@ def health_report(conn, witness: str, policy, now_iso: str) -> dict:
             "last_complete_at": op.last_complete_at,
             "last_reason": op.last_reason,
         },
-        "dossier": dossier(conn, witness),
-        "degradation": degradation_action(conn, witness, policy, now_iso),
-        "policy_degradation": _rule_view(policy, witness),
+        "dossier": dossier(conn, observer),
+        "degradation": degradation_action(conn, observer, policy, now_iso),
+        "policy_degradation": _rule_view(policy, observer),
     }
 
 
-def _rule_view(policy, witness: str) -> dict | None:
-    r = policy.degradation_for(witness)
+def _rule_view(policy, observer: str) -> dict | None:
+    r = policy.degradation_for(observer)
     if not r:
         return None
     return {"if_silent_for_days": r.if_silent_for_days, "fallback": r.fallback}
@@ -142,10 +142,10 @@ def _rule_view(policy, witness: str) -> dict | None:
 # Drift — verdict-distribution snapshot + movement flag (skeleton)
 # ---------------------------------------------------------------------------
 
-def record_distribution_snapshot(conn, witness: str, device_id: str,
+def record_distribution_snapshot(conn, observer: str, device_id: str,
                                  axis: str, verdicts: Iterable[dict],
                                  ts: str) -> None:
-    """Store a compact status-count snapshot for a witness's verdicts on a
+    """Store a compact status-count snapshot for a observer's verdicts on a
     device/axis. Used by drift_flag to detect distribution shifts over time.
 
     Stored in the health_dossier table with direction='drift-snapshot' and a
@@ -159,16 +159,16 @@ def record_distribution_snapshot(conn, witness: str, device_id: str,
         counts[v.get("status", "?")] = counts.get(v.get("status", "?"), 0) + 1
     claim = _json.dumps({"device": device_id, "axis": axis, "counts": counts},
                         sort_keys=True)
-    add_dossier_entry(conn, witness, ts[:10], axis, claim,
+    add_dossier_entry(conn, observer, ts[:10], axis, claim,
                       "(internal snapshot)", "other")
 
 
-def drift_flag(conn, witness: str) -> str:
+def drift_flag(conn, observer: str) -> str:
     """Skeleton drift detector: compare the two most recent snapshot claims.
     Returns 'stable' | 'shifted' | 'insufficient'. A real implementation would
     use a statistical test; this flags any change in the status-count dict as
     a shift — a deliberately conservative signal that something moved."""
-    entries = [e for e in dossier(conn, witness)
+    entries = [e for e in dossier(conn, observer)
                if e["direction"] == "other" and e["citation"] == "(internal snapshot)"]
     if len(entries) < 2:
         return "insufficient"

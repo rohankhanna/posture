@@ -1,21 +1,21 @@
-"""CycloneDX SBOM reader — the first REAL witness on the inventory axis.
+"""CycloneDX SBOM reader — the first REAL observer on the inventory axis.
 
 A CycloneDX SBOM is the *measured floor* of what is
 installed on a device — the ground truth under the other axes (you can't be
 vulnerable for a package you didn't install; you can't trust what isn't
-there). This witness reads one (inline via ``device["sbom"]`` or a local JSON
+there). This observer reads one (inline via ``device["sbom"]`` or a local JSON
 file via ``device["sbom_path"]``) and emits one ``present`` Verdict per
 component, keyed ``<name>@<version>``. The inventory axis is never 'clear'
 when an SBOM is supplied: ``present`` is the honest non-clean status (an axis
 with packages on it is a map with marks on it, not a green field). With no SBOM
-the witness is an HONEST NO-OP — zero verdicts, ``complete=True`` — so the
+the observer is an HONEST NO-OP — zero verdicts, ``complete=True`` — so the
 engine's loud-degradation rule makes the axis UNKNOWN (loud), never silently
 'clean'. A missing ``sbom_path`` file is treated the same way (complete=True,
 zero) — a local missing file is no input, not a source failure, so it must
 NOT trip the no-wipe gate.
 
-This is a LOCAL witness: it reads an SBOM the device supplies. NO network,
-NO ``curl_get``, NO live mode. It subclasses ``StandardFormatWitness`` (the
+This is a LOCAL observer: it reads an SBOM the device supplies. NO network,
+NO ``curl_get``, NO live mode. It subclasses ``StandardFormatObserver`` (the
 scaffolding left in sources/base.py explicitly for CycloneDX) and implements
 the two hook methods ``fetch`` + ``parse``; provenance and the ``assess``
 flow are shared by the base (do not override ``assess``).
@@ -37,15 +37,15 @@ import json
 from pathlib import Path
 
 from ..axis import Axis
-from ..witness import Verdict
-from .base import StandardFormatWitness
+from ..observer import Verdict
+from .base import StandardFormatObserver
 
 # Bundled offline fixture dir. Tests point device["sbom_path"] here (or rely
 # on the fallback in _read_file) for deterministic, network-free runs.
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "sbom"
 
 
-class CyclonedxSbomWitness(StandardFormatWitness):
+class CyclonedxSbomObserver(StandardFormatObserver):
     """CycloneDX SBOM reader on the inventory axis.
 
     Reads a CycloneDX SBOM the device supplies (inline dict or local JSON file)
@@ -59,13 +59,13 @@ class CyclonedxSbomWitness(StandardFormatWitness):
     axes = (Axis.INVENTORY,)
     bias = "neutral"
     fmt = "cyclonedx"
-    # Declares the identifier kind this witness emits, so the vocab monitor
+    # Declares the identifier kind this observer emits, so the vocab monitor
     # records "<name>@<version>" keys under a known kind ("package") cleanly
     # instead of surfacing them as an unknown scheme.
     key_kind = "package"
 
     def __init__(self, fixture_dir: Path | str | None = None) -> None:
-        # `Witness` is a dataclass; pass the identity fields (incl. key_kind)
+        # `Observer` is a dataclass; pass the identity fields (incl. key_kind)
         # up so they are stamped on the INSTANCE, not just the class — the
         # dataclass-generated __init__ would otherwise shadow the class-level
         # key_kind with None.
@@ -135,8 +135,8 @@ class CyclonedxSbomWitness(StandardFormatWitness):
         Components without a name are skipped (no key to join on within the
         inventory axis). ``version`` defaults to "" if absent — the key still
         uniquely identifies the package line as "this name, this version (or
-        unversioned)". Provenance is stamped with the witness id + a citable
-        raw_ref to the SBOM source (the base ``assess`` re-stamps the witness
+        unversioned)". Provenance is stamped with the observer id + a citable
+        raw_ref to the SBOM source (the base ``assess`` re-stamps the observer
         id and the engine fills policy_version/fetched_at/complete).
         """
         raw_ref = self._source_ref(device)

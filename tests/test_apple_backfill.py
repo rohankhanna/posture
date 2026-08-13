@@ -24,7 +24,7 @@ These pin five things:
      CDX JSON array and degrades to ``[]`` on any malformation/failure;
   4. ``discover_historical_urls`` unions advisory URLs across yearly snapshots
      of both index articles (HT1222 + HT201222), best-effort per snapshot;
-  5. the witness, in ``live=True`` + ``history=True`` mode, recovers a pre-index
+  5. the observer, in ``live=True`` + ``history=True`` mode, recovers a pre-index
      CVE the live index alone misses (decides patched/unpatched instead of NVD's
      silent skip), while ``history=False`` (the default) stays byte-identical to
      the index-only path (no regression) and the earliest-wins merge replaces an
@@ -39,7 +39,7 @@ import pytest
 
 from posture.policy import Policy
 from posture.sources.apple_advisory import (
-    AppleAdvisoryWitness, advisory_id_of, backfill_fix_map,
+    AppleAdvisoryObserver, advisory_id_of, backfill_fix_map,
     discover_historical_urls, discover_urls_from_refs, parse_index_links,
     _ht1222_snapshot_urls,
 )
@@ -55,7 +55,7 @@ _INLINE_POLICY_YAML = """
 version: "2026-08-08.1"
 dated: 2026-08-08
 rationale: "test policy for apple_advisory historical recovery"
-witnesses:
+observers:
   apple_advisory:
     axes: [vulnerability]
     weight: high
@@ -265,7 +265,7 @@ def test_discover_historical_urls_covers_both_index_articles(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# witness integration: history=True recovers pre-index CVEs; history=False
+# observer integration: history=True recovers pre-index CVEs; history=False
 # stays byte-identical to the index-only path (no regression)
 # ---------------------------------------------------------------------------
 
@@ -287,11 +287,11 @@ def _history_curl(monkeypatch, cdx_rows=None, snapshot=SNAPSHOT_HTML,
     monkeypatch.setattr("posture.sources.apple_advisory.curl_get", fake_curl_get)
 
 
-def test_witness_history_recovers_pre_index_cve(monkeypatch):
+def test_observer_history_recovers_pre_index_cve(monkeypatch):
     """live+history: CVE-2026-99920 (fixed only in the pre-index 15.7.1
     advisory) is recovered and decided, instead of NVD's silent skip."""
     _history_curl(monkeypatch)
-    w = AppleAdvisoryWitness(live=True, history=True)
+    w = AppleAdvisoryObserver(live=True, history=True)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host", "os_version": "17.1", "apple_product": "iphone_os",
@@ -304,12 +304,12 @@ def test_witness_history_recovers_pre_index_cve(monkeypatch):
     assert by_key["CVE-2026-99920"].fixed_in == "15.7.1"
 
 
-def test_witness_history_false_does_not_recover_pre_index_cve(monkeypatch):
+def test_observer_history_false_does_not_recover_pre_index_cve(monkeypatch):
     """history=False (default): the same pre-index CVE gets NO Apple verdict
     (the live index does not cover it) — byte-identical to the index-only path.
     This is the no-regression proof."""
     _history_curl(monkeypatch)
-    w = AppleAdvisoryWitness(live=True, history=False)
+    w = AppleAdvisoryObserver(live=True, history=False)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host", "os_version": "17.1", "apple_product": "iphone_os",
@@ -320,11 +320,11 @@ def test_witness_history_false_does_not_recover_pre_index_cve(monkeypatch):
     assert "CVE-2026-99920" not in by_key   # index does not cover it -> NVD stands
 
 
-def test_witness_history_earliest_wins_replaces_index_fix_version(monkeypatch):
+def test_observer_history_earliest_wins_replaces_index_fix_version(monkeypatch):
     """live+history: CVE-2026-99910 is on the index at 16.7.15 but re-mentioned
     in the pre-index advisory at 15.7.1; earliest-wins must report 15.7.1."""
     _history_curl(monkeypatch)
-    w = AppleAdvisoryWitness(live=True, history=True)
+    w = AppleAdvisoryObserver(live=True, history=True)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host", "os_version": "17.1", "apple_product": "iphone_os",
@@ -336,11 +336,11 @@ def test_witness_history_earliest_wins_replaces_index_fix_version(monkeypatch):
     assert by_key["CVE-2026-99910"].status == "patched"   # 17.1 >= 15.7.1
 
 
-def test_witness_history_false_keeps_index_fix_version(monkeypatch):
+def test_observer_history_false_keeps_index_fix_version(monkeypatch):
     """history=False: CVE-2026-99910 keeps the index's 16.7.15 (the historical
     15.7.1 sighting is NOT merged) — confirms the default path is untouched."""
     _history_curl(monkeypatch)
-    w = AppleAdvisoryWitness(live=True, history=False)
+    w = AppleAdvisoryObserver(live=True, history=False)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host", "os_version": "17.1", "apple_product": "iphone_os",
@@ -351,11 +351,11 @@ def test_witness_history_false_keeps_index_fix_version(monkeypatch):
     assert by_key["CVE-2026-99910"].fixed_in == "16.7.15"
 
 
-def test_witness_history_nvd_refs_recover_when_wayback_down(monkeypatch):
+def test_observer_history_nvd_refs_recover_when_wayback_down(monkeypatch):
     """If the Wayback CDX is down (returns no snapshots), the NVD-ref path
     (device['apple_ref_urls']) still recovers the pre-index advisory."""
     _history_curl(monkeypatch, cdx_rows=[["hdr"]])   # header only -> no snapshots
-    w = AppleAdvisoryWitness(live=True, history=True)
+    w = AppleAdvisoryObserver(live=True, history=True)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host", "os_version": "17.1", "apple_product": "iphone_os",
@@ -368,11 +368,11 @@ def test_witness_history_nvd_refs_recover_when_wayback_down(monkeypatch):
     assert by_key["CVE-2026-99920"].fixed_in == "15.7.1"   # recovered via NVD ref
 
 
-def test_witness_history_skips_cross_product_advisory(monkeypatch):
+def test_observer_history_skips_cross_product_advisory(monkeypatch):
     """The Safari advisory's CVE-2026-99930 must never get an iOS verdict, even
     with history on (cross-product skip in backfill)."""
     _history_curl(monkeypatch)
-    w = AppleAdvisoryWitness(live=True, history=True)
+    w = AppleAdvisoryObserver(live=True, history=True)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host", "os_version": "17.1", "apple_product": "iphone_os",
@@ -383,13 +383,13 @@ def test_witness_history_skips_cross_product_advisory(monkeypatch):
     assert "CVE-2026-99930" not in by_key
 
 
-def test_witness_history_best_effort_when_wayback_down_and_no_refs(monkeypatch):
+def test_observer_history_best_effort_when_wayback_down_and_no_refs(monkeypatch):
     """Wayback is down (CDX returns no snapshots) and the device supplies no
     NVD refs -> backfill gets no URLs, so the index map stands and an index-
     covered CVE still decides correctly with complete=True (best-effort: a
     historical outage never breaks the index-only decision / no-wipe)."""
     _history_curl(monkeypatch, cdx_rows=[["hdr"]])   # header only -> no snapshots
-    w = AppleAdvisoryWitness(live=True, history=True)
+    w = AppleAdvisoryObserver(live=True, history=True)
     pol = Policy.from_yaml(_INLINE_POLICY_YAML)
     device = {
         "id": "iphone-host", "os_version": "17.1", "apple_product": "iphone_os",

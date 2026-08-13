@@ -10,8 +10,8 @@ def _conn():
 
 def test_emergent_unknown_kind_auto_writes_candidate():
     conn = _conn()
-    # a witness emits keys of a kind the glossary does not know ("X")
-    sigs = V.scan_emergent(conn, "future_witness", "X",
+    # a observer emits keys of a kind the glossary does not know ("X")
+    sigs = V.scan_emergent(conn, "future_observer", "X",
                            ["X-2026-1", "X-2026-2"])
     assert len(sigs) == 1
     assert sigs[0].kind == "X"
@@ -62,64 +62,64 @@ def test_promote_clears_from_queue():
     assert "Z" in {t.id for t in G.all(conn, status="known")}
 
 
-def test_real_witnesses_expose_declared_key_kind():
-    """Regression: `Witness` is a dataclass, so its auto-generated `__init__`
+def test_real_observers_expose_declared_key_kind():
+    """Regression: `Observer` is a dataclass, so its auto-generated `__init__`
     defaults `key_kind=None` and SHADOWS a subclass's class-level `key_kind`
     unless the subclass passes `key_kind=self.key_kind` through. Before the
     fix, nvd/ubuntu/debian/apple/cis all silently had `key_kind=None`, so the
     vocab monitor never fired for them (cyclonedx_sbom already passed it).
     The instance attribute must equal the declared class attribute.
     """
-    from posture.sources.nvd_cve import NvdCveWitness
-    from posture.sources.ubuntu_tracker import UbuntuTrackerWitness
-    from posture.sources.debian_tracker import DebianTrackerWitness
-    from posture.sources.apple_advisory import AppleAdvisoryWitness
-    from posture.sources.cis_checker import CisCheckerWitness
-    from posture.sources.cyclonedx_sbom import CyclonedxSbomWitness
+    from posture.sources.nvd_cve import NvdCveObserver
+    from posture.sources.ubuntu_tracker import UbuntuTrackerObserver
+    from posture.sources.debian_tracker import DebianTrackerObserver
+    from posture.sources.apple_advisory import AppleAdvisoryObserver
+    from posture.sources.cis_checker import CisCheckerObserver
+    from posture.sources.cyclonedx_sbom import CyclonedxSbomObserver
 
     cases = [
-        (NvdCveWitness(), "cve"),
-        (UbuntuTrackerWitness(), "cve"),
-        (DebianTrackerWitness(), "cve"),
-        (AppleAdvisoryWitness(), "cve"),
-        (CisCheckerWitness(), "cis_check"),
-        (CyclonedxSbomWitness(), "package"),
+        (NvdCveObserver(), "cve"),
+        (UbuntuTrackerObserver(), "cve"),
+        (DebianTrackerObserver(), "cve"),
+        (AppleAdvisoryObserver(), "cve"),
+        (CisCheckerObserver(), "cis_check"),
+        (CyclonedxSbomObserver(), "package"),
     ]
     for w, expected in cases:
         assert type(w).key_kind == expected  # class attr is intact
         assert w.key_kind == expected  # instance attr is NOT shadowed to None
 
 
-def test_engine_emergent_scan_runs_on_unknown_kind_witness():
-    """A witness with an unknown key_kind does NOT crash the engine and the
+def test_engine_emergent_scan_runs_on_unknown_kind_observer():
+    """A observer with an unknown key_kind does NOT crash the engine and the
     kind lands as a candidate term."""
     from posture.axis import Axis
-    from posture.witness import Witness, WitnessResult, Verdict, Provenance
+    from posture.observer import Observer, ObserverResult, Verdict, Provenance
     from posture import engine
 
-    class W(Witness):
+    class W(Observer):
         def __init__(self):
             super().__init__(id="future", axes=(Axis.VULNERABILITY,),
                              bias="neutral", key_kind="newx")
         def assess(self, device, policy):
-            return WitnessResult(verdicts=[Verdict(
+            return ObserverResult(verdicts=[Verdict(
                 axis="vulnerability", key="NEWX-1", status="unpatched",
-                provenance=Provenance(witness="future", policy_version="",
+                provenance=Provenance(observer="future", policy_version="",
                                       fetched_at="", complete=True))],
                 complete=True)
 
     class FakePolicy:
         version = "2026-08-01.1"
-        def has_witness(self, wid): return wid == "future"
-        def witness_order(self, wid): return 10
-        def witness_bias(self, wid, default="neutral"): return default
-        def witness_weight(self, wid): return "medium"
+        def has_observer(self, wid): return wid == "future"
+        def observer_order(self, wid): return 10
+        def observer_bias(self, wid, default="neutral"): return default
+        def observer_weight(self, wid): return "medium"
         def degradation_for(self, wid): return None
 
     conn = store.connect(":memory:")
-    reg = engine.__dict__["WitnessRegistry"]()  # noqa
-    from posture.witness import WitnessRegistry
-    reg = WitnessRegistry()
+    reg = engine.__dict__["ObserverRegistry"]()  # noqa
+    from posture.observer import ObserverRegistry
+    reg = ObserverRegistry()
     reg.register(W())
     dp = engine.assess({"id": "dev", "os": "linux"}, reg, FakePolicy(), conn=conn)
     vuln = next(a for a in dp.axes if a.axis == "vulnerability")

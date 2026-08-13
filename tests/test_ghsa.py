@@ -198,7 +198,7 @@ def test_ghsa_does_not_touch_verdicts(conn, tmp_path):
     store.upsert_verdict(conn, {
         "device_id": "host", "axis": "vulnerability", "key": "CVE-OLD",
         "status": "unpatched", "severity": "HIGH", "fixed_in": None, "detail": "prior",
-        "provenance": {"witness": "nvd", "policy_version": "v",
+        "provenance": {"observer": "nvd", "policy_version": "v",
                        "fetched_at": "t", "complete": 1},
     }, "t")
     conn.commit()

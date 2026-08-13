@@ -44,7 +44,7 @@ class PolicyError(ValueError):
 
 
 @dataclass
-class WitnessPolicy:
+class ObserverPolicy:
     id: str
     axes: tuple[str, ...]
     weight: str = "medium"
@@ -55,7 +55,7 @@ class WitnessPolicy:
 
 @dataclass
 class DegradationRule:
-    witness: str
+    observer: str
     if_silent_for_days: int
     fallback: list[str] = field(default_factory=list)
 
@@ -77,30 +77,30 @@ class Policy:
     supersedes: str | None
     dated: str
     rationale: str
-    witnesses: dict[str, WitnessPolicy]
+    observers: dict[str, ObserverPolicy]
     degradation: dict[str, DegradationRule]
     spine: SpinePolicy
     raw_yaml: str = ""
 
     # -- accessors the engine/registry use ----------------------------------
 
-    def has_witness(self, wid: str) -> bool:
-        return wid in self.witnesses
+    def has_observer(self, wid: str) -> bool:
+        return wid in self.observers
 
-    def witness_order(self, wid: str) -> int:
-        wp = self.witnesses.get(wid)
-        return wp.order if wp else 10**9  # unknown witnesses sort last
+    def observer_order(self, wid: str) -> int:
+        wp = self.observers.get(wid)
+        return wp.order if wp else 10**9  # unknown observers sort last
 
-    def witness_bias(self, wid: str, default: str = "neutral") -> str:
-        wp = self.witnesses.get(wid)
+    def observer_bias(self, wid: str, default: str = "neutral") -> str:
+        wp = self.observers.get(wid)
         return wp.bias if wp else default
 
-    def witness_weight(self, wid: str) -> str:
-        wp = self.witnesses.get(wid)
+    def observer_weight(self, wid: str) -> str:
+        wp = self.observers.get(wid)
         return wp.weight if wp else "none"
 
-    def witnesses_for_axis(self, axis: str) -> list[WitnessPolicy]:
-        return [wp for wp in self.witnesses.values() if axis in wp.axes]
+    def observers_for_axis(self, axis: str) -> list[ObserverPolicy]:
+        return [wp for wp in self.observers.values() if axis in wp.axes]
 
     def degradation_for(self, wid: str) -> DegradationRule | None:
         return self.degradation.get(wid)
@@ -130,30 +130,30 @@ class Policy:
             raise PolicyError("policy.dated is required (YYYY-MM-DD)")
         rationale = data.get("rationale", "") or ""
 
-        witnesses: dict[str, WitnessPolicy] = {}
-        for wid, cfg in (data.get("witnesses") or {}).items():
+        observers: dict[str, ObserverPolicy] = {}
+        for wid, cfg in (data.get("observers") or {}).items():
             if not isinstance(cfg, dict):
-                raise PolicyError(f"witness {wid!r}: config must be a mapping")
+                raise PolicyError(f"observer {wid!r}: config must be a mapping")
             axes = cfg.get("axes") or []
             if not isinstance(axes, list) or not axes:
-                raise PolicyError(f"witness {wid!r}: needs a non-empty axes list")
+                raise PolicyError(f"observer {wid!r}: needs a non-empty axes list")
             for a in axes:
                 if not is_axis(a):
                     raise PolicyError(
-                        f"witness {wid!r}: unknown axis {a!r} (known: "
+                        f"observer {wid!r}: unknown axis {a!r} (known: "
                         f"{[x.value for x in Axis]})"
                     )
             weight = cfg.get("weight", "medium")
             if weight not in VALID_WEIGHT:
-                raise PolicyError(f"witness {wid!r}: bad weight {weight!r}")
+                raise PolicyError(f"observer {wid!r}: bad weight {weight!r}")
             bias = cfg.get("bias", "neutral")
             if bias not in VALID_BIAS:
                 raise PolicyError(
-                    f"witness {wid!r}: bad bias {bias!r} (use {sorted(VALID_BIAS)})"
+                    f"observer {wid!r}: bad bias {bias!r} (use {sorted(VALID_BIAS)})"
                 )
             order = int(cfg.get("order", 10))
             conditions = list(cfg.get("conditions") or [])
-            witnesses[wid] = WitnessPolicy(
+            observers[wid] = ObserverPolicy(
                 id=wid, axes=tuple(axes), weight=weight, bias=bias,
                 order=order, conditions=conditions,
             )
@@ -164,7 +164,7 @@ class Policy:
                 raise PolicyError(f"degradation {wid!r}: must be a mapping")
             days = int(cfg.get("if_silent_for_days", 0))
             fallback = list(cfg.get("fallback") or [])
-            degradation[wid] = DegradationRule(witness=wid, if_silent_for_days=days,
+            degradation[wid] = DegradationRule(observer=wid, if_silent_for_days=days,
                                               fallback=fallback)
 
         spine_cfg = data.get("spine") or {}
@@ -177,7 +177,7 @@ class Policy:
 
         return cls(
             version=version, supersedes=supersedes, dated=dated,
-            rationale=rationale, witnesses=witnesses, degradation=degradation,
+            rationale=rationale, observers=observers, degradation=degradation,
             spine=spine, raw_yaml=raw_yaml,
         )
 
@@ -187,10 +187,10 @@ class Policy:
             "supersedes": self.supersedes,
             "dated": self.dated,
             "rationale": self.rationale,
-            "witnesses": {
+            "observers": {
                 wid: {"axes": list(wp.axes), "weight": wp.weight, "bias": wp.bias,
                       "order": wp.order, "conditions": wp.conditions}
-                for wid, wp in self.witnesses.items()
+                for wid, wp in self.observers.items()
             },
             "degradation": {
                 wid: {"if_silent_for_days": d.if_silent_for_days,

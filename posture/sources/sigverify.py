@@ -1,7 +1,7 @@
-"""Pure-python signature verification — the first REAL witness on the trust axis.
+"""Pure-python signature verification — the first REAL observer on the trust axis.
 
 The trust axis answers "can you trust
-what is installed". This witness verifies a supplied signature against a
+what is installed". This observer verifies a supplied signature against a
 supplied public key for each artifact the device names, using the
 ``cryptography`` library (ed25519 by default; rsa-pss also supported). It
 emits one trust-axis ``Verdict`` per artifact, keyed on the artifact id
@@ -18,14 +18,14 @@ The engine's per-axis loud-degradation rule turns "no verdicts" into UNKNOWN
 (never "clean"), and any untrusted artifact drives the trust axis to
 ``untrusted`` (worst present); all verified drives it to ``trusted``.
 
-This is a LOCAL witness — it verifies signatures over data the device supplies.
+This is a LOCAL observer — it verifies signatures over data the device supplies.
 NO network, NO curl_get, NO live mode. The artifact descriptors are a DEVICE
 INPUT (``device["artifacts"]`` inline or ``device["artifacts_path"]`` to a
-local JSON file), so the fan-out stays pure and the witness stays offline +
+local JSON file), so the fan-out stays pure and the observer stays offline +
 deterministic.
 
 The deferred heavier variant is SLSA / cosign keyless attestation (in-toto
-DSSE + Fulcio/Rekor) — a future, separately-id'd ``slsa`` witness in the
+DSSE + Fulcio/Rekor) — a future, separately-id'd ``slsa`` observer in the
 credentialed lane. This first cut is honest GENERIC signature verification,
 which is the core of the trust axis and needs no external service.
 
@@ -50,7 +50,7 @@ import json
 from pathlib import Path
 
 from ..axis import Axis
-from ..witness import Witness, WitnessResult, Verdict
+from ..observer import Observer, ObserverResult, Verdict
 
 # cryptography is a declared dependency (pyproject). The guard keeps the
 # module importable + registerable even if the wheel is somehow absent in a
@@ -198,10 +198,10 @@ def _verify(a: dict, algorithm: str | None) -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
-# the witness
+# the observer
 # ---------------------------------------------------------------------------
 
-class SigVerifyWitness(Witness):
+class SigVerifyObserver(Observer):
     """Pure-python signature verification on the trust axis.
 
     Reads artifact descriptors the device supplies (inline list or local JSON
@@ -214,13 +214,13 @@ class SigVerifyWitness(Witness):
     id = "sigverify"
     axes = (Axis.TRUST,)
     bias = "false-safe"   # unverifiable artifact -> untrusted, never skipped
-    # Declares the identifier kind this witness emits, so the vocab monitor
+    # Declares the identifier kind this observer emits, so the vocab monitor
     # records artifact-id keys under a known kind ("artifact") cleanly instead
     # of surfacing them as an unknown scheme.
     key_kind = "artifact"
 
     def __init__(self, fixture_dir: Path | str | None = None) -> None:
-        # `Witness` is a dataclass; pass the identity fields (incl. key_kind)
+        # `Observer` is a dataclass; pass the identity fields (incl. key_kind)
         # up so they are stamped on the INSTANCE, not just the class — the
         # dataclass-generated __init__ would otherwise shadow the class-level
         # key_kind with None.
@@ -231,7 +231,7 @@ class SigVerifyWitness(Witness):
 
     # -- the uniform contract ------------------------------------------------
 
-    def assess(self, device: dict, policy) -> WitnessResult:
+    def assess(self, device: dict, policy) -> ObserverResult:
         artifacts = device.get("artifacts")
         if isinstance(artifacts, list):
             arts = artifacts
@@ -240,14 +240,14 @@ class SigVerifyWitness(Witness):
             if path:
                 arts = self._read_file(path)
                 if arts is None:
-                    return WitnessResult(
+                    return ObserverResult(
                         verdicts=[], complete=True, reason="artifacts path not found",
                     )
             else:
                 # No artifacts supplied -> honest no-op. Zero verdicts,
                 # complete=True so the engine keeps the trust axis UNKNOWN
                 # (loud), never silently 'trusted' — and never crashes.
-                return WitnessResult(
+                return ObserverResult(
                     verdicts=[], complete=True, reason="no artifacts supplied",
                 )
 
@@ -287,7 +287,7 @@ class SigVerifyWitness(Witness):
                     provenance=self._prov(complete=True, raw_ref=f"sigverify:{key}"),
                 ))
 
-        return WitnessResult(
+        return ObserverResult(
             verdicts=verdicts, complete=True,
             reason=f"sigverify: {len(verdicts)} artifact(s) checked",
         )

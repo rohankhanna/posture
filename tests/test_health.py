@@ -74,11 +74,11 @@ def test_degradation_offline_when_silent_no_fallback():
     conn = store.connect(":memory:")
     policy = Policy.from_file(default_policy_path())
     # mitre_cve has if_silent_for_days=30 but fallback=[ghsa, osv_id] -> still
-    # 'fallback'; instead craft a policy with no fallback for a witness.
+    # 'fallback'; instead craft a policy with no fallback for a observer.
     custom = Policy.from_yaml(f"""
 version: "2026-08-01.1"
 dated: 2026-08-01
-witnesses:
+observers:
   nvd: {{axes: [vulnerability], bias: false-alarm}}
 degradation:
   nvd: {{if_silent_for_days: 1, fallback: []}}

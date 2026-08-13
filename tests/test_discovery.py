@@ -11,7 +11,9 @@ These pin four things:
      refreshes fmt/axis/note only. This is the fix for CI running `posture
      discover` daily without spamming the exported spine.
   3. the v3 migration dedups a pre-v3 candidates table that accumulated
-     duplicate urls and raises a unique index, then bumps user_version to 3.
+     duplicate urls and raises a unique index, then bumps user_version past 3
+     (the v4 observer-rename step runs after as a guarded no-op here, leaving
+     user_version at 4).
   4. the opt-in live ``--fetch`` path starts from the offline delta, fetching
      only the not-yet-recorded aggregators (mocked fetch — no real network).
 
@@ -128,11 +130,11 @@ def test_v3_migration_dedups_duplicate_candidate_urls_and_raises_unique_index(tm
     raw.execute("PRAGMA user_version = 2")
     raw.commit(); raw.close()
 
-    conn = store.connect(str(db))             # runs _migrate -> v3
+    conn = store.connect(str(db))             # runs _migrate -> v4 (v3 dedups, v4 no-op here)
     rows = store.candidates(conn)
     assert len(rows) == 2                     # one row per url (dup collapsed)
     assert {r["url"] for r in rows} == {"https://x", "https://y"}
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
     idx = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='index' AND name='candidates_url_uq'"
     ).fetchone()

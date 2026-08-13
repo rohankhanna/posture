@@ -10,7 +10,7 @@ import pytest
 from posture import store, refresh
 from posture.axis import Axis
 from posture.sources import nvd_cve
-from posture.witness import Witness, WitnessResult, Verdict, Provenance, WitnessRegistry
+from posture.observer import Observer, ObserverResult, Verdict, Provenance, ObserverRegistry
 import posture.refresh as _refresh
 
 
@@ -120,7 +120,7 @@ def test_refresh_enrich_promotes_skeleton_and_upserts_verdict(conn, monkeypatch)
     # device 6.2 is in [6.0, 6.5) -> unpatched, fixed_in 6.5
     v = store.verdicts_for_device_axis(conn, "host", "vulnerability")[0]
     assert v["status"] == "unpatched" and v["fixed_in"] == "6.5"
-    assert v["witness"] == "nvd" and v["severity"] == "CRITICAL"
+    assert v["observer"] == "nvd" and v["severity"] == "CRITICAL"
     # pending pool drained
     assert stats["pending_after"] == 0
 
@@ -133,7 +133,7 @@ def test_refresh_incomplete_fetch_no_wipe(conn, monkeypatch):
     store.upsert_verdict(conn, {
         "device_id": "host", "axis": "vulnerability", "key": "CVE-OLD",
         "status": "unpatched", "severity": "HIGH", "fixed_in": None, "detail": "prior",
-        "provenance": {"witness": "nvd", "policy_version": "v",
+        "provenance": {"observer": "nvd", "policy_version": "v",
                        "fetched_at": "t", "complete": 1},
     }, "t")
     monkeypatch.setattr(_refresh, "nvd_query_cve",
@@ -153,7 +153,7 @@ def test_refresh_incremental_preserves_unrelated_verdicts(conn, monkeypatch):
         store.upsert_verdict(conn, {
             "device_id": "host", "axis": "vulnerability", "key": f"CVE-old-{i}",
             "status": "unpatched", "severity": "HIGH", "fixed_in": None, "detail": "d",
-            "provenance": {"witness": "nvd", "policy_version": "v",
+            "provenance": {"observer": "nvd", "policy_version": "v",
                            "fetched_at": "t", "complete": 1},
         }, "t")
     _skeleton(conn)
@@ -253,18 +253,18 @@ def test_cwe_and_ref_tag_helpers_empty_when_absent():
     assert nvd_cve._ref_tags({}) == []
 
 
-# --- per-CVE vendor-witness overrides during refresh -----------------------
+# --- per-CVE vendor-observer overrides during refresh -----------------------
 
 def test_refresh_vendor_override_clears_nvd_false_alarm_same_tick(conn, monkeypatch):
     """A freshly NVD-enriched CVE that a vendor tracker would clear is corrected
     in THIS tick (not left as a false NVD 'unpatched' until the next full
-    assess). The vendor verdict co-exists with NVD's (separate witness row);
+    assess). The vendor verdict co-exists with NVD's (separate observer row);
     override is by policy order at rollup, never a row overwrite."""
     _skeleton(conn)
     monkeypatch.setattr(_refresh, "nvd_query_cve",
                         lambda cid, throttle=True: (_nvd_cve(cid), True, "enriched"))
 
-    class FakeVendor(Witness):
+    class FakeVendor(Observer):
         """Stands in for ubuntu_tracker: clears any candidate CVE to 'patched'.
         The real ubuntu_tracker is unit-tested in test_ubuntu_tracker; this
         isolates the refresh override MECHANISM (registry -> assess -> upsert)."""
@@ -281,13 +281,13 @@ def test_refresh_vendor_override_clears_nvd_false_alarm_same_tick(conn, monkeypa
             cids = [c for c in (device.get("cve_candidates") or [])]
             verdicts = [Verdict(
                 axis="vulnerability", key=c, status="patched", fixed_in="6.17.9",
-                provenance=Provenance(witness="ubuntu_tracker", policy_version="",
+                provenance=Provenance(observer="ubuntu_tracker", policy_version="",
                                       fetched_at="", complete=True,
                                       raw_ref=f"https://ubuntu.com/security/{c}"),
             ) for c in cids]
-            return WitnessResult(verdicts=verdicts, complete=True, reason="fake")
+            return ObserverResult(verdicts=verdicts, complete=True, reason="fake")
 
-    reg = WitnessRegistry()
+    reg = ObserverRegistry()
     reg.register(FakeVendor())
     stats = refresh.refresh_tick(conn, [_device()], policy_version="v",
                                  live=True, registry=reg)
@@ -295,7 +295,7 @@ def test_refresh_vendor_override_clears_nvd_false_alarm_same_tick(conn, monkeypa
     assert stats["enriched"] == 1
     assert stats["vendor_overrides"] == 1
     rows = store.verdicts_for_device_axis(conn, "host", "vulnerability")
-    by_w = {r["witness"]: r for r in rows}
+    by_w = {r["observer"]: r for r in rows}
     # NVD's false alarm is still present (no-wipe: the row is never overwritten)
     assert by_w["nvd"]["status"] == "unpatched"
     # ...and the vendor cleared it in the same tick, as a separate row
@@ -313,7 +313,7 @@ def test_refresh_without_registry_skips_vendor_override(conn, monkeypatch):
     assert stats["enriched"] == 1
     assert stats["vendor_overrides"] == 0
     rows = store.verdicts_for_device_axis(conn, "host", "vulnerability")
-    assert len(rows) == 1 and rows[0]["witness"] == "nvd"
+    assert len(rows) == 1 and rows[0]["observer"] == "nvd"
 
 
 # --- CI catalog-only mode: --no-devices enriches the MAP, writes 0 verdicts --

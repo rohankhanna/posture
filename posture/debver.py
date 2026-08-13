@@ -1,6 +1,6 @@
 """Pure-Python Debian version comparison (dpkg --compare-versions semantics).
 
-Used by the Ubuntu security-tracker witness to compare an installed dpkg
+Used by the Ubuntu security-tracker observer to compare an installed dpkg
 package/kernel version against the tracker's fixed version. Real dpkg
 versions like ``6.17.9-6.17.0+signed`` and tilde pre-releases like
 ``1.0~rc1`` do NOT compare correctly under PEP 440

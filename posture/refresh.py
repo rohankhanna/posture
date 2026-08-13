@@ -39,7 +39,7 @@ import datetime as _dt
 from . import store as _store
 from .axis import Axis
 from . import provenance as _prov
-from .witness import Provenance
+from .observer import Provenance
 from .sources.nvd_cve import (
     nvd_query_cve, decide_cve_for_device, _metrics, _desc, _refs, _cwes,
     _ref_tags, _cpe_head,
@@ -147,12 +147,12 @@ def refresh_tick(
     :func:`nvd_query_cve`). Returns a stats dict.
 
     ``registry`` (optional): if supplied, after the NVD re-decide the vendor
-    witnesses on the vulnerability axis (ubuntu/debian/apple — any non-nvd
-    witness with ``key_kind='cve'``) are run per enriched CVE per device with
+    observers on the vulnerability axis (ubuntu/debian/apple — any non-nvd
+    observer with ``key_kind='cve'``) are run per enriched CVE per device with
     ``cve_candidates`` set to the enriched ids, so a freshly-enriched CVE a
     vendor tracker would clear is corrected in THIS tick instead of being left
     as a false NVD 'unpatched' until the next full assess. The vendor verdict
-    co-exists with NVD's (separate witness row); override is by policy order at
+    co-exists with NVD's (separate observer row); override is by policy order at
     rollup, never a row overwrite. ``None`` skips the pass (backward compatible).
 
     No-wipe guarantees:
@@ -222,20 +222,20 @@ def refresh_tick(
                     "fixed_in": fixed_in,
                     "detail": detail or "",
                     "provenance": Provenance(
-                        witness="nvd", policy_version=policy_version,
+                        observer="nvd", policy_version=policy_version,
                         fetched_at=fetched_at, complete=True, raw_ref=ref,
                     ),
                 }, fetched_at)
                 stats["verdicts_upserted"] += 1
     conn.commit()
 
-    # Per-CVE vendor-witness overrides (ubuntu/debian/apple): a CVE just
+    # Per-CVE vendor-observer overrides (ubuntu/debian/apple): a CVE just
     # NVD-enriched that a vendor tracker would clear is corrected NOW, not left
     # as a false NVD 'unpatched' until the next full assess. Reuses the fan-out
-    # contract: each vendor witness self-filters devices lacking its inputs
+    # contract: each vendor observer self-filters devices lacking its inputs
     # (returns no verdicts). The vendor verdict co-exists with NVD's (a
-    # separate witness row); override is by policy order at rollup, never a row
-    # overwrite. Vendor witnesses ignore `policy` (their decision comes from the
+    # separate observer row); override is by policy order at rollup, never a row
+    # overwrite. Vendor observers ignore `policy` (their decision comes from the
     # tracker, not the trust policy), so None is passed.
     if registry is not None and enriched:
         enriched_cids = [cid for cid, _ in enriched]

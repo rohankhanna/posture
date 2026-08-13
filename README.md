@@ -61,7 +61,7 @@ and publishes and that you clone and verify.
   advisories (Ubuntu, Debian, Apple) feed the vulnerability and threat dimensions;
   an SBOM (Software Bill of Materials), a config snapshot, a socket capture, and
   signatures that *you* produce feed the rest.
-- **Missing evidence is `UNKNOWN`, not "clean."** A dimension with no witness is
+- **Missing evidence is `UNKNOWN`, not "clean."** A dimension with no observer is
   loud, never silently safe — so a zero never lulls you into a claim of
   invulnerability.
 - **Every verdict is provenance-stamped** with its source and time, so you can
@@ -79,7 +79,7 @@ it for production decisions without auditing the verdicts yourself.
 posture currently ships with **six default axes** (more stable than the adapters that
 feed them, but not immutable — see [Core concepts](#core-concepts)). A
 **credentialed lane** for gated commercial sources (SAP/Snyk/Tenable/Qualys/Cisco/
-VMware) is scaffolded in CI but dormant — no credentialed witnesses are wired and no
+VMware) is scaffolded in CI but dormant — no credentialed observers are wired and no
 credentialed-only records exist yet.
 
 ## Installation
@@ -119,19 +119,19 @@ overall: incomplete (axis(es) unknown)
 ========================================================================
 ! [configuration] UNKNOWN  (0 verdicts, complete=True, commit=swapped)
      Misconfiguration (open SSH, default creds, world-readable keys).
-   GAP: no witness produced any signal (axis blank — not 'clean')
+   GAP: no observer produced any signal (axis blank — not 'clean')
 ! [exposure] UNKNOWN  (0 verdicts, complete=True, commit=swapped)
      Network reachability (is this service on the open internet).
-   GAP: no witness produced any signal (axis blank — not 'clean')
+   GAP: no observer produced any signal (axis blank — not 'clean')
 ! [inventory] UNKNOWN  (0 verdicts, complete=True, commit=swapped)
      What is installed (the SBOM — the measured floor under everything).
-   GAP: no witness produced any signal (axis blank — not 'clean')
+   GAP: no observer produced any signal (axis blank — not 'clean')
 ! [threat] UNKNOWN  (0 verdicts, complete=True, commit=swapped)
      What is being exploited in the wild (KEV / IOC).
-   GAP: no witness produced any signal (axis blank — not 'clean')
+   GAP: no observer produced any signal (axis blank — not 'clean')
 ! [trust] UNKNOWN  (0 verdicts, complete=True, commit=swapped)
      Can you trust what is installed (provenance / signatures / SLSA).
-   GAP: no witness produced any signal (axis blank — not 'clean')
+   GAP: no observer produced any signal (axis blank — not 'clean')
 ! [vulnerability] UNPATCHED  (4 verdicts, complete=True, commit=swapped)
      Known flaws (CVEs + advisories).
      decided by nvd (bias=false-alarm)
@@ -144,9 +144,9 @@ overall: incomplete (axis(es) unknown)
 ```
 
 Only `vulnerability` has verdicts (one critical unpatched, one high patched, one high
-unpatched, one not-affected) — decided by the `nvd` witness. The other five are loud
+unpatched, one not-affected) — decided by the `nvd` observer. The other five are loud
 `UNKNOWN` because the demo device supplied no evidence for them: `UNKNOWN` means "no
-witness produced a signal," **not** "clean." The `decided by nvd` line is
+observer produced a signal," **not** "clean." The `decided by nvd` line is
 **provenance** — which source produced each verdict. The footer is the mandatory NVD
 attribution notice.
 
@@ -209,10 +209,10 @@ overall: incomplete (axis(es) unknown)
        - busybox@1.36 present
 ! [threat] UNKNOWN  (0 verdicts, complete=True, commit=swapped)
      What is being exploited in the wild (KEV / IOC).
-   GAP: no witness produced any signal (axis blank — not 'clean')
+   GAP: no observer produced any signal (axis blank — not 'clean')
 ! [trust] UNKNOWN  (0 verdicts, complete=True, commit=swapped)
      Can you trust what is installed (provenance / signatures / SLSA).
-   GAP: no witness produced any signal (axis blank — not 'clean')
+   GAP: no observer produced any signal (axis blank — not 'clean')
 ! [vulnerability] UNPATCHED  (4 verdicts, complete=True, commit=swapped)
      Known flaws (CVEs + advisories).
      decided by nvd (bias=false-alarm)
@@ -227,7 +227,7 @@ overall: incomplete (axis(es) unknown)
 Now `configuration`, `exposure`, and `inventory` are populated (by `cis_checker`,
 `local_exposure`, `cyclonedx_sbom`). `threat` and `trust` remain `UNKNOWN` — the KEV
 fixture's CVEs did not match the device's, and no signature artifacts were supplied.
-That is the honest result: posture reports what each witness could decide and loudly
+That is the honest result: posture reports what each observer could decide and loudly
 flags the dimensions it could not.
 
 To assess against **real NVD data** instead of the bundled fixture, add `--live`:
@@ -236,17 +236,17 @@ To assess against **real NVD data** instead of the bundled fixture, add `--live`
 posture assess <device.yaml> --live
 ```
 
-> **Three ways the NVD vulnerability witness gets its data — and what each sends.**
+> **Three ways the NVD vulnerability observer gets its data — and what each sends.**
 > 1. **Bundled fixture (the default, offline).** `posture assess` and `posture demo`
 >    read `posture/fixtures/nvd_sample.json` — a small synthetic sample, *not* real
 >    NVD. Nothing leaves your machine.
-> 2. **`--live` (network).** The NVD witness queries the NVD API directly and sends
+> 2. **`--live` (network).** The NVD observer queries the NVD API directly and sends
 >    the device's **CPE** (the software identifier from your matcher) as NVD's
 >    `virtualMatchString` parameter. This is the only path that sends device data to
 >    a third party.
 > 3. **Imported signed catalog (offline).** `posture spine import` loads the catalog
 >    CI builds from real NVD — but today only the **Apple fix-version overlay** from
->    that catalog flows into a live `assess`. The NVD vulnerability witness has **no
+>    that catalog flows into a live `assess`. The NVD vulnerability observer has **no
 >    catalog path yet**: without `--live` it reads the bundled fixture, not the
 >    catalog. Wiring more of the catalog into local assessment is ongoing work.
 >
@@ -265,11 +265,11 @@ provenance:
   `unknown` when no evidence is supplied.
 - **`overall: incomplete (axis(es) unknown)`** — the headline. As long as any
   dimension is `UNKNOWN`, posture is *incomplete*, not "clean."
-- **`decided by <witness>`** — **provenance**: which source produced each verdict.
+- **`decided by <observer>`** — **provenance**: which source produced each verdict.
   Every verdict is stamped with its source and time and stored, which is what makes
   trust **monitorable over time**: you can later ask "which of my verdicts rest on
-  source X?" (`posture audit <witness>`) and, if that source proves unreliable, mark
-  its verdicts **distrusted after the fact** (`posture distrust <witness>`). The
+  source X?" (`posture audit <observer>`) and, if that source proves unreliable, mark
+  its verdicts **distrusted after the fact** (`posture distrust <observer>`). The
   verdicts are *marked*, not deleted — the history of what you once believed is
   preserved so you can see exactly what a now-distrusted source was claiming.
   **Retroactive distrust** means: you never have to pretend you always knew a source
@@ -298,13 +298,13 @@ new dimension can be promoted without an engine change. The six seed axes:
 
 (`posture axes` lists these with their keys and full status sets.)
 
-### Sources and witnesses
+### Sources and observers
 
-A **witness** is a source or local check that supplies evidence for an axis. posture
-is source-agnostic: every witness implements one uniform contract, so adding a
-source is one module, not an engine change. The registered witnesses:
+A **observer** is a source or local check that supplies evidence for an axis. posture
+is source-agnostic: every observer implements one uniform contract, so adding a
+source is one module, not an engine change. The registered observers:
 
-| Witness | Axis | Input it consumes | Network? |
+| Observer | Axis | Input it consumes | Network? |
 |---|---|---|---|
 | `nvd` | vulnerability | device CPE matcher; CVE/CVSS (Common Vulnerability Scoring System) data | yes (`--live`) |
 | `ubuntu_tracker` | vulnerability | Ubuntu release + packages + CVE candidates | yes (Ubuntu tracker) |
@@ -316,7 +316,7 @@ source is one module, not an engine change. The registered witnesses:
 | `kev` | threat | supplied CVE candidates checked against CISA KEV | no (local) |
 | `sigverify` | trust | supplied artifacts + supplied keys | no (local) |
 
-(`posture witnesses` lists these with their bias, weight, and policy order.)
+(`posture observers` lists these with their bias, weight, and policy order.)
 
 ### Device evidence reference
 
@@ -333,7 +333,7 @@ device YAML. Bare/relative paths in the fields below also resolve under
 | `sbom` / `sbom_path` | CycloneDX SBOM | inventory | an SBOM generator (`cyclonedx`, `syft`) |
 | `kev` / `kev_path` | CVE candidates vs CISA KEV | threat | a prior NVD pass / your OS package list |
 | `artifacts` / `artifacts_path` | artifacts + keys | trust | your signing/verification material |
-| `cve_candidates` | CVE id list | vulnerability (vendor witnesses) | a prior NVD pass / OS pkg list |
+| `cve_candidates` | CVE id list | vulnerability (vendor observers) | a prior NVD pass / OS pkg list |
 | `ubuntu_release`, `ubuntu_packages` | Ubuntu release + packages | vulnerability | you |
 | `debian_release`, `debian_packages` | Debian release + packages | vulnerability | you |
 | `apple_product`, `os_version` | Apple product + OS version | vulnerability | you |
@@ -367,17 +367,17 @@ absolute. (See
 
 **Trust policy.** Trust in sources is a **versioned, dated YAML file**, not code:
 `posture/policy/policy.yaml`. `posture policy show` prints the active policy;
-`posture policy validate <file>` checks a candidate. Each witness has a policy
-`order` — lower runs last and wins (e.g. vendor witnesses `order: 5` override NVD
+`posture policy validate <file>` checks a candidate. Each observer has a policy
+`order` — lower runs last and wins (e.g. vendor observers `order: 5` override NVD
 `order: 10` on the same CVE).
 
 ## Honesty and trust model
 
-- **`UNKNOWN` is never "clean."** A dimension with no witness is loud; a clean
+- **`UNKNOWN` is never "clean."** A dimension with no observer is loud; a clean
   result only means "the map places nothing here," not "invulnerable." Unmapped
   territory (unreported bugs, software with no CPE, firmware NVD never scored) has
   no coordinates and is reported as `UNKNOWN`.
-- **Provenance on every verdict.** Each verdict records which witness produced it
+- **Provenance on every verdict.** Each verdict records which observer produced it
   and when. Because that is stored, you can audit which verdicts rest on a given
   source and **distrust that source retroactively** — marking its verdicts, not
   deleting them — so the history of what you once believed is preserved (see
@@ -446,8 +446,8 @@ catalog tables (flaws, crosswalks, candidates, distrust marks, KEV, Apple fixes)
 Of these, only the **Apple fix-version overlay** currently flows into a live
 `posture assess` verdict (it is injected as a device input for `apple_advisory`).
 The rest is browsable library data (`posture catalog list`, `posture crosswalk show`)
-and the source pool the vulnerability witnesses draw from — but the **threat (KEV)
-witness still requires you to supply `kev`/`kev_path` in the device YAML**, and
+and the source pool the vulnerability observers draw from — but the **threat (KEV)
+observer still requires you to supply `kev`/`kev_path` in the device YAML**, and
 configuration/exposure/inventory/trust are driven entirely by evidence you supply.
 Wiring more of the catalog into local assessment is ongoing work.
 
@@ -497,7 +497,7 @@ verdicts, no device data. The committed `spine/` is data-only.
 
 A **credentialed lane** is scaffolded as a dormant second CI job for future
 gated-vendor sources (SAP/Snyk/Tenable/Qualys/Cisco/VMware, to be wired as
-credentials are obtained). It is dormant — no credentialed witnesses are wired and
+credentials are obtained). It is dormant — no credentialed observers are wired and
 no credentialed-only records exist yet. When wired, it would push to a separate
 *private* repo, never into this repo's history.
 
@@ -529,7 +529,7 @@ existing clone without re-cloning.
 ## Vendor-specific assessment
 
 NVD over-reports on backport distros (it doesn't know your distro's patch
-backports) and silently skips most Apple CVEs. Three **vendor witnesses** close
+backports) and silently skips most Apple CVEs. Three **vendor observers** close
 those gaps, each overriding NVD **on the same CVE key by policy order** (their
 `order: 5` < NVD's `10`, so they run last and win):
 
@@ -540,8 +540,8 @@ those gaps, each overriding NVD **on the same CVE key by policy order** (their
 - **`apple_advisory`** — Apple security advisories (iOS/iPadOS/macOS); builds
   `cve → fixed_in`, earliest version wins.
 
-Because witnesses run in a pure fan-out (they cannot see each other's verdicts),
-each vendor witness takes its candidate CVEs as a **device input** rather than from
+Because observers run in a pure fan-out (they cannot see each other's verdicts),
+each vendor observer takes its candidate CVEs as a **device input** rather than from
 the NVD pass:
 
 ```yaml
@@ -557,7 +557,7 @@ ubuntu_packages: ["linux-nvidia-6.17"]
 # apple host:  apple_product: iphone_os, os_version: "26.5.2"
 ```
 
-A device of the wrong distro gets an honest no-op from each vendor witness (zero
+A device of the wrong distro gets an honest no-op from each vendor observer (zero
 verdicts) — NVD's verdicts stand and the `UNKNOWN`-not-clean rule is unaffected.
 
 ## CLI reference
@@ -572,11 +572,11 @@ Every subcommand takes `--help` for full options. Common options include
 | `posture demo` | offline assessment from the bundled sample device (NVD-only) |
 | `posture assess <device.yaml> [--live]` | assess a device (`--live` pulls real NVD, sending the CPE to NVD) |
 | `posture axes` | list the axes, their keys, and statuses |
-| `posture witnesses` | registered witnesses + bias/weight/order/health |
+| `posture observers` | registered observers + bias/weight/order/health |
 | `posture policy {show\|log\|validate}` | trust policy: print, history, or check a candidate |
 | `posture health [--add-dossier …]` | source-health (operational + dossier + drift) |
-| `posture distrust <witness>` | mark a witness's verdicts distrusted (retroactive) |
-| `posture audit <witness>` | which verdicts rest on this witness? |
+| `posture distrust <observer>` | mark a observer's verdicts distrusted (retroactive) |
+| `posture audit <observer>` | which verdicts rest on this observer? |
 | `posture spine {show\|export\|import}` | the flaw catalog; `import` takes `--from` and `--no-verify` |
 | `posture catalog {show <id>\|list\|pending}` | browse the flaw catalog |
 | `posture crosswalk {add\|show}` | the identifier alias graph |
@@ -629,7 +629,7 @@ run `python -m pytest`, and open a PR with a clear description. Please also read
 [SECURITY.md](SECURITY.md) before reporting or working on security-sensitive issues.
 
 **Adding a data source** is the highest-leverage contribution. Implement the uniform
-`Witness` contract (see `posture/sources/base.py` and the existing witnesses), emit
+`Observer` contract (see `posture/sources/base.py` and the existing observers), emit
 the source's required attribution line wherever its data surfaces, and add the
 source to the trust policy with an appropriate `order`. Source-health dossiers and
 policy-version bumps are also high-value.
@@ -647,7 +647,7 @@ data and feeds of:
 - **GitHub Advisory Database** — CC-BY 4.0, OSV schema.
 - **CISA** — Known Exploited Vulnerabilities catalog.
 
-Each is a *witness* to an axis, not an oracle; the honesty rules above apply to all
+Each is a *observer* to an axis, not an oracle; the honesty rules above apply to all
 of them.
 
 ## License

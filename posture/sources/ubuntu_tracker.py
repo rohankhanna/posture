@@ -1,14 +1,14 @@
-"""Ubuntu security tracker — the first real VENDOR witness on the
+"""Ubuntu security tracker — the first real VENDOR observer on the
 vulnerability axis.
 
-Why this witness exists (the gap it closes): NVD records Ubuntu kernel CVEs
+Why this observer exists (the gap it closes): NVD records Ubuntu kernel CVEs
 against ``cpe:2.3:o:canonical:ubuntu_linux`` with NO fix boundary ("24.04
-affected, no fix recorded"), so posture's NVD witness over-reports
+affected, no fix recorded"), so posture's NVD observer over-reports
 *unknown-fix* on an Ubuntu host — a brand-new kernel ends up flagged for CVEs
 Ubuntu fixed long ago in the running flavor. Ubuntu's own security tracker
 (``ubuntu.com/security/<CVE>``) is authoritative: each per-CVE page lists, per
 release + source package, the status — ``Fixed <dpkg-version>``, ``Not
-affected``, ``Vulnerable``, ``Needs triage``, ``DNE`` … This witness fetches
+affected``, ``Vulnerable``, ``Needs triage``, ``DNE`` … This observer fetches
 the page for the device's candidate CVEs only and overrides NVD's verdict on
 the SAME CVE key:
 
@@ -19,13 +19,13 @@ the SAME CVE key:
                              (the NVD unknown-fix stands; the tracker has
                              nothing usable to say)
 
-The override is by POLICY ORDER, not code: this witness's policy ``order`` is
+The override is by POLICY ORDER, not code: this observer's policy ``order`` is
 lower than NVD's, so the engine runs it LAST and it wins on a shared CVE key.
 That is the posture port of Forebode's hardcoded vendor-override call order —
 here it is one YAML number.
 
 Contract difference from Forebode: Forebode's ``ubuntu_tracker`` fetched the
-unknown-fix CVE set PRODUCED BY the NVD pass (sequential). Posture's witnesses
+unknown-fix CVE set PRODUCED BY the NVD pass (sequential). Posture's observers
 run in a pure fan-out and cannot see each other's verdicts (the 5-step core is
 invariant), so the candidate CVE set is a DEVICE INPUT — ``device["cve_candidates"]``
 — populated in a real run from a prior NVD pass or the OS package CVE list. The
@@ -33,7 +33,7 @@ parser + status mapping are faithful to Forebode's ground truth
 (forebode/sources/ubuntu_tracker.py); only the input channel changed.
 
 Offline mode (default) reads a bundled HTML fixture per CVE so the tests run
-deterministically with no network. Live mode (``UbuntuTrackerWitness(live=True)``)
+deterministically with no network. Live mode (``UbuntuTrackerObserver(live=True)``)
 fetches ``ubuntu.com/security/<CVE>`` via curl.
 """
 
@@ -44,7 +44,7 @@ from pathlib import Path
 
 from ..axis import Axis
 from .. import debver
-from ..witness import Witness, WitnessResult, Verdict
+from ..observer import Observer, ObserverResult, Verdict
 from ._net import curl_get
 
 TRACKER_URL = "https://ubuntu.com/security/{cve}"
@@ -149,8 +149,8 @@ def _kge(installed: str, fixed: str) -> bool:
     return debver.ge(installed, fixed)
 
 
-class UbuntuTrackerWitness(Witness):
-    """The Ubuntu security-tracker vendor witness on the vulnerability axis.
+class UbuntuTrackerObserver(Observer):
+    """The Ubuntu security-tracker vendor observer on the vulnerability axis.
 
     Overrides NVD's false-alarm unknown-fix on Ubuntu kernel CVEs by fetching
     Ubuntu's authoritative per-CVE tracker page. Emits CVE-keyed Verdicts
@@ -171,16 +171,16 @@ class UbuntuTrackerWitness(Witness):
 
     # -- the uniform contract ------------------------------------------------
 
-    def assess(self, device: dict, policy) -> WitnessResult:
+    def assess(self, device: dict, policy) -> ObserverResult:
         cves = [c for c in (device.get("cve_candidates") or []) if is_cve_id(c)]
         release = str(device.get("ubuntu_release") or "").strip().lower()
         packages = [p for p in (device.get("ubuntu_packages") or []) if p]
         # No candidate set / release / packages -> honest zero verdicts. The
-        # engine keeps NVD's verdicts (this witness adds no keys to override);
+        # engine keeps NVD's verdicts (this observer adds no keys to override);
         # the loud-degradation rule is unaffected. A non-Ubuntu host simply has
-        # nothing for this witness to say.
+        # nothing for this observer to say.
         if not cves or not release or not packages:
-            return WitnessResult(
+            return ObserverResult(
                 verdicts=[], complete=True,
                 reason="no ubuntu tracker input "
                         "(device lacks cve_candidates/ubuntu_release/ubuntu_packages)",
@@ -204,7 +204,7 @@ class UbuntuTrackerWitness(Witness):
 
         out_reason = "; ".join(reasons) if reasons else (
             "fixture" if not self.live else "live")
-        return WitnessResult(verdicts=verdicts, complete=complete, reason=out_reason)
+        return ObserverResult(verdicts=verdicts, complete=complete, reason=out_reason)
 
     # -- decide one CVE -> a Verdict (or None: NVD stands) ---------------------
 

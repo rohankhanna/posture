@@ -1,4 +1,4 @@
-"""Tests for the sigverify trust witness — the first REAL witness on the
+"""Tests for the sigverify trust observer — the first REAL observer on the
 trust axis.
 
 These pin four things:
@@ -7,18 +7,18 @@ These pin four things:
      -> ``untrusted`` (HIGH; the false-safe direction — never silently skip);
   2. both supported algorithms work: ed25519 (default, PEM or raw key, hex/
      base64 signature) and rsa-pss (PEM key);
-  3. the witness is an honest no-op (zero verdicts, complete=True) when the
+  3. the observer is an honest no-op (zero verdicts, complete=True) when the
      device gives no artifacts and when an ``artifacts_path`` file is missing —
      never a crash, never 'trusted';
   4. in the engine, the trust axis becomes REAL: ``trusted`` when all
      artifacts verify, ``untrusted`` when any fails, ``unknown`` when the
-     witness no-ops, and the committed per-verdict rows attribute to witness
+     observer no-ops, and the committed per-verdict rows attribute to observer
      "sigverify".
 
 Keys are generated IN-PROCESS by the test (cryptography lib) — no fixture
 files, no network, fully hermetic + sovereign.
 
-SELF-CONTAINED: builds its own WitnessRegistry + Policy inline (no reliance on
+SELF-CONTAINED: builds its own ObserverRegistry + Policy inline (no reliance on
 the shared default registry / policy file). Mirrors test_cyclonedx_sbom.py's
 style.
 """
@@ -32,8 +32,8 @@ from cryptography.hazmat.primitives.asymmetric import ed25519, padding, rsa
 from posture.axis import Axis
 from posture.policy import Policy
 from posture import store, engine
-from posture.witness import WitnessRegistry
-from posture.sources.sigverify import SigVerifyWitness
+from posture.observer import ObserverRegistry
+from posture.sources.sigverify import SigVerifyObserver
 
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "posture" / "fixtures"
 SAMPLE_DEVICE = FIXTURE_DIR / "sample_device.yaml"
@@ -44,8 +44,8 @@ version: "2026-08-06.3"
 supersedes: "2026-08-06.2"
 dated: 2026-08-06
 rationale: |
-  test policy for the sigverify trust witness (self-contained test).
-witnesses:
+  test policy for the sigverify trust observer (self-contained test).
+observers:
   sigverify:
     axes: [trust]
     weight: high
@@ -59,9 +59,9 @@ def _policy() -> Policy:
     return Policy.from_yaml(_INLINE_POLICY_YAML)
 
 
-def _registry() -> WitnessRegistry:
-    reg = WitnessRegistry()
-    reg.register(SigVerifyWitness())
+def _registry() -> ObserverRegistry:
+    reg = ObserverRegistry()
+    reg.register(SigVerifyObserver())
     return reg
 
 
@@ -97,11 +97,11 @@ def _rsa_pair():
 
 
 # ---------------------------------------------------------------------------
-# witness (offline): trusted / untrusted / no-op
+# observer (offline): trusted / untrusted / no-op
 # ---------------------------------------------------------------------------
 
-def test_witness_valid_ed25519_signature_is_trusted():
-    w = SigVerifyWitness()
+def test_observer_valid_ed25519_signature_is_trusted():
+    w = SigVerifyObserver()
     pol = _policy()
     pub_pem, sign = _ed25519_pair()
     sig_hex = sign(b"payload").hex()
@@ -118,13 +118,13 @@ def test_witness_valid_ed25519_signature_is_trusted():
     assert v.status == "trusted"
     assert v.severity is None
     assert "ed25519" in v.detail
-    assert v.provenance.witness == "sigverify"
+    assert v.provenance.observer == "sigverify"
     assert v.provenance.raw_ref == "sigverify:pkgA"
 
 
-def test_witness_ed25519_default_algorithm_when_field_absent():
+def test_observer_ed25519_default_algorithm_when_field_absent():
     pub_pem, sign = _ed25519_pair()
-    w = SigVerifyWitness()
+    w = SigVerifyObserver()
     pol = _policy()
     device = {"id": "host", "artifacts": [
         {"id": "pkgA", "payload": "payload", "signature": sign(b"payload").hex(),
@@ -134,8 +134,8 @@ def test_witness_ed25519_default_algorithm_when_field_absent():
     assert result.verdicts[0].status == "trusted"
 
 
-def test_witness_tampered_payload_is_untrusted():
-    w = SigVerifyWitness()
+def test_observer_tampered_payload_is_untrusted():
+    w = SigVerifyObserver()
     pol = _policy()
     pub_pem, sign = _ed25519_pair()
     sig_hex = sign(b"payload").hex()
@@ -149,8 +149,8 @@ def test_witness_tampered_payload_is_untrusted():
     assert "signature invalid" in result.verdicts[0].detail
 
 
-def test_witness_wrong_key_is_untrusted():
-    w = SigVerifyWitness()
+def test_observer_wrong_key_is_untrusted():
+    w = SigVerifyObserver()
     pol = _policy()
     _pub_pem_a, sign_a = _ed25519_pair()
     pub_pem_b, _sign_b = _ed25519_pair()   # a different keypair
@@ -163,8 +163,8 @@ def test_witness_wrong_key_is_untrusted():
     assert result.verdicts[0].status == "untrusted"
 
 
-def test_witness_missing_signature_is_untrusted_false_safe():
-    w = SigVerifyWitness()
+def test_observer_missing_signature_is_untrusted_false_safe():
+    w = SigVerifyObserver()
     pol = _policy()
     pub_pem, _ = _ed25519_pair()
     device = {"id": "host", "artifacts": [
@@ -175,9 +175,9 @@ def test_witness_missing_signature_is_untrusted_false_safe():
     assert "no signature" in result.verdicts[0].detail
 
 
-def test_witness_missing_public_key_is_untrusted():
+def test_observer_missing_public_key_is_untrusted():
     pub_pem, sign = _ed25519_pair()
-    w = SigVerifyWitness()
+    w = SigVerifyObserver()
     pol = _policy()
     device = {"id": "host", "artifacts": [
         {"id": "pkgA", "payload": "payload", "signature": sign(b"payload").hex()},
@@ -188,9 +188,9 @@ def test_witness_missing_public_key_is_untrusted():
     assert "no public key" in result.verdicts[0].detail
 
 
-def test_witness_missing_payload_is_untrusted():
+def test_observer_missing_payload_is_untrusted():
     pub_pem, sign = _ed25519_pair()
-    w = SigVerifyWitness()
+    w = SigVerifyObserver()
     pol = _policy()
     device = {"id": "host", "artifacts": [
         {"id": "pkgA", "signature": sign(b"payload").hex(), "public_key": pub_pem},
@@ -201,9 +201,9 @@ def test_witness_missing_payload_is_untrusted():
     assert "no payload" in result.verdicts[0].detail
 
 
-def test_witness_unsupported_algorithm_is_untrusted():
+def test_observer_unsupported_algorithm_is_untrusted():
     pub_pem, sign = _ed25519_pair()
-    w = SigVerifyWitness()
+    w = SigVerifyObserver()
     pol = _policy()
     device = {"id": "host", "artifacts": [
         {"id": "pkgA", "payload": "payload", "signature": sign(b"payload").hex(),
@@ -214,8 +214,8 @@ def test_witness_unsupported_algorithm_is_untrusted():
     assert "unsupported algorithm" in result.verdicts[0].detail
 
 
-def test_witness_valid_rsa_pss_signature_is_trusted():
-    w = SigVerifyWitness()
+def test_observer_valid_rsa_pss_signature_is_trusted():
+    w = SigVerifyObserver()
     pol = _policy()
     pub_pem, sign = _rsa_pair()
     sig_hex = sign(b"payload").hex()
@@ -228,13 +228,13 @@ def test_witness_valid_rsa_pss_signature_is_trusted():
     assert "rsa-pss" in result.verdicts[0].detail
 
 
-def test_witness_base64_signature_decodes():
+def test_observer_base64_signature_decodes():
     """A base64 (not hex) signature is accepted — the decoder tries hex then
     base64."""
     import base64 as _b64
     pub_pem, sign = _ed25519_pair()
     sig_b64 = _b64.b64encode(sign(b"payload")).decode()
-    w = SigVerifyWitness()
+    w = SigVerifyObserver()
     pol = _policy()
     device = {"id": "host", "artifacts": [
         {"id": "pkgA", "payload": "payload", "signature": sig_b64,
@@ -244,8 +244,8 @@ def test_witness_base64_signature_decodes():
     assert result.verdicts[0].status == "trusted"
 
 
-def test_witness_multiple_artifacts_mixed_trust():
-    w = SigVerifyWitness()
+def test_observer_multiple_artifacts_mixed_trust():
+    w = SigVerifyObserver()
     pol = _policy()
     pub_pem_a, sign_a = _ed25519_pair()
     good = sign_a(b"payload").hex()
@@ -261,8 +261,8 @@ def test_witness_multiple_artifacts_mixed_trust():
     assert by_key["ugly"].status == "untrusted"
 
 
-def test_witness_no_artifacts_is_honest_noop():
-    w = SigVerifyWitness()
+def test_observer_no_artifacts_is_honest_noop():
+    w = SigVerifyObserver()
     pol = _policy()
     result = w.assess({"id": "host"}, pol)
     assert result.verdicts == []
@@ -270,8 +270,8 @@ def test_witness_no_artifacts_is_honest_noop():
     assert "no artifacts supplied" in result.reason
 
 
-def test_witness_missing_artifacts_path_is_complete_zero_not_failure():
-    w = SigVerifyWitness()
+def test_observer_missing_artifacts_path_is_complete_zero_not_failure():
+    w = SigVerifyObserver()
     pol = _policy()
     result = w.assess({"id": "host", "artifacts_path": "/no/such/artifacts.json"}, pol)
     assert result.verdicts == []
@@ -279,7 +279,7 @@ def test_witness_missing_artifacts_path_is_complete_zero_not_failure():
     assert "artifacts path not found" in result.reason
 
 
-def test_witness_artifacts_path_reads_inline_file(tmp_path):
+def test_observer_artifacts_path_reads_inline_file(tmp_path):
     pub_pem, sign = _ed25519_pair()
     sig_hex = sign(b"payload").hex()
     import json
@@ -287,16 +287,16 @@ def test_witness_artifacts_path_reads_inline_file(tmp_path):
     p.write_text(json.dumps([
         {"id": "pkgA", "payload": "payload", "signature": sig_hex, "public_key": pub_pem},
     ]))
-    w = SigVerifyWitness()
+    w = SigVerifyObserver()
     pol = _policy()
     result = w.assess({"id": "host", "artifacts_path": str(p)}, pol)
     assert result.verdicts[0].status == "trusted"
     assert result.verdicts[0].provenance.raw_ref == "sigverify:pkgA"
 
 
-def test_witness_skips_artifacts_without_id():
+def test_observer_skips_artifacts_without_id():
     pub_pem, sign = _ed25519_pair()
-    w = SigVerifyWitness()
+    w = SigVerifyObserver()
     pol = _policy()
     device = {"id": "host", "artifacts": [
         {"payload": "payload", "signature": sign(b"payload").hex(), "public_key": pub_pem},  # no id
@@ -330,14 +330,14 @@ def test_engine_trust_axis_trusted_when_all_verify_and_attributed_rows():
             store.verdicts_for_device_axis(conn, "demo-host", "trust")}
     assert sorted(rows) == ["pkgA", "pkgB"]
     for r in rows.values():
-        assert r["witness"] == "sigverify"
+        assert r["observer"] == "sigverify"
         assert r["status"] == "trusted"
         assert r["complete"] == 1
 
     tru = {a.axis: a for a in dp.axes}["trust"]
     assert tru.status == "trusted"
-    assert tru.deciding_witness == "sigverify"
-    assert "sigverify" in dp.used_witnesses
+    assert tru.deciding_observer == "sigverify"
+    assert "sigverify" in dp.used_observers
 
     ap = store.axis_posture(conn, "demo-host", "trust")
     assert ap["status"] == "trusted"
@@ -373,7 +373,7 @@ def test_engine_trust_axis_unknown_without_artifacts():
     assert tru.verdicts == []
     assert tru.gap is not None
     assert store.verdicts_for_device_axis(conn, "demo-host", "trust") == []
-    assert "sigverify" not in dp.used_witnesses
+    assert "sigverify" not in dp.used_observers
 
 
 def test_engine_default_demo_device_trust_stays_unknown():

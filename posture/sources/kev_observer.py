@@ -1,7 +1,7 @@
-"""CISA KEV overlay witness — the first REAL witness on the threat axis.
+"""CISA KEV overlay observer — the first REAL observer on the threat axis.
 
 The threat axis answers "what is being
-exploited in the wild". This witness overlays a device's own CVE candidates
+exploited in the wild". This observer overlays a device's own CVE candidates
 against the CISA Known Exploited Vulnerabilities (KEV) catalog and emits one
 threat-axis ``Verdict`` per CVE, keyed on the CVE id (key_kind "cve"), with
 status ``targeted`` / ``clear``:
@@ -20,7 +20,7 @@ share the "kev" name but live in different namespaces: that module populates
 the signed spine's KEV map in CI; THIS module consumes a KEV set as device
 input and emits territory verdicts locally. A client imports the spine's
 ``kev.jsonl`` into its ``store.kev`` and supplies the KEV cve_id set to this
-witness via ``device["kev"]`` (inline) or ``device["kev_path"]`` (local JSON
+observer via ``device["kev"]`` (inline) or ``device["kev_path"]`` (local JSON
 file). ``assess`` gets no DB connection, so it consumes only device input —
 no peeking at the local ``store.kev`` table.
 
@@ -49,14 +49,14 @@ import json
 from pathlib import Path
 
 from ..axis import Axis
-from ..witness import Witness, WitnessResult, Verdict
+from ..observer import Observer, ObserverResult, Verdict
 
 # Bundled offline fixture dir. Tests point device["kev_path"] here (or rely on
 # the fixture-dir fallback in _read_file) for deterministic, network-free runs.
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "kev"
 
 
-class KevThreatWitness(Witness):
+class KevThreatObserver(Observer):
     """CISA KEV overlay on the threat axis.
 
     Reads the device's ``cve_candidates`` + a KEV cve_id set (inline list or
@@ -70,13 +70,13 @@ class KevThreatWitness(Witness):
     id = "kev"
     axes = (Axis.THREAT,)
     bias = "false-safe"   # a missing KEV overlay is no-op, never all-clear
-    # Declares the identifier kind this witness emits, so the vocab monitor
+    # Declares the identifier kind this observer emits, so the vocab monitor
     # records CVE keys under a known kind ("cve") cleanly instead of surfacing
     # them as an unknown scheme.
     key_kind = "cve"
 
     def __init__(self, fixture_dir: Path | str | None = None) -> None:
-        # `Witness` is a dataclass; pass the identity fields (incl. key_kind)
+        # `Observer` is a dataclass; pass the identity fields (incl. key_kind)
         # up so they are stamped on the INSTANCE, not just the class — the
         # dataclass-generated __init__ would otherwise shadow the class-level
         # key_kind with None.
@@ -87,12 +87,12 @@ class KevThreatWitness(Witness):
 
     # -- the uniform contract ------------------------------------------------
 
-    def assess(self, device: dict, policy) -> WitnessResult:
+    def assess(self, device: dict, policy) -> ObserverResult:
         candidates = device.get("cve_candidates")
         if not candidates:
             # No CVEs to score -> honest no-op. The engine keeps the threat
             # axis UNKNOWN (loud), never silently 'clear'.
-            return WitnessResult(
+            return ObserverResult(
                 verdicts=[], complete=True, reason="no cve candidates supplied",
             )
 
@@ -104,13 +104,13 @@ class KevThreatWitness(Witness):
             if path:
                 kev = self._read_file(path)
                 if kev is None:
-                    return WitnessResult(
+                    return ObserverResult(
                         verdicts=[], complete=True, reason="kev path not found",
                     )
             else:
                 # Candidates present but NO overlay at all -> false-safe no-op.
                 # Do not claim `clear` for CVEs we could not check against KEV.
-                return WitnessResult(
+                return ObserverResult(
                     verdicts=[], complete=True, reason="no KEV overlay supplied",
                 )
 
@@ -139,7 +139,7 @@ class KevThreatWitness(Witness):
                     provenance=self._prov(complete=True, raw_ref=f"kev:{cve}"),
                 ))
 
-        return WitnessResult(
+        return ObserverResult(
             verdicts=verdicts, complete=True,
             reason=f"kev overlay: {len(verdicts)} cve(s) scored",
         )

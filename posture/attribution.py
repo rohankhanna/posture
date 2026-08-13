@@ -11,7 +11,7 @@ from __future__ import annotations
 # The NVD ToU-required attribution string (Forebode: forebode/corpus.py:NVD_ATTRIBUTION).
 NVD_ATTRIBUTION = "This product uses the NVD API but is not endorsed or certified by the NVD."
 
-# registry: witness id -> required attribution line (empty string = none required)
+# registry: observer id -> required attribution line (empty string = none required)
 ATTRIBUTIONS: dict[str, str] = {
     "nvd": NVD_ATTRIBUTION,
     # mitre_cve: MITRE's CVE program is US-gov-funded; no formal ToU attribution
@@ -31,16 +31,16 @@ ATTRIBUTIONS: dict[str, str] = {
 }
 
 
-def attribution_for(witness_id: str) -> str:
-    """Return the required attribution line for a witness, or '' if none."""
-    return ATTRIBUTIONS.get(witness_id, "")
+def attribution_for(observer_id: str) -> str:
+    """Return the required attribution line for a observer, or '' if none."""
+    return ATTRIBUTIONS.get(observer_id, "")
 
 
-def all_attributions(used_witnesses: list[str]) -> list[str]:
-    """Distinct, order-preserving attribution lines for the witnesses actually
+def all_attributions(used_observers: list[str]) -> list[str]:
+    """Distinct, order-preserving attribution lines for the observers actually
     used in a run (so reports only emit attributions for sources they touched)."""
     seen: list[str] = []
-    for w in used_witnesses:
+    for w in used_observers:
         line = attribution_for(w)
         if line and line not in seen:
             seen.append(line)

@@ -1,4 +1,4 @@
-"""The CVE spine witness — NVD, the one real witness today.
+"""The CVE spine observer — NVD, the one real observer today.
 
 Faithful to Forebode's hard-won NVD rules (forebode/sources/nvd.py ground
 truth):
@@ -15,7 +15,7 @@ truth):
 
 Offline mode (default) reads a bundled NVD-shaped fixture so `posture demo`
 and the tests run deterministically with no network and no key. Live mode
-(`NvdCveWitness(live=True)`) does the real per-CPE pull. The engine treats
+(`NvdCveObserver(live=True)`) does the real per-CPE pull. The engine treats
 both identically — the completeness gate, provenance, and health sampling
 don't care whether the fetch was a fixture or a CDN.
 """
@@ -31,7 +31,7 @@ from typing import Any
 from packaging.version import InvalidVersion, Version
 
 from ..axis import Axis
-from ..witness import Witness, WitnessResult, Verdict, Provenance
+from ..observer import Observer, ObserverResult, Verdict, Provenance
 from ..attribution import NVD_ATTRIBUTION
 from ._net import curl_get
 
@@ -209,7 +209,7 @@ def decide_cve_for_device(cve: dict, device_ver: str, cpe: str) -> tuple[str | N
     'unpatched' | 'patched' | 'not_affected', or None when the CVE doesn't
     touch this device's CPE (no comparable range -> skip, no verdict).
 
-    Shared by :meth:`NvdCveWitness._interpret` (the per-CPE pull path) and the
+    Shared by :meth:`NvdCveObserver._interpret` (the per-CPE pull path) and the
     incremental refresh (per-CVE enrichment -> re-decide). Keeping the decision
     in one place means a skeleton promoted by the refresh and a CVE pulled by
     ``assess`` are decided by the exact same logic.
@@ -275,7 +275,7 @@ def nvd_query_cve(cve_id: str, throttle: bool = True) -> tuple[dict | None, bool
     return vulns[0].get("cve", vulns[0]), True, f"{cve_id}: enriched"
 
 
-class NvdCveWitness(Witness):
+class NvdCveObserver(Observer):
     """The CVE spine. Queries NVD per device CPE and emits vulnerability
     Verdicts (unpatched/patched/not_affected) with CVSS + fixed_in."""
 
@@ -292,11 +292,11 @@ class NvdCveWitness(Witness):
 
     # -- the uniform contract ------------------------------------------------
 
-    def assess(self, device: dict, policy) -> WitnessResult:
+    def assess(self, device: dict, policy) -> ObserverResult:
         matchers = [m for m in device.get("matchers", [])
                     if m.get("type") == "nvd_cpe" and m.get("cpe")]
         if not matchers:
-            return WitnessResult(verdicts=[], complete=True,
+            return ObserverResult(verdicts=[], complete=True,
                                   reason="device has no nvd_cpe matchers")
 
         verdicts: list[Verdict] = []
@@ -314,7 +314,7 @@ class NvdCveWitness(Witness):
                 if v is not None:
                     verdicts.append(v)
         out_reason = "; ".join(reasons) if reasons else ("fixture" if not self.live else "live")
-        return WitnessResult(verdicts=verdicts, complete=complete, reason=out_reason)
+        return ObserverResult(verdicts=verdicts, complete=complete, reason=out_reason)
 
     # -- fetch (live curl or offline fixture) --------------------------------
 
@@ -408,7 +408,7 @@ class NvdCveWitness(Witness):
             severity=severity,
             fixed_in=fixed_in,
             provenance=Provenance(
-                witness=self.id, policy_version="", fetched_at="",
+                observer=self.id, policy_version="", fetched_at="",
                 complete=True, raw_ref=ref,
             ),
         )

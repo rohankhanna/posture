@@ -12,10 +12,10 @@ __version__ = "0.1.0"
 
 # Re-export the core contract for convenience.
 from .axis import Axis, AXES, AXIS_META  # noqa: F401
-from .witness import (  # noqa: F401
+from .observer import (  # noqa: F401
     FetchResult,
     Verdict,
     Provenance,
-    WitnessResult,
-    Witness,
+    ObserverResult,
+    Observer,
 )

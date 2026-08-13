@@ -1,12 +1,12 @@
-"""Apple security advisories — the Apple vendor witness on the vulnerability
+"""Apple security advisories — the Apple vendor observer on the vulnerability
 axis.
 
-Why this witness exists (the gap it closes): NVD's iOS/iPadOS/macOS coverage is
+Why this observer exists (the gap it closes): NVD's iOS/iPadOS/macOS coverage is
 thin. It associates CVEs with ``cpe:2.3:o:apple:iphone_os`` but frequently records
-NO version range, so posture's NVD witness *silently skips* most Apple CVEs (the
+NO version range, so posture's NVD observer *silently skips* most Apple CVEs (the
 device reads a falsely clean "0 unpatched"). Apple's own security advisories are
 authoritative — each advisory lists the CVE-IDs fixed *in a given iOS/macOS
-version*. This witness fetches Apple's security-releases index
+version*. This observer fetches Apple's security-releases index
 (https://support.apple.com/en-us/100100), parses the per-product advisory rows
 + their fix versions, fetches each advisory page, extracts the CVE-IDs, and
 builds a ``cve -> fixed_in`` map (the EARLIEST version wins — advisories are
@@ -19,14 +19,14 @@ compares the device's version against Apple's fixed version:
     hasn't installed — the catch for a device behind the latest).
   CVE not in Apple's feed         -> NO verdict (the NVD verdict stands).
 
-The override is by POLICY ORDER, not code: this witness's policy ``order`` is
+The override is by POLICY ORDER, not code: this observer's policy ``order`` is
 lower than NVD's, so the engine runs it LAST and it wins on a shared CVE key.
 That is the posture port of Forebode's hardcoded vendor-override call order —
 here it is one YAML number.
 
 Contract difference from Forebode: Forebode's ``apple_advisory`` fetched the
 whole catalog into a ``apple_fixes`` table and decided from it (sequential, db
-backed). Posture's witnesses run in a pure fan-out and cannot share state across
+backed). Posture's observers run in a pure fan-out and cannot share state across
 runs, so the candidate CVE set + the device's product/version are DEVICE INPUTS
 (``device["cve_candidates"]``, ``device["apple_product"]``, version via
 ``os_version``/``patch_level``). The fix map has TWO sources, tried in order:
@@ -42,15 +42,15 @@ runs, so the candidate CVE set + the device's product/version are DEVICE INPUTS
      release advisory page are replayed per assess() (offline fixtures or live
      curl + optional Wayback history). The parser + decision logic are faithful
      to Forebode's ground truth (forebode/sources/apple_advisory.py); only the
-     input channel + the absence of a persistent in-witness fixes table changed.
+     input channel + the absence of a persistent in-observer fixes table changed.
 
-The witness contract forbids DB access in ``assess()`` (no ``conn``), so the
+The observer contract forbids DB access in ``assess()`` (no ``conn``), so the
 overlay is a device INPUT, not a table read — the territory owns loading it.
 
 Offline mode (default) reads bundled HTML fixtures (an index page + one or more
 advisory pages) under ``posture/fixtures/apple_advisory/`` so the tests run
 deterministically with no network. Live mode
-(``AppleAdvisoryWitness(live=True)``) fetches the real index + each advisory via
+(``AppleAdvisoryObserver(live=True)``) fetches the real index + each advisory via
 curl (HTML -> body straight from ``curl_get``'s third return value; its JSON
 parser yields ``None`` for non-JSON bodies).
 
@@ -63,7 +63,7 @@ updates" index (HT1222 + successor HT201222). They are ported here as pure
 functions over ``curl_get`` (``discover_urls_from_refs`` / ``discover_historical_urls``
 / ``backfill_fix_map``) and merged into the in-memory ``cve -> fixed_in`` map with
 earliest-fix-version-wins, rather than into a persistent ``apple_fixes`` table
-(posture witnesses replay per-assess and share no DB across runs; a future CI
+(posture observers replay per-assess and share no DB across runs; a future CI
 ingestion tick + ``apple_fixes`` catalog overlay is a separately-id'd follow-up).
 They are OFF by default: pass ``history=True`` (with ``live=True``) to augment the
 index map with the historical + NVD-ref advisories. ``history=False`` (the
@@ -83,7 +83,7 @@ from urllib.parse import urlparse
 from packaging.version import InvalidVersion, Version
 
 from ..axis import Axis
-from ..witness import Witness, WitnessResult, Verdict
+from ..observer import Observer, ObserverResult, Verdict
 from ._net import curl_get
 
 INDEX_URL = "https://support.apple.com/en-us/100100"
@@ -294,7 +294,7 @@ def build_fix_map(index_html: str, fetch_advisory_html,
 # See the block by ``_WAYBACK_CDX`` above for the rationale. These are pure
 # functions over ``curl_get`` (live) or supplied callbacks (offline/tests); they
 # never touch the catalog and never mutate shared state, so they compose with
-# the per-assess replay the witness already does.
+# the per-assess replay the observer already does.
 
 def advisory_id_of(url: str) -> str:
     """The trailing path segment of an Apple advisory URL, upper-cased to a
@@ -397,7 +397,7 @@ def discover_urls_from_refs(refs) -> list[str]:
     CVE). Each referenced advisory lists every CVE fixed in that version, so
     fetching them backfills the pre-index era. Paths are normalized to the
     ``https://support.apple.com`` canonical form. Donor's ``discover_urls``,
-    ref-based rather than device/db-based so a posture witness can take the
+    ref-based rather than device/db-based so a posture observer can take the
     refs as device input (``device["apple_ref_urls"]``)."""
     urls: set[str] = set()
     for u in refs or []:
@@ -433,7 +433,7 @@ def backfill_fix_map(urls, fetch_html, product: str = "iphone_os",
     ``advisory_id`` column always names the advisory that states the recorded
     (earliest) fix version. Existing callers omit it and see no behavior change.
 
-    Faithful to the donor's ``backfill`` but map-based (posture witnesses replay
+    Faithful to the donor's ``backfill`` but map-based (posture observers replay
     per-assess and share no DB across runs), returning ``(merged_map, stats)``
     rather than replacing DB rows.
     """
@@ -480,8 +480,8 @@ def backfill_fix_map(urls, fetch_html, product: str = "iphone_os",
     return merged, stats
 
 
-class AppleAdvisoryWitness(Witness):
-    """The Apple security-advisory vendor witness on the vulnerability axis.
+class AppleAdvisoryObserver(Observer):
+    """The Apple security-advisory vendor observer on the vulnerability axis.
 
     Overrides NVD's false-clean skip on Apple CVEs (NVD records the CVE against
     ``cpe:2.3:o:apple:iphone_os`` with no version range -> NVD silently skips it)
@@ -505,16 +505,16 @@ class AppleAdvisoryWitness(Witness):
 
     # -- the uniform contract ------------------------------------------------
 
-    def assess(self, device: dict, policy) -> WitnessResult:
+    def assess(self, device: dict, policy) -> ObserverResult:
         cves = [c for c in (device.get("cve_candidates") or []) if is_cve_id(c)]
         product = str(device.get("apple_product") or "").strip().lower()
         version = str(device.get("os_version") or device.get("patch_level") or "").strip()
         # No candidate set / product / version -> honest zero verdicts. The
-        # engine keeps NVD's verdicts (this witness adds no keys to override);
+        # engine keeps NVD's verdicts (this observer adds no keys to override);
         # the loud-degradation rule is unaffected. A non-Apple host simply has
-        # nothing for this witness to say.
+        # nothing for this observer to say.
         if not cves or not product or not version or product not in PRODUCTS:
-            return WitnessResult(
+            return ObserverResult(
                 verdicts=[], complete=True,
                 reason="no apple advisory input "
                         "(device lacks cve_candidates/apple_product/os_version "
@@ -543,7 +543,7 @@ class AppleAdvisoryWitness(Witness):
             # verdicts (NVD stands). Never a fetch failure that breaks the
             # engine (no-wipe rule). Mirrors the donor's `return []` on fail.
             if not ok or not index_html:
-                return WitnessResult(
+                return ObserverResult(
                     verdicts=[], complete=True,
                     reason="apple advisory index fetch failed/absent (NVD stands)",
                 )
@@ -570,7 +570,7 @@ class AppleAdvisoryWitness(Witness):
             if v is not None:
                 verdicts.append(v)
 
-        return WitnessResult(
+        return ObserverResult(
             verdicts=verdicts, complete=True, reason=reason,
         )
 

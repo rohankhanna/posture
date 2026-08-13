@@ -1,14 +1,14 @@
-"""Debian security tracker — a real VENDOR witness on the vulnerability axis.
+"""Debian security tracker — a real VENDOR observer on the vulnerability axis.
 
-Why this witness exists (the gap it closes): NVD records upstream
+Why this observer exists (the gap it closes): NVD records upstream
 ``linux_kernel`` CVEs against ``cpe:2.3:o:linux:linux_kernel`` with NO fix
-boundary ("affected, no fix recorded"), so posture's NVD witness over-reports
+boundary ("affected, no fix recorded"), so posture's NVD observer over-reports
 *unknown-fix* on a Debian-based host — a fully-updated Raspberry Pi OS (Debian
 13 "trixie") ends up flagged for CVEs Debian fixed long ago. Debian's own
 security tracker (``security-tracker.debian.org``) is authoritative: its bulk
 ``/tracker/data/json`` lists, per source package + per release, each CVE's
 status — ``resolved`` (with a fixed dpkg version, or ``"0"`` = not affected),
-``open`` (vulnerable), ``undetermined`` (needs triage). This witness downloads
+``open`` (vulnerable), ``undetermined`` (needs triage). This observer downloads
 that one bulk document, filters it to the device's candidate CVEs, and
 overrides NVD's verdict on the SAME CVE key:
 
@@ -17,14 +17,14 @@ overrides NVD's verdict on the SAME CVE key:
   ``open``                                    -> unpatched (Debian confirms open)
   ``undetermined`` / release absent / CVE absent -> NO verdict (NVD stands)
 
-The override is by POLICY ORDER, not code: this witness's policy ``order`` is
+The override is by POLICY ORDER, not code: this observer's policy ``order`` is
 lower than NVD's, so the engine runs it LAST and it wins on a shared CVE key.
 That is the posture port of Forebode's hardcoded vendor-override call order —
 here it is one YAML number.
 
 Contract difference from Forebode: Forebode's ``debian_tracker`` fetched the
 bulk JSON once per refresh, cached per (cve, release, package) in a DB table,
-and the override read it offline (sequential). Posture's witnesses run in a
+and the override read it offline (sequential). Posture's observers run in a
 pure fan-out and cannot see each other's verdicts (the 5-step core is
 invariant), so the candidate CVE set is a DEVICE INPUT —
 ``device["cve_candidates"]`` — populated in a real run from a prior NVD pass or
@@ -51,7 +51,7 @@ Device inputs (read from the device dict, follow the ubuntu_tracker convention):
 Offline mode (default) reads a bundled JSON fixture
 (``posture/fixtures/debian_tracker/data.json``) shaped exactly like the bulk
 tracker endpoint, so the tests run deterministically with no network. Live mode
-(``DebianTrackerWitness(live=True)``) fetches the bulk JSON via curl; the
+(``DebianTrackerObserver(live=True)``) fetches the bulk JSON via curl; the
 tracker returns JSON, so curl_get's parsed slot carries the data. A failed or
 absent fetch is a complete, zero-verdict no-op (NVD stands) — NEVER a fetch
 failure that breaks the engine (no-wipe rule), mirroring the donor's "a failed
@@ -65,7 +65,7 @@ from pathlib import Path
 from typing import Any
 
 from ..axis import Axis
-from ..witness import Witness, WitnessResult, Verdict
+from ..observer import Observer, ObserverResult, Verdict
 from ._net import curl_get
 
 TRACKER_URL = "https://security-tracker.debian.org/tracker/data/json"
@@ -110,8 +110,8 @@ def bulk_extract(
     return out
 
 
-class DebianTrackerWitness(Witness):
-    """The Debian security-tracker vendor witness on the vulnerability axis.
+class DebianTrackerObserver(Observer):
+    """The Debian security-tracker vendor observer on the vulnerability axis.
 
     Overrides NVD's false-alarm unknown-fix on Debian-based hosts by fetching
     Debian's authoritative bulk tracker JSON. Emits CVE-keyed Verdicts
@@ -136,16 +136,16 @@ class DebianTrackerWitness(Witness):
 
     # -- the uniform contract ------------------------------------------------
 
-    def assess(self, device: dict, policy) -> WitnessResult:
+    def assess(self, device: dict, policy) -> ObserverResult:
         cves = [c for c in (device.get("cve_candidates") or []) if is_cve_id(c)]
         release = str(device.get("debian_release") or "").strip().lower()
         packages = [p for p in (device.get("debian_packages") or []) if p]
         # No candidate set / release / packages -> honest zero verdicts. The
-        # engine keeps NVD's verdicts (this witness adds no keys to override);
+        # engine keeps NVD's verdicts (this observer adds no keys to override);
         # the loud-degradation rule is unaffected. A non-Debian host simply has
-        # nothing for this witness to say.
+        # nothing for this observer to say.
         if not cves or not release or not packages:
-            return WitnessResult(
+            return ObserverResult(
                 verdicts=[], complete=True,
                 reason="no debian tracker input "
                         "(device lacks cve_candidates/debian_release/debian_packages)",
@@ -155,7 +155,7 @@ class DebianTrackerWitness(Witness):
         if data is None:
             # Failed / absent bulk fetch -> complete + zero verdicts (NVD
             # stands). NEVER a fetch failure that breaks the engine (no-wipe).
-            return WitnessResult(verdicts=[], complete=True, reason=reason)
+            return ObserverResult(verdicts=[], complete=True, reason=reason)
 
         verdicts: list[Verdict] = []
         for cid in cves:
@@ -164,7 +164,7 @@ class DebianTrackerWitness(Witness):
                 verdicts.append(v)
 
         out_reason = reason or ("live" if self.live else "fixture")
-        return WitnessResult(verdicts=verdicts, complete=True, reason=out_reason)
+        return ObserverResult(verdicts=verdicts, complete=True, reason=out_reason)
 
     # -- decide one CVE -> a Verdict (or None: NVD stands) ---------------------
 

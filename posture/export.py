@@ -274,12 +274,12 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
         )
         stats["candidates"] += 1
 
-    # --- distrust_marks: INSERT OR REPLACE (witness PK) ---
+    # --- distrust_marks: INSERT OR REPLACE (observer PK) ---
     for row in _read_jsonl(root / "distrust_marks.jsonl"):
         conn.execute(
-            "INSERT OR REPLACE INTO distrust_marks (witness, marked_at, reason) "
+            "INSERT OR REPLACE INTO distrust_marks (observer, marked_at, reason) "
             "VALUES (?,?,?)",
-            (row["witness"], row.get("marked_at"), row.get("reason")),
+            (row["observer"], row.get("marked_at"), row.get("reason")),
         )
         stats["distrust_marks"] += 1
 

@@ -13,7 +13,7 @@ Two layers of indirection make that possible:
     (The spine itself is NOT a role anymore: the alias↔alias graph has no
     single rebindable join key — cve is one peer among many. See spine.py.)
   - **KINDS** are what a term *is* (identifier_scheme, coordinate_system, axis,
-    ...). A witness declares the kind of the keys it emits; a kind not in the
+    ...). A observer declares the kind of the keys it emits; a kind not in the
     glossary is an emergent signal — the vocab monitor surfaces it as a
     candidate (auto), the human decides to trust it (never auto).
 
@@ -55,7 +55,7 @@ ROLES: set[str] = {
     "posture_axis",             # the six axes themselves are terms
 }
 
-# What a term IS (not the job it fills). A witness declares the kind of its keys;
+# What a term IS (not the job it fills). A observer declares the kind of its keys;
 # a kind outside the glossary's known set is an emergent new-term signal.
 KINDS: set[str] = {
     "identifier_scheme",   # a naming scheme for a real thing (cve, ghsa, usn, ...)
@@ -235,7 +235,7 @@ def all(conn: sqlite3.Connection, status: str | None = None) -> list[Term]:
 
 
 def known_kinds(conn: sqlite3.Connection) -> set[str]:
-    """The identifier/format kinds the system currently understands. A witness
+    """The identifier/format kinds the system currently understands. A observer
     key of a kind outside this set is an emergent new-term signal. Axes (kind
     'axis') are excluded — they are dimensions, not identifiers."""
     return {t.kind for t in all(conn, status="known") if t.kind != "axis"}
