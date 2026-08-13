@@ -43,3 +43,6 @@ dist/
 # feedback-hub integration
 feedback
 learnings
+
+# --- Local workflow scratch (never committed) ---
+logs/

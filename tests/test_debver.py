@@ -59,7 +59,7 @@ def test_equal_versions_compare_zero():
 # --- the motivating real-world dpkg versions --------------------------------
 
 def test_real_dpkg_kernel_version_compares_against_simple_fix():
-    # the version from the retcon node: packaging.version rejects this whole
+    # the fixture version: packaging.version rejects this whole
     # string; dpkg compares it cleanly.
     installed = "6.17.9-6.17.0+signed"
     assert debver.ge(installed, "6.17.9")          # installed has the fix

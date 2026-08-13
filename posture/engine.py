@@ -18,7 +18,7 @@ The differences that make it resilient:
   - LOUD DEGRADATION: an axis with no witness, or no verdicts, is UNKNOWN and
     loud — NEVER silently "clean". An incomplete fetch degrades loudly AND
     preserves stored verdicts (no-wipe). "0 unpatched" never reads as
-    "flawless" (AGENTS.md standing rule).
+    "flawless" (project rule).
   - PROVENANCE is stamped on every verdict so trust can be unwound
     retroactively; health samples are recorded for the witness monitor.
 

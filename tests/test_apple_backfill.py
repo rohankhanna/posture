@@ -1,6 +1,6 @@
-"""Tests for the Apple-advisory historical-recovery path (retcon
-node_f084233e7c09) — the port of the donor's ``backfill()`` / ``discover_urls()``
-/ ``discover_historical_urls()`` mechanisms that recover pre-index CVEs (those
+"""Tests for the Apple-advisory historical-recovery path — the port of the
+donor's ``backfill()`` / ``discover_urls()`` / ``discover_historical_urls()``
+mechanisms that recover pre-index CVEs (those
 aged off Apple's rolling security-releases index 100100) from two sources:
 
   1. NVD reference URLs (``discover_urls_from_refs``) — a CVE's NVD refs link

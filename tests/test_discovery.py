@@ -1,7 +1,7 @@
 """Tests for the discovery horizon-scan — the delta + idempotent upsert + the
-POSTURE_LLM-gated live seam.
+opt-in live --fetch path.
 
-These pin five things:
+These pin four things:
   1. ``horizon_scan(conn)`` is an offline DELTA — it surfaces only aggregators
      whose url is not already in the candidates table; a human's
      adopted/rejected decision stops an aggregator resurfacing; conn=None
@@ -12,15 +12,11 @@ These pin five things:
      discover` daily without spamming the exported spine.
   3. the v3 migration dedups a pre-v3 candidates table that accumulated
      duplicate urls and raises a unique index, then bumps user_version to 3.
-  4. the LLM horizon seam is OFF by default (``is_enabled()`` False without
-     POSTURE_LLM; ``parse_horizon`` returns None) — sovereignty-safe: no
-     provider is chosen, the system is complete model-free.
-  5. the opt-in live ``--fetch`` path surfaces the aggregator itself when no
-     LLM is wired, and surfaces LLM-drafted candidates when one is (mocked — no
-     real network, no real LLM).
+  4. the opt-in live ``--fetch`` path starts from the offline delta, fetching
+     only the not-yet-recorded aggregators (mocked fetch — no real network).
 
-SELF-CONTAINED: tmp-path sqlite DBs, monkeypatched fetch (never real network),
-monkeypatched env/parse for the seam. Mirrors the repo's hermetic-test norm.
+SELF-CONTAINED: tmp-path sqlite DBs, monkeypatched fetch (never real network).
+Mirrors the repo's hermetic-test norm.
 """
 from __future__ import annotations
 import sqlite3
@@ -30,7 +26,6 @@ import pytest
 
 from posture import store, discovery
 from posture.discovery import Candidate, horizon_scan, horizon_scan_live
-from posture import llm_horizon
 
 
 # ---------------------------------------------------------------------------
@@ -145,67 +140,12 @@ def test_v3_migration_dedups_duplicate_candidate_urls_and_raises_unique_index(tm
 
 
 # ---------------------------------------------------------------------------
-# LLM seam: off by default, sovereignty-safe
+# live --fetch path: starts from the offline delta, fetches only new urls
 # ---------------------------------------------------------------------------
-
-def test_llm_horizon_disabled_by_default(monkeypatch):
-    monkeypatch.delenv("POSTURE_LLM", raising=False)
-    assert llm_horizon.is_enabled() is False
-    assert llm_horizon.parse_horizon("any html", Candidate("n", "u", "json", "threat", "")) is None
-
-
-def test_llm_horizon_enabled_when_posture_llm_set_but_still_stub(monkeypatch):
-    monkeypatch.setenv("POSTURE_LLM", "test")
-    assert llm_horizon.is_enabled() is True
-    # the seam is wired-on but the default impl is still a no-op stub (no
-    # provider chosen) -> returns None until an operator plugs a real parser
-    assert llm_horizon.parse_horizon("any html", Candidate("n", "u", "json", "threat", "")) is None
-
-
-# ---------------------------------------------------------------------------
-# live --fetch path: aggregator surfaced when no LLM; LLM drafts when wired
-# ---------------------------------------------------------------------------
-
-def test_horizon_scan_live_without_llm_surfaces_aggregator_itself(monkeypatch):
-    """No POSTURE_LLM -> each new aggregator is fetched and surfaced as a
-    single review candidate (no LLM parsing). fetch is monkeypatched -> no
-    network."""
-    monkeypatch.delenv("POSTURE_LLM", raising=False)
-    monkeypatch.setattr(discovery, "fetch_aggregator", lambda url: "<html>fake</html>")
-    conn = store.connect(":memory:")
-    cands = horizon_scan_live(conn)
-    assert {c.url for c in cands} == {a["url"] for a in discovery.AGGREGATORS}
-    assert all(c.status == "review" for c in cands)
-
-
-def test_horizon_scan_live_with_wired_llm_surfaces_drafts(monkeypatch):
-    """When an LLM is wired, its drafted candidates surface instead of the raw
-    aggregator (still status='review' — the LLM drafts, a human decides)."""
-    monkeypatch.setenv("POSTURE_LLM", "test")
-    monkeypatch.setattr(discovery, "fetch_aggregator", lambda url: "<html>fake</html>")
-
-    drafted = [Candidate("NEW-FEED", "https://new", "osv", "vulnerability",
-                        "LLM drafted this from the page")]
-
-    def fake_parse(body, agg):
-        return drafted if agg.url == discovery.AGGREGATORS[0]["url"] else None
-
-    monkeypatch.setattr(llm_horizon, "parse_horizon", fake_parse)
-    conn = store.connect(":memory:")
-    cands = horizon_scan_live(conn)
-    by_url = {c.url for c in cands}
-    assert "https://new" in by_url                       # the LLM draft surfaced
-    # the first aggregator is NOT surfaced as itself (the LLM replaced it),
-    # but the rest still surface as themselves (parse returned None for them)
-    first_url = discovery.AGGREGATORS[0]["url"]
-    assert first_url not in by_url
-    assert all(c.status == "review" for c in cands)
-
 
 def test_horizon_scan_live_starts_from_the_offline_delta(monkeypatch):
     """A live scan does not re-fetch already-recorded aggregators — it starts
     from the offline delta, so fetch_aggregator is called only for new urls."""
-    monkeypatch.delenv("POSTURE_LLM", raising=False)
     fetched: list[str] = []
     monkeypatch.setattr(discovery, "fetch_aggregator",
                         lambda url: fetched.append(url) or "<html/>")

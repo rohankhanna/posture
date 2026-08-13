@@ -12,7 +12,7 @@
   posture discover
 
 The report footer emits NVD attribution whenever the NVD witness was actually
-used (AGENTS.md standing rule: the map is foreign-authored; say so).
+used (project rule: the map is foreign-authored; say so).
 """
 
 from __future__ import annotations
@@ -810,9 +810,8 @@ def build_parser() -> argparse.ArgumentParser:
     db_arg(sp)
     sp.add_argument("--fetch", action="store_true",
                     help="live: fetch each new aggregator page (opt-in; default is an "
-                         "offline delta vs already-recorded candidates). An LLM, if wired "
-                         "via POSTURE_LLM, only drafts candidates -- never decides trust. "
-                         "The daily cadence runs in CI (spine.yml), not locally.")
+                         "offline delta vs already-recorded candidates). The daily "
+                         "cadence runs in CI (spine.yml), not locally.")
     sp.set_defaults(func=_cmd_discover)
 
     # -- the growing vocabulary ------------------------------------------------

@@ -1,7 +1,6 @@
 """Local listening-surface reader — the first REAL witness on the exposure axis.
 
-Advances retcon node a96c3f0fd49c: wire real witnesses for the remaining
-stubbed axes (exposure/threat/trust). The exposure axis answers "what is
+The exposure axis answers "what is
 network-reachable on this device". A real host carries a *socket capture*
 (``device["exposure"]`` — a list of ``{proto, port, bind, service?}`` dicts,
 e.g. from ``ss -tulpn``) that says which sockets are listening and where they

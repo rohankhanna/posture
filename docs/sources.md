@@ -2,12 +2,11 @@
 
 The exact constraints the posture-spine CI ingestion and the signed git data
 repo must be designed against. This is reference data gathered 2026-08-05
-(retrieval date for every fact below); it is the canonical record — the
-retcon graph carries the *design decisions* that depend on these numbers.
+(retrieval date for every fact below); it is the canonical record of the source
+constraints, and carries the *design decisions* that depend on these numbers.
 
 posture's spine is **all flaws** (every flaw that is a peer of cves, across
-every flaw_type). cve is one peer, not a primary key. See the retcon graph
-(goal `node_6081883eef9f` and its branches) for the design, and
+every flaw_type). cve is one peer, not a primary key. See
 [README.md](../README.md) for the engine overview.
 
 Vocabulary: **flaw** = the universal spine entity; **flaw_type** = the naming
@@ -161,7 +160,7 @@ These gaps are **declared, not hidden** — posture's honesty rule: a flaw_type 
 8. **Bulk writes via `git push` batches** (6/min, 2 GB/push), NOT per-record REST API (the 500 content-gen/hr secondary limit bites first).
 9. **Repo = signed directory** (content stays at the source URL, not committed), sharded by flaw_type/time for the 100 MB file limit; signing frees history to be gc'd (tamper-evidence lives in the signature, not the history).
 
-10. **Implemented (first cut, 2026-08-06).** The in-repo `.github/workflows/spine.yml` runs the daily off-zero-cron ingestion (`posture stream` + `posture refresh --no-devices` + DB-only course-correction + `posture spine export`) on ephemeral GitHub-hosted runners, commits the sharded `spine/*.jsonl` + `manifest.json`, and cosign-signs `manifest.json` keyless via GitHub OIDC (`spine/state.sig`). `refresh --no-devices` is the map/territory contract — catalog enrichment only, zero verdicts, no device data in CI. The cvelistV5 clone + `posture.db` persist in the Actions cache (else the stream cursor resets and stream would re-bootstrap every run, producing nothing). First cut is **one repo** (created private first, flipped public after a clean-history audit); the `posture-digest` private + self-hosted split (item 5) is deferred until a hosted runner can't carry the load. A **credentialed lane** is scaffolded as a dormant second job that pushes gated-vendor output (SAP/Snyk/Tenable/Qualys/Cisco/VMware, to be wired as credentials are obtained) to a separate *private* `rohankhanna/posture-cred` repo — never into the public repo's history, so the public flip can't leak non-redistributable content. Open question `node_c682cea2fe52` resolved: operator holds no gated creds yet but will apply; NVD is public-lane, not credentialed. GPG-signed commits (item 6 history layer) deferred — the sigstore `state.sig` snapshot attestation (the non-negotiable layer) ships first.
+10. **Implemented (first cut, 2026-08-06).** The in-repo `.github/workflows/spine.yml` runs the daily off-zero-cron ingestion (`posture stream` + `posture refresh --no-devices` + DB-only course-correction + `posture spine export`) on ephemeral GitHub-hosted runners, commits the sharded `spine/*.jsonl` + `manifest.json`, and cosign-signs `manifest.json` keyless via GitHub OIDC (`spine/state.sig`). `refresh --no-devices` is the map/territory contract — catalog enrichment only, zero verdicts, no device data in CI. The cvelistV5 clone + `posture.db` persist in the Actions cache (else the stream cursor resets and stream would re-bootstrap every run, producing nothing). First cut is **one repo** (created private first, flipped public after a clean-history audit); the `posture-digest` private + self-hosted split (item 5) is deferred until a hosted runner can't carry the load. A **credentialed lane** is scaffolded as a dormant second job that pushes gated-vendor output (SAP/Snyk/Tenable/Qualys/Cisco/VMware, to be wired as credentials are obtained) to a separate *private* `rohankhanna/posture-cred` repo — never into the public repo's history, so the public flip can't leak non-redistributable content. An open question is resolved: the operator holds no gated creds yet but will apply; NVD is public-lane, not credentialed. GPG-signed commits (item 6 history layer) deferred — the sigstore `state.sig` snapshot attestation (the non-negotiable layer) ships first.
 
 ---
 

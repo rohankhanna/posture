@@ -1,7 +1,6 @@
 """CycloneDX SBOM reader — the first REAL witness on the inventory axis.
 
-Advances retcon node 094781842876: wire real witnesses for the 5 stubbed axes,
-inventory/SBOM first. A CycloneDX SBOM is the *measured floor* of what is
+A CycloneDX SBOM is the *measured floor* of what is
 installed on a device — the ground truth under the other axes (you can't be
 vulnerable for a package you didn't install; you can't trust what isn't
 there). This witness reads one (inline via ``device["sbom"]`` or a local JSON

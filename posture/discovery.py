@@ -93,18 +93,13 @@ def fetch_aggregator(url: str) -> str:
 def horizon_scan_live(conn: sqlite3.Connection) -> list[Candidate]:
     """Opt-in live horizon scan (the `posture discover --fetch` manual path,
     NEVER the CI default — feeding/enrichment runs in CI, not from a local
-    machine). For each aggregator not already recorded, fetch its page and,
-    IF an LLM is wired (POSTURE_LLM), draft candidate feeds parsed out of it;
-    otherwise surface the aggregator itself as a single review candidate.
-
-    The LLM only DRAFTS candidates (status="review"); it never decides trust —
-    the same boundary as `llm_classifier`. A human still promotes or rejects."""
-    from . import llm_horizon as _llm
+    machine). For each aggregator not already recorded, fetch its page and
+    surface the aggregator itself as a single review candidate. A human still
+    promotes or rejects."""
     surfaced: list[Candidate] = []
     for c in horizon_scan(conn):               # start from the offline delta
-        body = fetch_aggregator(c.url)
-        parsed = _llm.parse_horizon(body, c) if _llm.is_enabled() else None
-        surfaced.extend(parsed if parsed else [c])
+        fetch_aggregator(c.url)                # live: confirm reachability
+        surfaced.append(c)
     return surfaced
 
 

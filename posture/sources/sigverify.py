@@ -1,7 +1,6 @@
 """Pure-python signature verification — the first REAL witness on the trust axis.
 
-Advances retcon node a96c3f0fd49c: wire real witnesses for the remaining
-stubbed axes (exposure/threat/trust). The trust axis answers "can you trust
+The trust axis answers "can you trust
 what is installed". This witness verifies a supplied signature against a
 supplied public key for each artifact the device names, using the
 ``cryptography`` library (ed25519 by default; rsa-pss also supported). It

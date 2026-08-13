@@ -317,7 +317,7 @@ posture audit nvd
 posture crosswalk add CVE-2026-31589 GHSA-xxxx ghsa
 posture crosswalk show CVE-2026-31589
 posture discover          # horizon scan: surface NEW aggregator candidates for review (delta)
-posture discover --fetch  # opt-in live: fetch each new aggregator page (LLM, if wired, only drafts)
+posture discover --fetch  # opt-in live: fetch each new aggregator page
 posture spine show        # flaw-type registry + crosswalk edge counts (the alias graph)
 ```
 
@@ -329,11 +329,9 @@ is idempotent on url (a re-scan refreshes an aggregator's metadata but never
 wipes a prior review decision). It is offline by default (the CI daily mode);
 `--fetch` is the opt-in live path. The daily cadence lives in CI (`spine.yml`
 runs `posture discover`), not a local timer — no feeding or enrichment from a
-local machine. An LLM, if wired via the `POSTURE_LLM` env hook, only *drafts*
-candidate feeds parsed out of a fetched page; it never decides trust — the
-machine notices, the human decides (mirrors `llm_classifier`). No provider is
-chosen by default; the system is complete and model-free until an operator
-wires one (sovereignty).
+local machine. `--fetch` surfaces each new aggregator itself for human review;
+nothing is auto-drafted from a fetched page. The system is model-free by
+default (sovereignty).
 
 Move the catalog (the spine) to/from sharded JSONL — the signed-directory
 interface (see *CI spine* below):

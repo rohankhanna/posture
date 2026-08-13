@@ -1,7 +1,6 @@
 """CISA KEV overlay witness — the first REAL witness on the threat axis.
 
-Advances retcon node a96c3f0fd49c: wire real witnesses for the remaining
-stubbed axes (exposure/threat/trust). The threat axis answers "what is being
+The threat axis answers "what is being
 exploited in the wild". This witness overlays a device's own CVE candidates
 against the CISA Known Exploited Vulnerabilities (KEV) catalog and emits one
 threat-axis ``Verdict`` per CVE, keyed on the CVE id (key_kind "cve"), with
