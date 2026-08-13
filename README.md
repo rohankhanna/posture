@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://github.com/rohankhanna/posture/actions/workflows/spine.yml"><img src="https://github.com/rohankhanna/posture/actions/workflows/spine.yml/badge.svg" alt="spine CI"></a>
+  <a href="https://github.com/rohankhanna/posture/actions/workflows/spine.yml"><img src="https://github.com/rohankhanna/posture/actions/workflows/spine.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT">
   <img src="https://img.shields.io/badge/status-experimental-orange.svg" alt="experimental">
@@ -11,8 +11,9 @@
 supply to show the known security problems on a device — and clearly marks what it
 could not assess.**
 
-Most vulnerability scanners answer one question: *which known CVEs match this
-machine?* posture answers a wider one: *what is this device's security posture
+Most vulnerability scanners answer one question: *which known CVEs (Common
+Vulnerabilities and Exposures) match this machine?* posture answers a wider one:
+*what is this device's security posture
 across the things that actually matter — misconfiguration, network exposure, what's
 installed, what's being exploited, whether what's installed can be trusted, and
 known flaws — and where am I blind?* A dimension with no evidence is a loud
@@ -22,8 +23,9 @@ posture is **device-agnostic**: it does not scan your machine itself. You *repre
 a device as a small YAML file and point posture at evidence you gather (an SBOM, a
 config snapshot, a socket capture, signatures), and posture assesses that
 description locally. The public flaw data it draws on (CVEs, advisories, the CISA KEV
-list) is a shared, signed **catalog** that a CI workflow builds and publishes and
-that you clone and verify.
+list — CISA is the Cybersecurity and Infrastructure Security Agency; KEV is Known
+Exploited Vulnerabilities) is a shared, signed **catalog** that a CI workflow builds
+and publishes and that you clone and verify.
 
 ## Who it is for
 
@@ -37,12 +39,15 @@ that you clone and verify.
   ingest + assessment engine).
 
 > **Map and territory.** The public catalog is the *map* — CVE records, advisories,
-> KEV entries drawn by outside authorities (NIST, MITRE, CISA, vendors). Your
+> KEV entries drawn by outside authorities (NIST, MITRE, CISA, and vendors — NIST
+> is the U.S. National Institute of Standards and Technology; MITRE maintains the
+> CVE list). Your
 > device, with its real installed versions and configuration, is the *territory*.
 > posture assesses the territory using the map, and never pretends the map is the
 > territory: a clean result means "the map places nothing here," not "this device
-> is invulnerable." Unmapped territory — unreported bugs, software with no CPE,
-> firmware NVD never scored — has no coordinates and is reported as `UNKNOWN`, not
+> is invulnerable." Unmapped territory — unreported bugs, software with no CPE
+> (Common Platform Enumeration), firmware NVD (National Vulnerability Database)
+> never scored — has no coordinates and is reported as `UNKNOWN`, not
 > as safe.
 
 ## Highlights
@@ -51,11 +56,11 @@ that you clone and verify.
   misconfiguration (configuration), network reachability (exposure), what's
   installed (inventory), what's being exploited in the wild (threat), and whether
   installed artifacts are trusted (trust).
-- **Combine public data with local evidence you supply.** NVD, MITRE, OSV, the
-  GitHub Advisory Database, CISA KEV, and vendor advisories (Ubuntu, Debian, Apple)
-  feed the vulnerability and threat dimensions; an SBOM (Software Bill of
-  Materials), a config snapshot, a socket capture, and signatures that *you*
-  produce feed the rest.
+- **Combine public data with local evidence you supply.** NVD, MITRE, OSV (Open
+  Source Vulnerabilities), the GitHub Advisory Database, CISA KEV, and vendor
+  advisories (Ubuntu, Debian, Apple) feed the vulnerability and threat dimensions;
+  an SBOM (Software Bill of Materials), a config snapshot, a socket capture, and
+  signatures that *you* produce feed the rest.
 - **Missing evidence is `UNKNOWN`, not "clean."** A dimension with no witness is
   loud, never silently safe — so a zero never lulls you into a claim of
   invulnerability.
@@ -231,13 +236,22 @@ To assess against **real NVD data** instead of the bundled fixture, add `--live`
 posture assess <device.yaml> --live
 ```
 
-> **What `--live` sends where.** `--live` queries NVD over the network and sends the
-> device's **CPE** (the software identifier from your matcher) as NVD's
-> `virtualMatchString` parameter. Offline/catalog mode (the default, and the demo
-> above) sends nothing — all evidence stays on your machine. If sending a CPE to NVD
-> is not acceptable for a given device, run without `--live` against the imported
-> catalog. An **`NVD_API_KEY`** is optional but recommended — it raises the rate limit
-> from 5 to 50 requests / 30 s. Never store the key in the repository; see
+> **Three ways the NVD vulnerability witness gets its data — and what each sends.**
+> 1. **Bundled fixture (the default, offline).** `posture assess` and `posture demo`
+>    read `posture/fixtures/nvd_sample.json` — a small synthetic sample, *not* real
+>    NVD. Nothing leaves your machine.
+> 2. **`--live` (network).** The NVD witness queries the NVD API directly and sends
+>    the device's **CPE** (the software identifier from your matcher) as NVD's
+>    `virtualMatchString` parameter. This is the only path that sends device data to
+>    a third party.
+> 3. **Imported signed catalog (offline).** `posture spine import` loads the catalog
+>    CI builds from real NVD — but today only the **Apple fix-version overlay** from
+>    that catalog flows into a live `assess`. The NVD vulnerability witness has **no
+>    catalog path yet**: without `--live` it reads the bundled fixture, not the
+>    catalog. Wiring more of the catalog into local assessment is ongoing work.
+>
+> An **`NVD_API_KEY`** is optional but recommended for `--live` — it raises the rate
+> limit from 5 to 50 requests / 30 s. Never store the key in the repository; see
 > [Configuration](#configuration).
 
 ## Understanding the result
@@ -292,7 +306,7 @@ source is one module, not an engine change. The registered witnesses:
 
 | Witness | Axis | Input it consumes | Network? |
 |---|---|---|---|
-| `nvd` | vulnerability | device CPE matcher; CVE/CVSS data | yes (`--live`) or catalog |
+| `nvd` | vulnerability | device CPE matcher; CVE/CVSS (Common Vulnerability Scoring System) data | yes (`--live`) |
 | `ubuntu_tracker` | vulnerability | Ubuntu release + packages + CVE candidates | yes (Ubuntu tracker) |
 | `debian_tracker` | vulnerability | Debian release + packages + CVE candidates | yes (Debian tracker) |
 | `apple_advisory` | vulnerability | Apple product + OS version + CVE candidates | yes (Apple advisories) |
@@ -328,8 +342,9 @@ device YAML. Bare/relative paths in the fields below also resolve under
 
 The public catalog (CVEs, advisories, KEV) is the **map** — drawn by outside
 authorities. Your device is the **territory**. posture keeps them separate: CI builds
-and signs the map; you assess your territory locally. A verdict says "the map places
-this flaw on your device," never "your device has this flaw" as an absolute. (See
+and signs the map; you assess your territory locally. A verdict says "the catalog
+places this flaw on this device's map," never "this device has this flaw" as an
+absolute. (See
 [Honesty and trust model](#honesty-and-trust-model).)
 
 ## Configuration
@@ -454,7 +469,7 @@ they should not be conflated:
   to build a local `posture.db` independent of the published spine. This is also the
   path for development and for the local MITRE stream timer below.
 
-posture's spine is fed by several public, rate-friendly peers. Every ingestion path
+posture's signed catalog is fed by several public, rate-friendly peers. Every ingestion path
 **only adds** catalog rows and alias edges and **never touches verdicts**. The full
 source-coverage reference (rate limits, access paths, vendor peer table, public vs
 gated) lives in [`docs/sources.md`](docs/sources.md).
