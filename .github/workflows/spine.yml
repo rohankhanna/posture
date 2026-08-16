@@ -7,12 +7,19 @@ name: CI
 
 on:
   schedule:
-    # Every 6h at :07 UTC while private (00:07, 06:07, 12:07, 18:07) — off-zero
-    # minute, off-top-of-hour (docs/sources.md item 7: high-load may delay/drop
-    # round-number cron). Switch to "7 * * * *" (hourly) once the repo is public.
+    # Hourly at :07 UTC — off-zero minute, off-top-of-hour (docs/sources.md item 7:
+    # high-load may delay/drop round-number cron). Bumped from every-6h to hourly on
+    # 2026-08-16 after the public flip: the repo is public and the operator wants
+    # near-current enrichment. Data-driven from 18 prior scheduled-success runs
+    # (ranged 8-29 min; median 12, max 29): 29 min was a near-miss on the old 30-min
+    # ingest timeout (raised 30->60 below for headroom), so hourly (60 min) is the
+    # tightest SAFE clean cadence — 60 >> 29-min max ingest, so a run never overlaps
+    # the next cron (the guard skip-if-in-flight is the backstop). A 30-min cadence
+    # would overlap on the ~29-min runs and degrade to ~hourly via guard-skips anyway;
+    # sub-hourly would need lower per-run caps to be safe (a follow-up, not this bump).
     # The periodic push is also the keepalive against GitHub's 60-day auto-disable
     # of scheduled workflows.
-    - cron: "7 */6 * * *"
+    - cron: "7 * * * *"
   push:
     branches: [main]
     paths:
@@ -85,7 +92,9 @@ jobs:
 
   ingest:
     runs-on: ubuntu-latest   # ephemeral + safe (no PR-pwn on a public repo)
-    timeout-minutes: 30
+    timeout-minutes: 60   # was 30; raised 2026-08-16: observed max ingest ~29 min
+                          # was a near-miss on 30; 60 gives headroom for slow NVD/Apple
+                          # days now that cadence is hourly and freshness matters.
     needs: [guard]
     if: ${{ needs.guard.outputs.should_run == 'true' }}
     # Safety net for the guard's rare race: if two guards both see "idle", the
