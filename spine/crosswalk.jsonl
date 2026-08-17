@@ -118285,6 +118285,7 @@
 {"alias": "GHSA-83x6-42hr-jc76", "defect_id": "CVE-2026-73845", "kind": "ghsa"}
 {"alias": "GHSA-78x9-fhhx-v2g6", "defect_id": "CVE-2026-73846", "kind": "ghsa"}
 {"alias": "GHSA-jffg-rpvp-2qx7", "defect_id": "CVE-2026-73850", "kind": "ghsa"}
+{"alias": "GHSA-p5rm-jg5c-8c77", "defect_id": "CVE-2026-73851", "kind": "ghsa"}
 {"alias": "GHSA-3jmq-qhg3-f58j", "defect_id": "CVE-2026-7404", "kind": "ghsa"}
 {"alias": "PYSEC-2026-2632", "defect_id": "CVE-2026-7404", "kind": "pysec"}
 {"alias": "GHSA-8gpm-h2mh-36qc", "defect_id": "CVE-2026-7411", "kind": "ghsa"}
@@ -167807,6 +167808,7 @@
 {"alias": "CVE-2024-31451", "defect_id": "GHSA-p5qc-vj2x-9rjp", "kind": "osv"}
 {"alias": "CVE-2026-34976", "defect_id": "GHSA-p5rh-vmhp-gvcw", "kind": "cve"}
 {"alias": "CVE-2026-34976", "defect_id": "GHSA-p5rh-vmhp-gvcw", "kind": "osv"}
+{"alias": "CVE-2026-73851", "defect_id": "GHSA-p5rm-jg5c-8c77", "kind": "cve"}
 {"alias": "CVE-2004-2381", "defect_id": "GHSA-p5rr-q5g6-gm42", "kind": "cve"}
 {"alias": "CVE-2022-41930", "defect_id": "GHSA-p5v9-g8w8-5q4v", "kind": "cve"}
 {"alias": "CVE-2022-41930", "defect_id": "GHSA-p5v9-g8w8-5q4v", "kind": "osv"}
