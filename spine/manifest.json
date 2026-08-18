@@ -2,11 +2,11 @@
   "counts": {
     "apple_fixes": 3466,
     "candidates": 9,
-    "crosswalk": 255043,
-    "defects": 644192,
+    "crosswalk": 255059,
+    "defects": 651240,
     "distrust_marks": 0,
     "kev": 1666,
-    "seen_defects": 644192
+    "seen_defects": 651240
   },
   "files": [
     {
@@ -1565,94 +1565,94 @@
       "sha256": "6313c152f141da244edc6b1b0959cfc3e834a5339cd2fa30d4fb9d23d650a3a0"
     },
     {
-      "count": 6762,
+      "count": 6820,
       "path": "defects/2025-05.jsonl",
-      "sha256": "b1a5842cef7d4913b75f8f3a9fc6d0fdbe73dc03629f0dbce2cc1c7b75eb0cba"
+      "sha256": "8a1e1cc0784daa46ea2f7bdce6572ef7dc2cbdcd1c878203dabcf67494684778"
     },
     {
-      "count": 6380,
+      "count": 6390,
       "path": "defects/2025-06.jsonl",
-      "sha256": "a84eecd60efde74ad0336d1051e35a2a8bf26d8827682ad071d83e32bc4d106c"
+      "sha256": "e8dd3e9b2b3609be52966e7c9a9bf4def5907a8e12474282c7d8428970841da2"
     },
     {
-      "count": 5962,
+      "count": 5983,
       "path": "defects/2025-07.jsonl",
-      "sha256": "83c525316acc8963d331f66c0cbfa332960b02ce98462376fbabc1959504e4ce"
+      "sha256": "fc93826ece4dca804df19187b8f09d1f0e5cf3b7afa8e156ca0322f6d6f01848"
     },
     {
-      "count": 8250,
+      "count": 8302,
       "path": "defects/2025-08.jsonl",
-      "sha256": "1ce3f000ac2ecd31876cb59e6583c34867aa61f62fdb66714b8a8c3b34086aa7"
+      "sha256": "286bf985150dc571af644a9ebf0e8098027ca49c57f6000ab0f69f6fad3b01b9"
     },
     {
-      "count": 9067,
+      "count": 9090,
       "path": "defects/2025-09.jsonl",
-      "sha256": "b5c6ecdc85a0bdeb3f8d93cbf999f4eda44f0c9ffe7b5c654f804ea39054c092"
+      "sha256": "ebff3d1356433715b3aa1edf989f13c2428cc2ec7ef1aef4f84bb23bcb42c32b"
     },
     {
-      "count": 7206,
+      "count": 7218,
       "path": "defects/2025-10.jsonl",
-      "sha256": "fbb9b3846e9257c17a34d54395629b58c1accdc9e29b3a5bcab1da34801601b9"
+      "sha256": "b5a722bbe9edcde8de9778a6230ba476e7f2a7d015b5ffa29b542b5ce36b2027"
     },
     {
-      "count": 7086,
+      "count": 7242,
       "path": "defects/2025-11.jsonl",
-      "sha256": "029801116288d8c52eb3cf9a282ead9a7506a7fe8da11ef2a00c617fcf8de237"
+      "sha256": "3b297ae4019a36aeecb9c2af4fc1731361b6a1b5d64673e1e0f80e821c6f9efe"
     },
     {
-      "count": 9767,
+      "count": 9817,
       "path": "defects/2025-12.jsonl",
-      "sha256": "916facd535ccefbbaee0899ad3a9a91034fd97b5d1a2ee37acb69a5ae565107a"
+      "sha256": "177851b2933aa24212e39326bdacf64fe0184eb734afe60cca0a55c8aedcea2f"
     },
     {
-      "count": 12469,
+      "count": 12512,
       "path": "defects/2026-01.jsonl",
-      "sha256": "2c55647f38ce60fd624f79bb9b290cc310841021a387fbe4b69377e33e1a4914"
+      "sha256": "5a112389c06e715de23423c7f19f864c7ba65dd3f29666c6f3275322a20067cc"
     },
     {
-      "count": 8072,
+      "count": 8121,
       "path": "defects/2026-02.jsonl",
-      "sha256": "e60e2fc39d0161e7fd4a49108882ec8af44feb2c9d97dfd00313341a86da38cf"
+      "sha256": "a0a97cdec4c74072b6a07284d05827a52f000fb508444374528ec6b5535f8731"
     },
     {
-      "count": 12962,
+      "count": 13725,
       "path": "defects/2026-03.jsonl",
-      "sha256": "b3f5bc3bd4d9ba4e6ab16add7a039902c0e8f4d22288b497669278b121f3753f"
+      "sha256": "e7a5f72c5c7d0adb352597292ec4376a86d89f5e38b2cd33f3494f5643609d0d"
     },
     {
-      "count": 14979,
+      "count": 15571,
       "path": "defects/2026-04.jsonl",
-      "sha256": "2fece09a31a0e70d0e44fb83e6e0a1daa768735ea5c9f40707c8d766a396ce64"
+      "sha256": "eab7706ce1a5ba87fcfa05bd3a08397783deb586e1876a53283a97ec7ed28e2f"
     },
     {
-      "count": 19782,
+      "count": 20461,
       "path": "defects/2026-05.jsonl",
-      "sha256": "247ae852037ecacdfe12daab5fcd5d6b5dbad42b3a51cc5499d061bd73641640"
+      "sha256": "66d57202271cf8ad18325cbad8bad6d44bdb3e9550d0a0b6484d51ad528c9f07"
     },
     {
-      "count": 30597,
+      "count": 32771,
       "path": "defects/2026-06.jsonl",
-      "sha256": "babefd1867c8f3bca51d0b51559e4f2967f601d16ef02c0f3f568f124c5592bc"
+      "sha256": "ab952b172297466a2cf46807ca1d65cac05e47cf0ab9018cda6e4aa552125b89"
     },
     {
-      "count": 27638,
+      "count": 28982,
       "path": "defects/2026-07.jsonl",
-      "sha256": "82e3639fb58ae538548a310eab22617b452205339d0b2ab2972ebd493e6d7bf7"
+      "sha256": "b1b629aa73293fe1f66accc9d0c5957736a7a872081932fed578c753c848c5b9"
     },
     {
-      "count": 19002,
+      "count": 19961,
       "path": "defects/2026-08.jsonl",
-      "sha256": "f88f8fcb49b29f6c668050893fee308f4c672552d47b9bc5bff91f884b73efa0"
+      "sha256": "b8c7377d3ffcd865e2bed5c1ee347fc5a57741407710544680c26e4e89fe617f"
     },
     {
-      "count": 5748,
+      "count": 5811,
       "path": "defects/unknown.jsonl",
-      "sha256": "a751f3807d12941821c18d120d5e52148a6a73ffc0e5fe4fe14caeb8fb4553dc"
+      "sha256": "84916540dfc52288d89e4b9a7027df779f25d2c2cb70e26f712d1c172e6069d5"
     },
     {
-      "count": 255043,
+      "count": 255059,
       "path": "crosswalk.jsonl",
-      "sha256": "3eacfe0618613c262c1bf3d7f20b760635f30515278be69fc4934498cbc36caf"
+      "sha256": "967be3a3a905fe40aa3cb5da85e16d6b6954cda94e8118cdfe008bc1cdaa2d56"
     },
     {
       "count": 9,
@@ -1665,26 +1665,26 @@
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "count": 644192,
+      "count": 651240,
       "path": "seen_defects.jsonl",
-      "sha256": "9871a1c982185667ce1ea13986d5d9db05763a7d849cfc1047157987d0193c24"
+      "sha256": "444722a1dfe6cf8ef57d9f152ad32204b06031adb3b2af8782862528e502a5e4"
     },
     {
       "count": 1666,
       "path": "kev.jsonl",
-      "sha256": "b294325ea0ea6f858247b777afb9aa607e95834f21b53bdc693cd04ef2a043b9"
+      "sha256": "2c9eddade224a174e7504de3d7f4526d6e0baa36bde6c0d916087c18f210db08"
     },
     {
       "count": 3466,
       "path": "apple_fixes.jsonl",
-      "sha256": "19310c40f30e16f63f1241983467d5e3f3d882fbc912ac082915d01cb55e17b7"
+      "sha256": "b0183c80affa152799e780a90453fa00f35ff88320fb8e5fc3cd225a76d82890"
     }
   ],
-  "generated_at": "2026-08-18T15:57:39+00:00",
+  "generated_at": "2026-08-18T17:02:39+00:00",
   "manifest_version": "1",
   "policy_version": "2026-08-06.3",
   "source_version": {
-    "cvelist_tip": "f6a52380f94d032cfacf59723a5d900337690883",
-    "stream_last_tick": "2026-08-18T15:46:00+00:00"
+    "cvelist_tip": "c287436d3aaf0ec301aae4d1ec8b1342544ff834",
+    "stream_last_tick": "2026-08-18T16:48:16+00:00"
   }
 }
