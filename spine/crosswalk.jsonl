@@ -134553,7 +134553,9 @@
 {"alias": "GHSA-wc3f-xc32-435f", "defect_id": "CVE-2026-55173", "kind": "ghsa"}
 {"alias": "GHSA-p68j-q7hf-3qcp", "defect_id": "CVE-2026-55175", "kind": "ghsa"}
 {"alias": "GHSA-r95q-fp26-h3hc", "defect_id": "CVE-2026-55177", "kind": "ghsa"}
+{"alias": "GHSA-p23g-mvhj-jh3j", "defect_id": "CVE-2026-55178", "kind": "ghsa"}
 {"alias": "GHSA-3qhv-2rgh-x77r", "defect_id": "CVE-2026-55180", "kind": "ghsa"}
+{"alias": "GHSA-c9fv-cgmm-2wg7", "defect_id": "CVE-2026-55182", "kind": "ghsa"}
 {"alias": "GHSA-m999-j542-5w3r", "defect_id": "CVE-2026-55185", "kind": "ghsa"}
 {"alias": "GHSA-m999-j542-5w3r", "defect_id": "CVE-2026-55185", "kind": "osv"}
 {"alias": "GO-2026-5500", "defect_id": "CVE-2026-55185", "kind": "osv"}
@@ -136788,6 +136790,7 @@
 {"alias": "PYSEC-2026-2876", "defect_id": "CVE-2026-6357", "kind": "pysec"}
 {"alias": "GHSA-p893-rvq9-2xf9", "defect_id": "CVE-2026-63632", "kind": "ghsa"}
 {"alias": "GHSA-33p8-wc97-5qcj", "defect_id": "CVE-2026-63637", "kind": "ghsa"}
+{"alias": "GHSA-q4gh-4ffp-5cg8", "defect_id": "CVE-2026-63640", "kind": "ghsa"}
 {"alias": "GHSA-w26r-fwg8-rcp3", "defect_id": "CVE-2026-63641", "kind": "ghsa"}
 {"alias": "GHSA-998g-7v5w-cr7g", "defect_id": "CVE-2026-63642", "kind": "ghsa"}
 {"alias": "GHSA-w6x9-28jw-hq7j", "defect_id": "CVE-2026-63643", "kind": "ghsa"}
@@ -137234,6 +137237,10 @@
 {"alias": "PSF-2026-34", "defect_id": "CVE-2026-6879", "kind": "psf"}
 {"alias": "BIT-gitlab-2026-6883", "defect_id": "CVE-2026-6883", "kind": "bit"}
 {"alias": "BIT-gitlab-2026-6883", "defect_id": "CVE-2026-6883", "kind": "osv"}
+{"alias": "GHSA-8j49-mmcx-4mp5", "defect_id": "CVE-2026-68922", "kind": "ghsa"}
+{"alias": "GHSA-3p54-567p-2wpr", "defect_id": "CVE-2026-68923", "kind": "ghsa"}
+{"alias": "GHSA-x768-8642-mmq9", "defect_id": "CVE-2026-68924", "kind": "ghsa"}
+{"alias": "GHSA-95px-34x5-p37h", "defect_id": "CVE-2026-68927", "kind": "ghsa"}
 {"alias": "GHSA-m65r-rprj-r5rg", "defect_id": "CVE-2026-68930", "kind": "ghsa"}
 {"alias": "GHSA-jhpw-976m-542j", "defect_id": "CVE-2026-68945", "kind": "ghsa"}
 {"alias": "BIT-gitlab-2026-6896", "defect_id": "CVE-2026-6896", "kind": "bit"}
@@ -137274,6 +137281,7 @@
 {"alias": "GHSA-jj27-h5hq-8x99", "defect_id": "CVE-2026-69151", "kind": "ghsa"}
 {"alias": "GHSA-rgw5-rvv9-x895", "defect_id": "CVE-2026-69152", "kind": "ghsa"}
 {"alias": "GHSA-fxqj-rqcc-2cmp", "defect_id": "CVE-2026-69153", "kind": "ghsa"}
+{"alias": "GHSA-86cx-wwf4-phq4", "defect_id": "CVE-2026-69160", "kind": "ghsa"}
 {"alias": "GHSA-q393-vr4c-969r", "defect_id": "CVE-2026-6918", "kind": "ghsa"}
 {"alias": "GHSA-2m8v-j782-fhvr", "defect_id": "CVE-2026-69185", "kind": "ghsa"}
 {"alias": "GHSA-mwp4-54f8-5fhr", "defect_id": "CVE-2026-69192", "kind": "ghsa"}
@@ -146167,6 +146175,7 @@
 {"alias": "CVE-2026-27940", "defect_id": "GHSA-3p4r-fq3f-q74v", "kind": "osv"}
 {"alias": "CVE-2024-5657", "defect_id": "GHSA-3p4x-grpm-xw58", "kind": "cve"}
 {"alias": "CVE-2024-5657", "defect_id": "GHSA-3p4x-grpm-xw58", "kind": "osv"}
+{"alias": "CVE-2026-68923", "defect_id": "GHSA-3p54-567p-2wpr", "kind": "cve"}
 {"alias": "CVE-2026-72904", "defect_id": "GHSA-3p54-jg6f-68r8", "kind": "osv"}
 {"alias": "CVE-2022-1173", "defect_id": "GHSA-3p5m-j98p-c698", "kind": "cve"}
 {"alias": "CVE-2022-1173", "defect_id": "GHSA-3p5m-j98p-c698", "kind": "osv"}
@@ -164173,6 +164182,7 @@
 {"alias": "CVE-2023-46139", "defect_id": "GHSA-86cp-3prf-pwqq", "kind": "osv"}
 {"alias": "CVE-2017-12440", "defect_id": "GHSA-86cv-9gpx-6hwj", "kind": "cve"}
 {"alias": "CVE-2025-25192", "defect_id": "GHSA-86cx-hcfc-8mm8", "kind": "osv"}
+{"alias": "CVE-2026-69160", "defect_id": "GHSA-86cx-wwf4-phq4", "kind": "cve"}
 {"alias": "CVE-2026-67311", "defect_id": "GHSA-86f3-cqpq-wp9m", "kind": "osv"}
 {"alias": "CVE-2022-23650", "defect_id": "GHSA-86f3-hf24-76q4", "kind": "cve"}
 {"alias": "GO-2022-0328", "defect_id": "GHSA-86f3-hf24-76q4", "kind": "go"}
@@ -165740,6 +165750,7 @@
 {"alias": "CVE-2024-4890", "defect_id": "GHSA-8j42-pcfm-3467", "kind": "osv"}
 {"alias": "CVE-2026-26832", "defect_id": "GHSA-8j44-735h-w4w2", "kind": "cve"}
 {"alias": "CVE-2026-26832", "defect_id": "GHSA-8j44-735h-w4w2", "kind": "osv"}
+{"alias": "CVE-2026-68922", "defect_id": "GHSA-8j49-mmcx-4mp5", "kind": "cve"}
 {"alias": "CVE-2026-69207", "defect_id": "GHSA-8j4g-w8fx-2239", "kind": "cve"}
 {"alias": "CVE-2026-69207", "defect_id": "GHSA-8j4g-w8fx-2239", "kind": "osv"}
 {"alias": "CVE-2019-10750", "defect_id": "GHSA-8j4w-5fw4-rm27", "kind": "cve"}
@@ -168002,6 +168013,7 @@
 {"alias": "BIT-cosign-2024-29903", "defect_id": "GHSA-95pr-fxf5-86gv", "kind": "osv"}
 {"alias": "CVE-2024-29903", "defect_id": "GHSA-95pr-fxf5-86gv", "kind": "osv"}
 {"alias": "GO-2024-2719", "defect_id": "GHSA-95pr-fxf5-86gv", "kind": "osv"}
+{"alias": "CVE-2026-68927", "defect_id": "GHSA-95px-34x5-p37h", "kind": "cve"}
 {"alias": "CVE-2021-27923", "defect_id": "GHSA-95q3-8gr9-gm8w", "kind": "cve"}
 {"alias": "BIT-pillow-2021-27923", "defect_id": "GHSA-95q3-8gr9-gm8w", "kind": "osv"}
 {"alias": "CVE-2021-27923", "defect_id": "GHSA-95q3-8gr9-gm8w", "kind": "osv"}
@@ -172736,6 +172748,7 @@
 {"alias": "CVE-2015-8858", "defect_id": "GHSA-c9f4-xj24-8jqx", "kind": "cve"}
 {"alias": "CVE-2024-21549", "defect_id": "GHSA-c9f5-29f6-c35w", "kind": "cve"}
 {"alias": "CVE-2024-21549", "defect_id": "GHSA-c9f5-29f6-c35w", "kind": "osv"}
+{"alias": "CVE-2026-55182", "defect_id": "GHSA-c9fv-cgmm-2wg7", "kind": "cve"}
 {"alias": "CVE-2020-7693", "defect_id": "GHSA-c9g6-9335-x697", "kind": "cve"}
 {"alias": "CVE-2020-7693", "defect_id": "GHSA-c9g6-9335-x697", "kind": "osv"}
 {"alias": "BIT-envoy-2022-21656", "defect_id": "GHSA-c9g7-xwcv-pjx2", "kind": "osv"}
@@ -195067,6 +195080,7 @@
 {"alias": "CVE-2016-5682", "defect_id": "GHSA-p239-93f7-h6xf", "kind": "cve"}
 {"alias": "CVE-2016-5682", "defect_id": "GHSA-p239-93f7-h6xf", "kind": "osv"}
 {"alias": "CVE-2022-25871", "defect_id": "GHSA-p23c-p8w2-ww5v", "kind": "cve"}
+{"alias": "CVE-2026-55178", "defect_id": "GHSA-p23g-mvhj-jh3j", "kind": "cve"}
 {"alias": "CVE-2019-1335", "defect_id": "GHSA-p23j-g745-8449", "kind": "cve"}
 {"alias": "CVE-2021-36753", "defect_id": "GHSA-p24j-h477-76q3", "kind": "cve"}
 {"alias": "CVE-2021-36753", "defect_id": "GHSA-p24j-h477-76q3", "kind": "osv"}
@@ -199274,6 +199288,7 @@
 {"alias": "CVE-2021-27025", "defect_id": "GHSA-q4g7-jrxv-67r9", "kind": "osv"}
 {"alias": "BIT-mastodon-2026-33869", "defect_id": "GHSA-q4g8-82c5-9h33", "kind": "osv"}
 {"alias": "CVE-2026-33869", "defect_id": "GHSA-q4g8-82c5-9h33", "kind": "osv"}
+{"alias": "CVE-2026-63640", "defect_id": "GHSA-q4gh-4ffp-5cg8", "kind": "cve"}
 {"alias": "CVE-2026-4740", "defect_id": "GHSA-q4gv-pjmh-c735", "kind": "cve"}
 {"alias": "GO-2026-5564", "defect_id": "GHSA-q4gv-pjmh-c735", "kind": "go"}
 {"alias": "GO-2026-5564", "defect_id": "GHSA-q4gv-pjmh-c735", "kind": "osv"}
@@ -215751,6 +215766,7 @@
 {"alias": "CVE-2022-27216", "defect_id": "GHSA-x75r-g63m-82wj", "kind": "cve"}
 {"alias": "CVE-2023-29523", "defect_id": "GHSA-x764-ff8r-9hpx", "kind": "cve"}
 {"alias": "CVE-2023-29523", "defect_id": "GHSA-x764-ff8r-9hpx", "kind": "osv"}
+{"alias": "CVE-2026-68924", "defect_id": "GHSA-x768-8642-mmq9", "kind": "cve"}
 {"alias": "CVE-2024-28867", "defect_id": "GHSA-x768-cvr2-345r", "kind": "cve"}
 {"alias": "CVE-2024-28867", "defect_id": "GHSA-x768-cvr2-345r", "kind": "osv"}
 {"alias": "CVE-2025-7899", "defect_id": "GHSA-x769-3cwv-f8hc", "kind": "cve"}
