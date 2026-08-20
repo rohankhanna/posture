@@ -284,6 +284,24 @@ CREATE TABLE IF NOT EXISTS debian_fixes (
     PRIMARY KEY (cve_id, release, package)
 );
 
+-- EPSS (Exploit Prediction Scoring System, FIRST.org) overlay — the
+-- exploitability_likelihood map. EPSS scores EVERY published CVE daily with a
+-- 0..1 probability of exploitation in the next 30 days + a percentile, free +
+-- unauthenticated. This is a CVE-keyed OVERLAY (not a new defect_type): it
+-- annotates an existing cve catalog row with a likelihood signal. It is
+-- COMPLEMENTARY to ``kev`` (KEV = ~1,700 confirmed-exploited; EPSS = all CVEs
+-- predicted-likelihood) and fills the gap NVD's 2026-04-15 risk-based-
+-- enrichment retreat left (NVD now enriches EPSS only for KEV/federal/
+-- EO14028-critical CVEs; the long tail lost its EPSS). CI-side ingestion pulls
+-- the one daily CSV snapshot; idempotent full refresh (DELETE all + INSERT),
+-- so scores aged out (a CVE dropped from the EPSS model) leave no stale rows.
+CREATE TABLE IF NOT EXISTS epss (
+    cve_id       TEXT PRIMARY KEY,
+    epss         REAL,            -- 0..1 probability of exploitation in 30 days
+    percentile   REAL,            -- 0..1 proportion scored at or below this score
+    fetched_at   TEXT
+);
+
 -- Generic key/value state — the stream cursor lives here
 -- (state key "stream:mitre_cursor" = the last-processed cvelistV5 tip SHA), as
 -- do "stream:last_tick" / "stream:last_summary". A point-in-time sample, not a
@@ -1203,6 +1221,47 @@ def kev_for_cve(conn, cve_id: str) -> dict | None:
     except (ValueError, TypeError):
         d["cwes"] = []
     return d
+
+
+# ---------------------------------------------------------------------------
+# EPSS (FIRST.org) exploitability-likelihood overlay — the epss map
+# (cve_id-keyed overlay, not a defect_type)
+# ---------------------------------------------------------------------------
+
+def replace_epss(conn, rows: list[dict], fetched_at: str) -> int:
+    """Idempotent full refresh of the ``epss`` overlay: DELETE every row then
+    INSERT the freshly-pulled daily snapshot ``rows`` (each
+    ``{cve_id, epss, percentile}``). Returns the number inserted. EPSS is a
+    complete daily snapshot of every scored CVE, so a wholesale replace (not
+    INSERT OR REPLACE) means a CVE dropped from the model leaves no stale row.
+    No-wipe on the caller side: a failed fetch must NOT call this (preserve
+    last-known-good). Touches ONLY ``epss`` — never ``defects`` / ``verdicts`` /
+    territory."""
+    conn.execute("DELETE FROM epss")
+    n = 0
+    for r in rows:
+        conn.execute(
+            """INSERT OR REPLACE INTO epss
+                 (cve_id, epss, percentile, fetched_at)
+               VALUES (?,?,?,?)""",
+            (r["cve_id"], r.get("epss"), r.get("percentile"), fetched_at),
+        )
+        n += 1
+    return n
+
+
+def epss_all(conn) -> list[dict]:
+    """All epss overlay rows, ordered by cve_id — the stable shape the spine
+    export serializes and the round-trip test compares against."""
+    rows = conn.execute("SELECT * FROM epss ORDER BY cve_id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def epss_for_cve(conn, cve_id: str) -> dict | None:
+    """One epss overlay row for a cve_id, or None. The threat-axis read path:
+    the likelihood score + percentile for a device's candidate CVE."""
+    r = conn.execute("SELECT * FROM epss WHERE cve_id=?", (cve_id,)).fetchone()
+    return dict(r) if r else None
 
 
 # ---------------------------------------------------------------------------

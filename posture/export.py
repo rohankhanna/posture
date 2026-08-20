@@ -50,7 +50,7 @@ SPINE_DIR = "spine"
 # absent: verdicts, device_posture, health_*, glossary, term_signals,
 # spine_bindings, repair_proposals, policy_versions, state.
 FLAT_TABLES = ("crosswalk", "candidates", "distrust_marks", "seen_defects", "kev",
-               "apple_fixes", "debian_fixes")
+               "apple_fixes", "debian_fixes", "epss")
 
 
 def _now() -> str:
@@ -133,6 +133,7 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
         "kev": _store.kev_all,
         "apple_fixes": _store.apple_fixes_all,
         "debian_fixes": _store.debian_fixes_all,
+        "epss": _store.epss_all,
     }
     for name in FLAT_TABLES:
         rows = loaders[name](conn)
@@ -223,7 +224,7 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
 
     stats = {k: 0 for k in ("defects", "crosswalk", "candidates",
                            "distrust_marks", "seen_defects", "kev",
-                           "apple_fixes", "debian_fixes")}
+                           "apple_fixes", "debian_fixes", "epss")}
 
     # --- defects: full INSERT OR REPLACE (all columns, including enrich_state,
     #     distrusted, distrust_reason, discovered_at — a faithful mirror of
@@ -338,6 +339,21 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
              row.get("status"), row.get("fixed_in"), row.get("fetched_at")),
         )
         stats["debian_fixes"] += 1
+
+    # --- epss: INSERT OR REPLACE (cve_id PK) — the FIRST.org exploitability-
+    #     likelihood overlay (complementary to kev; fills the NVD-degradation
+    #     gap). Idempotent full refresh on the ingest side (DELETE all + INSERT);
+    #     on import we INSERT OR REPLACE so a re-import replaces, never
+    #     duplicates.
+    for row in _read_jsonl(root / "epss.jsonl"):
+        conn.execute(
+            """INSERT OR REPLACE INTO epss
+                 (cve_id, epss, percentile, fetched_at)
+               VALUES (?,?,?,?)""",
+            (row["cve_id"], row.get("epss"), row.get("percentile"),
+             row.get("fetched_at")),
+        )
+        stats["epss"] += 1
 
     conn.commit()
     # surface any drift between manifest counts and what we loaded — but only

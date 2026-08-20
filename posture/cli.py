@@ -46,6 +46,7 @@ from .sources import ghsa as _ghsa_mod
 from .sources import osv as _osv_mod
 from .sources import apple_ingest as _apple_ingest_mod
 from .sources import debian_ingest as _debian_ingest_mod
+from .sources import epss as _epss_mod
 from .sources.ubuntu_tracker import UbuntuTrackerObserver
 from .sources.debian_tracker import DebianTrackerObserver
 from .sources.apple_advisory import AppleAdvisoryObserver
@@ -640,6 +641,23 @@ def _cmd_ingest_debian(args) -> int:
     return 0
 
 
+def _cmd_ingest_epss(args) -> int:
+    policy = _load_policy(args.policy)
+    with _open_db(args.db) as conn:
+        _install_policy_if_needed(conn, policy)
+        stats = _epss_mod.epss_ingest_tick(conn, now=_engine._now())
+        conn.commit()
+    if stats["error"]:
+        print(f"ingest epss: no-op ({stats['error']})")
+        return 1
+    print(f"ingest epss: {stats['rows']} overlay row(s) (daily full refresh) "
+          f"· fetched={stats['fetched']}")
+    line = _attr.attribution_for("epss")
+    if line:
+        print(f"  {line}")
+    return 0
+
+
 def _cmd_ingest_ghsa(args) -> int:
     policy = _load_policy(args.policy)
     with _open_db(args.db) as conn:
@@ -874,7 +892,7 @@ def build_parser() -> argparse.ArgumentParser:
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_backfill)
 
     # -- ingestion: aggregator peers (KEV overlay first; OSV/GHSA to follow) ----
-    sp = sub.add_parser("ingest", help="ingest an aggregator peer / fix overlay into the catalog (kev | osv | ghsa | apple | debian)")
+    sp = sub.add_parser("ingest", help="ingest an aggregator peer / fix / exploitability overlay into the catalog (kev | osv | ghsa | apple | debian | epss)")
     psub = sp.add_subparsers(dest="peer", required=True)
     spk = psub.add_parser("kev", help="CISA KEV overlay refresh (exploitability_signal; CVE-keyed, full refresh)")
     db_arg(spk); pol_arg(spk); spk.set_defaults(func=_cmd_ingest_kev)
@@ -897,6 +915,8 @@ def build_parser() -> argparse.ArgumentParser:
     spd.add_argument("--package", action="append", default=None, required=True,
                     help="Debian source package to ingest (linux|...); repeatable, REQUIRED (no default public-spine scope is wired)")
     db_arg(spd); pol_arg(spd); spd.set_defaults(func=_cmd_ingest_debian)
+    spe = psub.add_parser("epss", help="FIRST.org EPSS exploitability-likelihood overlay (CVE-keyed; daily full refresh; fills the NVD-degradation gap; complementary to kev)")
+    db_arg(spe); pol_arg(spe); spe.set_defaults(func=_cmd_ingest_epss)
 
     sp = sub.add_parser("refresh", help="incremental NVD enrichment + per-CVE re-decide (wipe-proof; never a bulk re-pull)")
     sp.add_argument("--devices", default=DEFAULT_DEVICES, help="fleet YAML (list of device dicts)")

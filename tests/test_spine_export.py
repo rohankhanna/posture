@@ -108,7 +108,7 @@ def test_export_round_trip_identical(conn, tmp_path):
     manifest = export.export_spine(conn, out_dir=out, policy_version="v")
     assert manifest["counts"] == {"defects": 4, "crosswalk": 3, "candidates": 1,
                                    "distrust_marks": 1, "seen_defects": 4, "kev": 1,
-                                   "apple_fixes": 0, "debian_fixes": 0}
+                                   "apple_fixes": 0, "debian_fixes": 0, "epss": 0}
 
     other = store.connect(":memory:")
     stats = export.import_spine(other, from_dir=out)
