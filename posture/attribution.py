@@ -34,6 +34,8 @@ ATTRIBUTIONS: dict[str, str] = {
     # ubuntu_tracker: Ubuntu security tracker — public, no formal ToU attribution
     # required, but noting the source is honest.
     "ubuntu_tracker": "Ubuntu fix-status data from the Ubuntu security tracker (ubuntu.com/security).",
+    # epss: FIRST.org EPSS — free/open scores; noting the source is honest.
+    "epss": "Exploit prediction scores from the FIRST.org EPSS (Exploit Prediction Scoring System).",
 }
 
 
