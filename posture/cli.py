@@ -45,6 +45,7 @@ from .sources import kev as _kev_mod
 from .sources import ghsa as _ghsa_mod
 from .sources import osv as _osv_mod
 from .sources import apple_ingest as _apple_ingest_mod
+from .sources import debian_ingest as _debian_ingest_mod
 from .sources.ubuntu_tracker import UbuntuTrackerObserver
 from .sources.debian_tracker import DebianTrackerObserver
 from .sources.apple_advisory import AppleAdvisoryObserver
@@ -617,6 +618,28 @@ def _cmd_ingest_apple(args) -> int:
     return 0
 
 
+def _cmd_ingest_debian(args) -> int:
+    policy = _load_policy(args.policy)
+    releases = [r.strip().lower() for r in (args.release or []) if r.strip()]
+    packages = [p.strip() for p in (args.package or []) if p.strip()]
+    with _open_db(args.db) as conn:
+        _install_policy_if_needed(conn, policy)
+        stats = _debian_ingest_mod.debian_ingest_tick(
+            conn, releases=releases, packages=packages, now=_engine._now())
+        conn.commit()
+    if stats["error"]:
+        print(f"ingest debian: no-op ({stats['error']})")
+        return 1
+    print(f"ingest debian: {stats['rows']} overlay row(s) across "
+          f"{stats['sheets']} sheet(s) "
+          f"({len(stats['releases'])} release(s) x {len(stats['packages'])} "
+          f"package(s)) · fetched={stats['fetched']}")
+    line = _attr.attribution_for("debian_tracker")
+    if line:
+        print(f"  {line}")
+    return 0
+
+
 def _cmd_ingest_ghsa(args) -> int:
     policy = _load_policy(args.policy)
     with _open_db(args.db) as conn:
@@ -851,7 +874,7 @@ def build_parser() -> argparse.ArgumentParser:
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_backfill)
 
     # -- ingestion: aggregator peers (KEV overlay first; OSV/GHSA to follow) ----
-    sp = sub.add_parser("ingest", help="ingest an aggregator peer into the catalog (kev | osv | ghsa)")
+    sp = sub.add_parser("ingest", help="ingest an aggregator peer / fix overlay into the catalog (kev | osv | ghsa | apple | debian)")
     psub = sp.add_subparsers(dest="peer", required=True)
     spk = psub.add_parser("kev", help="CISA KEV overlay refresh (exploitability_signal; CVE-keyed, full refresh)")
     db_arg(spk); pol_arg(spk); spk.set_defaults(func=_cmd_ingest_kev)
@@ -868,6 +891,12 @@ def build_parser() -> argparse.ArgumentParser:
     spa.add_argument("--history", action="store_true",
                     help="also recover pre-index CVEs from Wayback's archived HT1222/HT201222 snapshots (more fetches, rate-heavier)")
     db_arg(spa); pol_arg(spa); spa.set_defaults(func=_cmd_ingest_apple)
+    spd = psub.add_parser("debian", help="Debian security-tracker status overlay (CVE+release+package-keyed; per-(release,package) full refresh; authoritative status words the OSV mirror lacks)")
+    spd.add_argument("--release", action="append", default=None, required=True,
+                    help="Debian release codename to ingest (trixie|bookworm|...); repeatable, REQUIRED (no default public-spine scope is wired)")
+    spd.add_argument("--package", action="append", default=None, required=True,
+                    help="Debian source package to ingest (linux|...); repeatable, REQUIRED (no default public-spine scope is wired)")
+    db_arg(spd); pol_arg(spd); spd.set_defaults(func=_cmd_ingest_debian)
 
     sp = sub.add_parser("refresh", help="incremental NVD enrichment + per-CVE re-decide (wipe-proof; never a bulk re-pull)")
     sp.add_argument("--devices", default=DEFAULT_DEVICES, help="fleet YAML (list of device dicts)")

@@ -260,6 +260,30 @@ CREATE TABLE IF NOT EXISTS apple_fixes (
     PRIMARY KEY (cve_id, product)
 );
 
+-- Debian security-tracker fix overlay — the debian_fixes map. Debian's own
+-- tracker (security-tracker.debian.org/tracker/data/json) is AUTHORITATIVE for
+-- per-source-package / per-release CVE status — the status words
+-- ``resolved`` (with a fixed dpkg version, or ``"0"`` = not affected) / ``open``
+-- / ``undetermined`` that the OSV Debian mirror does NOT carry. Those status
+-- words are what clear NVD's unknown-fix false positives on a Debian host, so
+-- this is a (cve_id, release, package)-keyed OVERLAY (not a new defect_type)
+-- built from a DIFFERENT feed than the OSV catalog rows: the fix-version fields
+-- incidentally overlap with OSV's Debian ecosystem rows, but the status column
+-- is the new signal (same justification as apple_fixes, which carries Apple
+-- fix data no catalog row has). CI-side ingestion builds it from the one bulk
+-- tracker pull; per-(release, package) idempotent full refresh
+-- (DELETE WHERE release+package + INSERT), so CVEs aged off a release sheet do
+-- not leave stale rows.
+CREATE TABLE IF NOT EXISTS debian_fixes (
+    cve_id       TEXT NOT NULL,
+    release      TEXT NOT NULL,   -- codename: trixie, bookworm, ...
+    package      TEXT NOT NULL,   -- source package: linux, ...
+    status       TEXT,            -- resolved | open | undetermined (raw tracker status)
+    fixed_in     TEXT,            -- dpkg version, "0" = not affected, or NULL (open/undetermined)
+    fetched_at   TEXT,
+    PRIMARY KEY (cve_id, release, package)
+);
+
 -- Generic key/value state — the stream cursor lives here
 -- (state key "stream:mitre_cursor" = the last-processed cvelistV5 tip SHA), as
 -- do "stream:last_tick" / "stream:last_summary". A point-in-time sample, not a
@@ -1234,6 +1258,66 @@ def apple_fixes_for(conn, cve_id: str, product: str) -> dict | None:
     r = conn.execute(
         "SELECT * FROM apple_fixes WHERE cve_id=? AND product=?",
         (cve_id, product)).fetchone()
+    return dict(r) if r else None
+
+
+# ---------------------------------------------------------------------------
+# Debian security-tracker fix overlay — the debian_fixes map
+# ((cve_id, release, package)-keyed overlay, not a defect_type)
+# ---------------------------------------------------------------------------
+
+def replace_debian_fixes(conn, release: str, package: str, rows: list[dict],
+                         fetched_at: str) -> int:
+    """Idempotent per-(release, package) full refresh of the ``debian_fixes``
+    overlay: DELETE every existing row for ``(release, package)`` then INSERT the
+    freshly-built sheet ``rows`` (each ``{cve_id, status, fixed_in}``). Returns
+    the number inserted. Deleting-then-inserting (rather than INSERT OR REPLACE)
+    means CVEs aged off a release sheet do not leave stale rows — the overlay
+    always reflects the current rebuild. No-wipe: touches ONLY ``debian_fixes``
+    — never ``defects`` / ``verdicts`` / territory."""
+    conn.execute(
+        "DELETE FROM debian_fixes WHERE release=? AND package=?",
+        (release, package))
+    n = 0
+    for r in rows:
+        conn.execute(
+            """INSERT OR REPLACE INTO debian_fixes
+                 (cve_id, release, package, status, fixed_in, fetched_at)
+               VALUES (?,?,?,?,?,?)""",
+            (r["cve_id"], release, package, r.get("status"),
+             r.get("fixed_in"), fetched_at),
+        )
+        n += 1
+    return n
+
+
+def debian_fixes_all(conn) -> list[dict]:
+    """All debian_fixes overlay rows, ordered by (release, package, cve_id) — the
+    stable shape the spine export serializes and the round-trip test compares
+    against."""
+    rows = conn.execute(
+        "SELECT * FROM debian_fixes ORDER BY release, package, cve_id"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def debian_fixes_for_release_package(conn, release: str, package: str) -> list[dict]:
+    """All debian_fixes overlay rows for one (release, package), ordered by cve_id
+    — the shape a observer reads at assess time (the durable status sheet for a
+    device's release + source package)."""
+    rows = conn.execute(
+        "SELECT * FROM debian_fixes WHERE release=? AND package=? ORDER BY cve_id",
+        (release, package)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def debian_fixes_for(conn, cve_id: str, release: str, package: str) -> dict | None:
+    """One debian_fixes overlay row for a (cve_id, release, package), or None. The
+    observer's decide path: read the durable status + fixed version instead of
+    replaying the Debian bulk tracker per assess."""
+    r = conn.execute(
+        "SELECT * FROM debian_fixes WHERE cve_id=? AND release=? AND package=?",
+        (cve_id, release, package)).fetchone()
     return dict(r) if r else None
 
 
