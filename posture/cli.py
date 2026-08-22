@@ -97,10 +97,18 @@ def _inject_catalog_overlays(device: dict, conn) -> None:
     device declares no ``apple_product`` or the local store has no overlay rows
     for that product (the observer then falls back to its per-assess replay).
 
-    Today the only catalog overlay consumed this way is ``apple_fixes`` (the
-    Apple fix-version map); kev remains operator-supplied (``device["kev"]`` /
-    ``kev_path``), mirroring its observer contract.
+    Two overlays are consumed today:
+      * ``apple_fixes`` — the Apple fix-version map (per ``apple_product``).
+      * ``catalog_defects`` — the imported spine defects table keyed by CPE
+        head, consumed by :class:`NvdCveObserver`'s catalog-backed fetch path
+        so the vulnerability axis decides from the spine with NO network. kev
+        remains operator-supplied (``device["kev"]`` / ``kev_path``).
     """
+    _inject_apple_fixes_overlay(device, conn)
+    _inject_catalog_defects(device, conn)
+
+
+def _inject_apple_fixes_overlay(device: dict, conn) -> None:
     product = str(device.get("apple_product") or "").strip().lower()
     if not product or "apple_fixes" in device:
         return
@@ -111,6 +119,38 @@ def _inject_catalog_overlays(device: dict, conn) -> None:
     if rows:
         device["apple_fixes"] = {r["cve_id"]: r["fixed_in"]
                                  for r in rows if r.get("fixed_in")}
+
+
+def _inject_catalog_defects(device: dict, conn) -> None:
+    """Inject the imported-spine defects a device's NVD observer will consume,
+    keyed by CPE head, so the vulnerability axis assesses from the spine with
+    NO network path (the catalog-backed assess release condition).
+
+    Only injected when the DB actually carries NVD-sourced catalog rows — i.e.
+    this is a real spine mirror, not a fresh/demo DB. A fresh demo DB has none,
+    so ``catalog_defects`` is left ABSENT and the observer falls back to its
+    bundled fixture (the demo corpus), preserving ``posture demo``. Once a
+    spine IS present, every nvd_cpe head is injected (empty heads -> ``[]``),
+    so a head the spine doesn't cover is a COMPLETE-absent answer, NOT a
+    fixture leak (the bundled sample CVEs must never surface as a real
+    client's verdicts). Additive: a device that pre-supplies
+    ``catalog_defects`` (operator input / hermetic test) is left untouched.
+    """
+    if "catalog_defects" in device:
+        return
+    from .sources.nvd_cve import _cpe_head
+    heads = {_cpe_head(m["cpe"]) for m in device.get("matchers", [])
+             if m.get("type") == "nvd_cpe" and m.get("cpe")}
+    if not heads:
+        return
+    try:
+        has_catalog = conn.execute(
+            "SELECT 1 FROM defects WHERE source='nvd' LIMIT 1").fetchone()
+    except Exception:
+        return  # no defects table / unreadable -> skip; observer falls back
+    if not has_catalog:
+        return
+    device["catalog_defects"] = {h: _store.defects_for_cpe_head(conn, h) for h in heads}
 
 
 # ---------------------------------------------------------------------------

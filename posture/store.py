@@ -1149,6 +1149,39 @@ def catalog_all(conn, enrich_state: str | None = None) -> list[dict]:
     return [_parse_defect_row(r) for r in rows]
 
 
+def defects_for_cpe_head(conn, head: str) -> list[dict]:
+    """NVD-enriched catalog rows whose affected CPE set includes ``head`` —
+    the offline assess read path. A catalog-backed observer reads these
+    instead of curling NVD: the defect axis decides from the imported spine
+    with NO network (the release condition that retires the live-curl assess
+    path).
+
+    ``head`` is a lowercased ``part:vendor:product`` CPE head (the match key
+    :func:`posture.sources.nvd_cve._cpe_head` produces). Only NVD-sourced rows
+    carry CPE heads (``fixed_raw.cpe_heads``, built by
+    :func:`posture.refresh._enriched_record`); OSV/GHSA rows are ecosystem/
+    package-shaped, not CPE-shaped, so they are excluded by construction (their
+    ``fixed_raw`` has no ``cpe_heads``). Distrusted rows are skipped — a
+    retroactively-distrusted coordinate is not re-emitted as a verdict (the
+    map is not the territory, and a distrusted map point stays distrusted).
+
+    Returns parsed rows (fixed_raw/refs/cwe/ref_tags restored to Python
+    values), ordered by id for determinism. No ``LIMIT``: the spine is a
+    point-in-time snapshot, not a paginated browse (mirrors :func:`catalog_all`
+    — the caller owns memory; assess fans out per device CPE head)."""
+    out: list[dict] = []
+    rows = conn.execute(
+        "SELECT * FROM defects WHERE source='nvd' "
+        "AND (distrusted IS NULL OR distrusted=0) ORDER BY id"
+    ).fetchall()
+    for r in rows:
+        d = _parse_defect_row(r)
+        fr = d.get("fixed_raw") or {}
+        if head in (fr.get("cpe_heads") or []):
+            out.append(d)
+    return out
+
+
 def mark_defect_distrust(conn, defect_id: str, reason: str) -> bool:
     """Retroactive distrust MARK on one catalog row (never a delete — you keep
     the fact that you no longer trust this row's provenance, auditable). Returns
