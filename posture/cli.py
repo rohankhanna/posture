@@ -45,6 +45,9 @@ from .sources import kev as _kev_mod
 from .sources import ghsa as _ghsa_mod
 from .sources import osv as _osv_mod
 from .sources import apple_ingest as _apple_ingest_mod
+from .sources import debian_ingest as _debian_ingest_mod
+from .sources import ubuntu_ingest as _ubuntu_ingest_mod
+from .sources import epss as _epss_mod
 from .sources.ubuntu_tracker import UbuntuTrackerObserver
 from .sources.debian_tracker import DebianTrackerObserver
 from .sources.apple_advisory import AppleAdvisoryObserver
@@ -94,10 +97,27 @@ def _inject_catalog_overlays(device: dict, conn) -> None:
     device declares no ``apple_product`` or the local store has no overlay rows
     for that product (the observer then falls back to its per-assess replay).
 
-    Today the only catalog overlay consumed this way is ``apple_fixes`` (the
-    Apple fix-version map); kev remains operator-supplied (``device["kev"]`` /
-    ``kev_path``), mirroring its observer contract.
+    Four overlays are consumed today:
+      * ``apple_fixes`` — the Apple fix-version map (per ``apple_product``).
+      * ``catalog_defects`` — the imported spine defects table keyed by CPE
+        head, consumed by :class:`NvdCveObserver`'s catalog-backed fetch path
+        so the vulnerability axis decides from the spine with NO network.
+      * ``debian_fixes`` — the Debian security-tracker status overlay,
+        reconstructed to the bulk-data dict shape ``DebianTrackerObserver``'s
+        ``_decide`` consumes, so the distro axis decides from the spine with NO
+        network (mirrors the NvdCveObserver catalog path).
+      * ``ubuntu_fixes`` — the Ubuntu security-tracker status overlay, keyed
+        per-CVE per-package, normalized at assess time by
+        :class:`UbuntuTrackerObserver`'s catalog path. kev remains
+        operator-supplied (``device["kev"]`` / ``kev_path``).
     """
+    _inject_apple_fixes_overlay(device, conn)
+    _inject_catalog_defects(device, conn)
+    _inject_debian_fixes_overlay(device, conn)
+    _inject_ubuntu_fixes_overlay(device, conn)
+
+
+def _inject_apple_fixes_overlay(device: dict, conn) -> None:
     product = str(device.get("apple_product") or "").strip().lower()
     if not product or "apple_fixes" in device:
         return
@@ -108,6 +128,111 @@ def _inject_catalog_overlays(device: dict, conn) -> None:
     if rows:
         device["apple_fixes"] = {r["cve_id"]: r["fixed_in"]
                                  for r in rows if r.get("fixed_in")}
+
+
+def _inject_catalog_defects(device: dict, conn) -> None:
+    """Inject the imported-spine defects a device's NVD observer will consume,
+    keyed by CPE head, so the vulnerability axis assesses from the spine with
+    NO network path (the catalog-backed assess release condition).
+
+    Only injected when the DB actually carries NVD-sourced catalog rows — i.e.
+    this is a real spine mirror, not a fresh/demo DB. A fresh demo DB has none,
+    so ``catalog_defects`` is left ABSENT and the observer falls back to its
+    bundled fixture (the demo corpus), preserving ``posture demo``. Once a
+    spine IS present, every nvd_cpe head is injected (empty heads -> ``[]``),
+    so a head the spine doesn't cover is a COMPLETE-absent answer, NOT a
+    fixture leak (the bundled sample CVEs must never surface as a real
+    client's verdicts). Additive: a device that pre-supplies
+    ``catalog_defects`` (operator input / hermetic test) is left untouched.
+    """
+    if "catalog_defects" in device:
+        return
+    from .sources.nvd_cve import _cpe_head
+    heads = {_cpe_head(m["cpe"]) for m in device.get("matchers", [])
+             if m.get("type") == "nvd_cpe" and m.get("cpe")}
+    if not heads:
+        return
+    try:
+        has_catalog = conn.execute(
+            "SELECT 1 FROM defects WHERE source='nvd' LIMIT 1").fetchone()
+    except Exception:
+        return  # no defects table / unreadable -> skip; observer falls back
+    if not has_catalog:
+        return
+    device["catalog_defects"] = {h: _store.defects_for_cpe_head(conn, h) for h in heads}
+
+
+def _inject_debian_fixes_overlay(device: dict, conn) -> None:
+    """Inject the Debian security-tracker status overlay a device's
+    :class:`DebianTrackerObserver` consumes, reconstructed to the bulk-data dict
+    shape its ``_decide`` reads, so the distro axis assesses from the spine with
+    NO network path (the catalog-backed assess path, mirroring
+    :class:`NvdCveObserver`).
+
+    Only injected when the DB carries debian_fixes rows — a fresh/demo DB has
+    none, so ``debian_fixes`` is left ABSENT and the observer falls back to its
+    bundled fixture (preserving ``posture demo``). Once the overlay IS present,
+    the bulk dict is rebuilt from the device's ``debian_release`` +
+    ``debian_packages`` (an uncovered release/package yields an empty block ->
+    ``_decide`` returns None -> NVD stands: a COMPLETE-absent answer, NOT a
+    fixture leak). Additive: a device that pre-supplies ``debian_fixes``
+    (operator input / hermetic test) is left untouched.
+    """
+    release = str(device.get("debian_release") or "").strip().lower()
+    packages = [p for p in (device.get("debian_packages") or []) if p]
+    if not release or not packages or "debian_fixes" in device:
+        return
+    try:
+        has_overlay = conn.execute("SELECT 1 FROM debian_fixes LIMIT 1").fetchone()
+    except Exception:
+        return  # no overlay table / unreadable -> skip; observer falls back to fixture
+    if not has_overlay:
+        return
+    # Rebuild the bulk-data dict shape ``_decide`` consults:
+    # {package: {cve_id: {"releases": {release: {"status", "fixed_version"}}}}}.
+    # The overlay's ``fixed_in`` column maps to the tracker's ``fixed_version``.
+    data: dict = {}
+    for pkg in packages:
+        pblock: dict = {}
+        for r in _store.debian_fixes_for_release_package(conn, release, pkg):
+            pblock[r["cve_id"]] = {"releases": {release: {
+                "status": r.get("status"), "fixed_version": r.get("fixed_in")}}}
+        if pblock:
+            data[pkg] = pblock
+    device["debian_fixes"] = data
+
+
+def _inject_ubuntu_fixes_overlay(device: dict, conn) -> None:
+    """Inject the Ubuntu security-tracker status overlay a device's
+    :class:`UbuntuTrackerObserver` consumes, keyed per-CVE per-package, so the
+    distro axis assesses from the spine with NO network path (the catalog-backed
+    assess path, mirroring :class:`NvdCveObserver`).
+
+    The overlay stores the RAW tracker status words (``released`` /
+    ``needed`` / ``needs-triage`` / ``not-affected`` / ``DNE`` / ``ignored`` /
+    ``deferred``); the observer normalizes them at assess time to the same
+    ``{pkg: (status, fixed_in)}`` shape :func:`parse_cve_page` produces, so
+    ``_decide`` runs UNCHANGED (one decision path, not a second one for the
+    catalog). Same fresh-DB / complete-absent / no-clobber contract as the
+    Debian injector above.
+    """
+    release = str(device.get("ubuntu_release") or "").strip().lower()
+    packages = [p for p in (device.get("ubuntu_packages") or []) if p]
+    if not release or not packages or "ubuntu_fixes" in device:
+        return
+    try:
+        has_overlay = conn.execute("SELECT 1 FROM ubuntu_fixes LIMIT 1").fetchone()
+    except Exception:
+        return  # no overlay table / unreadable -> skip; observer falls back to fixture
+    if not has_overlay:
+        return
+    # Per-CVE -> {package: (raw_status, fixed_in)}; the observer normalizes this
+    # to the ``found`` shape ``_decide`` consumes (mirrors parse_cve_page).
+    by_cve: dict = {}
+    for pkg in packages:
+        for r in _store.ubuntu_fixes_for_release_package(conn, release, pkg):
+            by_cve.setdefault(r["cve_id"], {})[pkg] = (r.get("status"), r.get("fixed_in"))
+    device["ubuntu_fixes"] = by_cve
 
 
 # ---------------------------------------------------------------------------
@@ -617,6 +742,67 @@ def _cmd_ingest_apple(args) -> int:
     return 0
 
 
+def _cmd_ingest_debian(args) -> int:
+    policy = _load_policy(args.policy)
+    releases = [r.strip().lower() for r in (args.release or []) if r.strip()]
+    packages = [p.strip() for p in (args.package or []) if p.strip()]
+    with _open_db(args.db) as conn:
+        _install_policy_if_needed(conn, policy)
+        stats = _debian_ingest_mod.debian_ingest_tick(
+            conn, releases=releases, packages=packages, now=_engine._now())
+        conn.commit()
+    if stats["error"]:
+        print(f"ingest debian: no-op ({stats['error']})")
+        return 1
+    print(f"ingest debian: {stats['rows']} overlay row(s) across "
+          f"{stats['sheets']} sheet(s) "
+          f"({len(stats['releases'])} release(s) x {len(stats['packages'])} "
+          f"package(s)) · fetched={stats['fetched']}")
+    line = _attr.attribution_for("debian_tracker")
+    if line:
+        print(f"  {line}")
+    return 0
+
+
+def _cmd_ingest_ubuntu(args) -> int:
+    policy = _load_policy(args.policy)
+    releases = [r.strip().lower() for r in (args.release or []) if r.strip()]
+    packages = [p.strip() for p in (args.package or []) if p.strip()]
+    with _open_db(args.db) as conn:
+        _install_policy_if_needed(conn, policy)
+        stats = _ubuntu_ingest_mod.ubuntu_ingest_tick(
+            conn, releases=releases, packages=packages, now=_engine._now())
+        conn.commit()
+    if stats["error"]:
+        print(f"ingest ubuntu: no-op ({stats['error']})")
+        return 1
+    print(f"ingest ubuntu: {stats['rows']} overlay row(s) across "
+          f"{stats['sheets']} sheet(s) "
+          f"({len(stats['releases'])} release(s) x {len(stats['packages'])} "
+          f"package(s)) · fetched={stats['fetched']}")
+    line = _attr.attribution_for("ubuntu_tracker")
+    if line:
+        print(f"  {line}")
+    return 0
+
+
+def _cmd_ingest_epss(args) -> int:
+    policy = _load_policy(args.policy)
+    with _open_db(args.db) as conn:
+        _install_policy_if_needed(conn, policy)
+        stats = _epss_mod.epss_ingest_tick(conn, now=_engine._now())
+        conn.commit()
+    if stats["error"]:
+        print(f"ingest epss: no-op ({stats['error']})")
+        return 1
+    print(f"ingest epss: {stats['rows']} overlay row(s) (daily full refresh) "
+          f"· fetched={stats['fetched']}")
+    line = _attr.attribution_for("epss")
+    if line:
+        print(f"  {line}")
+    return 0
+
+
 def _cmd_ingest_ghsa(args) -> int:
     policy = _load_policy(args.policy)
     with _open_db(args.db) as conn:
@@ -851,7 +1037,7 @@ def build_parser() -> argparse.ArgumentParser:
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_backfill)
 
     # -- ingestion: aggregator peers (KEV overlay first; OSV/GHSA to follow) ----
-    sp = sub.add_parser("ingest", help="ingest an aggregator peer into the catalog (kev | osv | ghsa)")
+    sp = sub.add_parser("ingest", help="ingest an aggregator peer / fix / exploitability overlay into the catalog (kev | osv | ghsa | apple | debian | ubuntu | epss)")
     psub = sp.add_subparsers(dest="peer", required=True)
     spk = psub.add_parser("kev", help="CISA KEV overlay refresh (exploitability_signal; CVE-keyed, full refresh)")
     db_arg(spk); pol_arg(spk); spk.set_defaults(func=_cmd_ingest_kev)
@@ -868,6 +1054,20 @@ def build_parser() -> argparse.ArgumentParser:
     spa.add_argument("--history", action="store_true",
                     help="also recover pre-index CVEs from Wayback's archived HT1222/HT201222 snapshots (more fetches, rate-heavier)")
     db_arg(spa); pol_arg(spa); spa.set_defaults(func=_cmd_ingest_apple)
+    spd = psub.add_parser("debian", help="Debian security-tracker status overlay (CVE+release+package-keyed; per-(release,package) full refresh; authoritative status words the OSV mirror lacks)")
+    spd.add_argument("--release", action="append", default=None, required=True,
+                    help="Debian release codename to ingest (trixie|bookworm|...); repeatable, REQUIRED (no default public-spine scope is wired)")
+    spd.add_argument("--package", action="append", default=None, required=True,
+                    help="Debian source package to ingest (linux|...); repeatable, REQUIRED (no default public-spine scope is wired)")
+    db_arg(spd); pol_arg(spd); spd.set_defaults(func=_cmd_ingest_debian)
+    spu = psub.add_parser("ubuntu", help="Ubuntu security-tracker status overlay (CVE+release+package-keyed; per-(release,package) full refresh; authoritative status words the OSV mirror lacks)")
+    spu.add_argument("--release", action="append", default=None, required=True,
+                    help="Ubuntu release codename to ingest (noble|jammy|focal|...); repeatable, REQUIRED (no default public-spine scope is wired)")
+    spu.add_argument("--package", action="append", default=None, required=True,
+                    help="Ubuntu source package to ingest (linux|...); repeatable, REQUIRED (no default public-spine scope is wired)")
+    db_arg(spu); pol_arg(spu); spu.set_defaults(func=_cmd_ingest_ubuntu)
+    spe = psub.add_parser("epss", help="FIRST.org EPSS exploitability-likelihood overlay (CVE-keyed; daily full refresh; fills the NVD-degradation gap; complementary to kev)")
+    db_arg(spe); pol_arg(spe); spe.set_defaults(func=_cmd_ingest_epss)
 
     sp = sub.add_parser("refresh", help="incremental NVD enrichment + per-CVE re-decide (wipe-proof; never a bulk re-pull)")
     sp.add_argument("--devices", default=DEFAULT_DEVICES, help="fleet YAML (list of device dicts)")

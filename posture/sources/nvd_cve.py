@@ -299,13 +299,21 @@ class NvdCveObserver(Observer):
             return ObserverResult(verdicts=[], complete=True,
                                   reason="device has no nvd_cpe matchers")
 
+        # The territory pre-pass (cli._inject_catalog_overlays) loads the
+        # imported spine defects table into ``device["catalog_defects"]`` keyed
+        # by CPE head BEFORE assess — the "consume locally" half of "feed and
+        # enrich in CI, consume locally". When present, _fetch reads the catalog
+        # (NO network, NO fixture file); the observer contract still forbids DB
+        # access in assess (no conn). Absent -> fall back to fixture/live.
+        catalog = device.get("catalog_defects")
+
         verdicts: list[Verdict] = []
         complete = True
         reasons: list[str] = []
         for m in matchers:
             cpe = m["cpe"]
             device_ver = m.get("version") or device.get("os_version") or device.get("patch_level") or "*"
-            records, ok, reason = self._fetch(cpe)
+            records, ok, reason = self._fetch(cpe, catalog)
             if not ok:
                 complete = False
                 reasons.append(reason or f"{cpe} incomplete")
@@ -313,15 +321,26 @@ class NvdCveObserver(Observer):
                 v = self._interpret(rec, device_ver, cpe)
                 if v is not None:
                     verdicts.append(v)
-        out_reason = "; ".join(reasons) if reasons else ("fixture" if not self.live else "live")
+        if reasons:
+            out_reason = "; ".join(reasons)
+        elif catalog is not None:
+            out_reason = "catalog"
+        else:
+            out_reason = "fixture" if not self.live else "live"
         return ObserverResult(verdicts=verdicts, complete=complete, reason=out_reason)
 
-    # -- fetch (live curl or offline fixture) --------------------------------
+    # -- fetch (live curl, offline fixture, or offline catalog) ---------------
 
-    def _fetch(self, cpe: str) -> tuple[list[dict], bool, str]:
-        if not self.live:
-            return self._fetch_fixture(cpe)
-        return self._fetch_live(cpe)
+    def _fetch(self, cpe: str, catalog: dict | None = None) -> tuple[list[dict], bool, str]:
+        # precedence: an explicit --live operator pull wins (the operator asked
+        # for the network); then the territory-injected catalog (the imported
+        # spine, no network); then the bundled fixture (the demo/hermetic
+        # corpus). Live > catalog > fixture.
+        if self.live:
+            return self._fetch_live(cpe)
+        if catalog is not None:
+            return self._fetch_catalog(cpe, catalog)
+        return self._fetch_fixture(cpe)
 
     def _fetch_fixture(self, cpe: str) -> tuple[list[dict], bool, str]:
         try:
@@ -343,6 +362,61 @@ class NvdCveObserver(Observer):
                     if _cpe_head(cm.get("criteria", "")) == head:
                         return True
         return False
+
+    def _fetch_catalog(self, cpe: str, catalog: dict) -> tuple[list[dict], bool, str]:
+        """Read pre-injected catalog defects for this CPE — NO network, NO
+        fixture file. ``catalog`` is the device input the territory pre-pass
+        loaded from the imported spine defects table (``{cpe_head: [defect_row,
+        ...]}`` of NVD-sourced rows). Each row is reconstructed to the NVD
+        vuln shape so :meth:`_interpret` decides it through the SAME
+        :func:`decide_cve_for_device` logic as a live pull — there is ONE
+        decision path, not a second one for the catalog.
+
+        A head present in the catalog with zero rows is a COMPLETE absent
+        answer (the spine is the whole corpus; absence in the spine IS
+        absence — no fallback to the demo fixture, which would leak the
+        bundled sample CVEs into a real client's verdicts)."""
+        head = _cpe_head(cpe)
+        rows = catalog.get(head, [])
+        vulns = [self._defect_row_to_vuln(r) for r in rows]
+        return vulns, True, f"catalog:{head} ({len(vulns)})"
+
+    @staticmethod
+    def _defect_row_to_vuln(row: dict) -> dict:
+        """Reconstruct the minimal NVD ``{"cve": {...}}`` shape the live/
+        fixture paths consume from one parsed catalog defect row, so the
+        catalog-backed assess reuses :meth:`_interpret` /
+        :func:`decide_cve_for_device` UNCHANGED. The catalog row is a faithful
+        projection of these fields (built by :func:`refresh._enriched_record`
+        from the live cve), so nothing the decision + provenance read is lost:
+        configurations (the cpeMatch ranges), metrics, descriptions,
+        references, and the id. ``decide_cve_for_device`` re-filters the
+        reconstructed cpeMatch by the device's CPE head, exactly as it does for
+        a live-pulled cve."""
+        fr = row.get("fixed_raw") or {}
+        cpe_match = [{
+            "vulnerable": True,
+            "criteria": rng.get("criteria"),
+            "versionStartIncluding": rng.get("vstart_incl"),
+            "versionStartExcluding": rng.get("vstart_excl"),
+            "versionEndIncluding": rng.get("vend_incl"),
+            "versionEndExcluding": rng.get("vend_excl"),
+        } for rng in (fr.get("ranges") or []) if rng.get("criteria")]
+        cve: dict = {
+            "id": row.get("id"),
+            "configurations": [{"nodes": [{"cpeMatch": cpe_match}]}] if cpe_match else [],
+            "descriptions": [{"lang": "en", "value": row.get("description") or ""}],
+            "references": [{"url": u} for u in (row.get("refs") or [])],
+        }
+        # metrics: only when the row carries a score or a vector. _metrics
+        # returns (None, None, None) when baseScore is None -> severity falls
+        # to "unknown" downstream, the same as a live CVE with no CVSS.
+        if row.get("cvss") is not None or row.get("cvss_vector"):
+            cve["metrics"] = {"cvssMetricV31": [{"cvssData": {
+                "baseScore": row.get("cvss"),
+                "vectorString": row.get("cvss_vector")},
+                "baseSeverity": row.get("severity")}]}
+        return {"cve": cve}
 
     def _fetch_live(self, cpe: str) -> tuple[list[dict], bool, str]:
         """Real NVD per-CPE pull, paginated, header-only apiKey."""

@@ -260,6 +260,73 @@ CREATE TABLE IF NOT EXISTS apple_fixes (
     PRIMARY KEY (cve_id, product)
 );
 
+-- Debian security-tracker fix overlay — the debian_fixes map. Debian's own
+-- tracker (security-tracker.debian.org/tracker/data/json) is AUTHORITATIVE for
+-- per-source-package / per-release CVE status — the status words
+-- ``resolved`` (with a fixed dpkg version, or ``"0"`` = not affected) / ``open``
+-- / ``undetermined`` that the OSV Debian mirror does NOT carry. Those status
+-- words are what clear NVD's unknown-fix false positives on a Debian host, so
+-- this is a (cve_id, release, package)-keyed OVERLAY (not a new defect_type)
+-- built from a DIFFERENT feed than the OSV catalog rows: the fix-version fields
+-- incidentally overlap with OSV's Debian ecosystem rows, but the status column
+-- is the new signal (same justification as apple_fixes, which carries Apple
+-- fix data no catalog row has). CI-side ingestion builds it from the one bulk
+-- tracker pull; per-(release, package) idempotent full refresh
+-- (DELETE WHERE release+package + INSERT), so CVEs aged off a release sheet do
+-- not leave stale rows.
+CREATE TABLE IF NOT EXISTS debian_fixes (
+    cve_id       TEXT NOT NULL,
+    release      TEXT NOT NULL,   -- codename: trixie, bookworm, ...
+    package      TEXT NOT NULL,   -- source package: linux, ...
+    status       TEXT,            -- resolved | open | undetermined (raw tracker status)
+    fixed_in     TEXT,            -- dpkg version, "0" = not affected, or NULL (open/undetermined)
+    fetched_at   TEXT,
+    PRIMARY KEY (cve_id, release, package)
+);
+
+-- Ubuntu security-tracker fix overlay — the ubuntu_fixes map. Ubuntu's own
+-- tracker (ubuntu.com/security/cves.json bulk CVE feed) is AUTHORITATIVE for
+-- per-source-package / per-release CVE status — the status words
+-- ``released`` (with a fixed version note) / ``needed`` / ``pending`` /
+-- ``needs-triage`` / ``not-affected`` / ``DNE`` / ``ignored`` / ``deferred``
+-- that the OSV Ubuntu mirror does NOT carry verbatim. Those status words are
+-- what clear NVD's unknown-fix false positives on an Ubuntu host, so this is a
+-- (cve_id, release, package)-keyed OVERLAY (not a new defect_type) built from
+-- a DIFFERENT feed than the OSV catalog rows: the fix-version fields
+-- incidentally overlap with OSV's Ubuntu ecosystem rows, but the raw status
+-- column is the new signal (same justification as debian_fixes / apple_fixes).
+-- CI-side ingestion builds it from the paginated bulk CVE JSON (?package=
+-- filter, one pagination per package); per-(release, package) idempotent full
+-- refresh (DELETE WHERE release+package + INSERT), so CVEs aged off a release
+-- sheet do not leave stale rows.
+CREATE TABLE IF NOT EXISTS ubuntu_fixes (
+    cve_id       TEXT NOT NULL,
+    release      TEXT NOT NULL,   -- codename: noble, jammy, focal, ...
+    package      TEXT NOT NULL,   -- source package: linux, ...
+    status       TEXT,            -- released | needed | pending | needs-triage | not-affected | DNE | ignored | deferred (raw tracker status)
+    fixed_in     TEXT,            -- the per-release note/description (fixed version when released); NULL when empty
+    fetched_at   TEXT,
+    PRIMARY KEY (cve_id, release, package)
+);
+
+-- EPSS (Exploit Prediction Scoring System, FIRST.org) overlay — the
+-- exploitability_likelihood map. EPSS scores EVERY published CVE daily with a
+-- 0..1 probability of exploitation in the next 30 days + a percentile, free +
+-- unauthenticated. This is a CVE-keyed OVERLAY (not a new defect_type): it
+-- annotates an existing cve catalog row with a likelihood signal. It is
+-- COMPLEMENTARY to ``kev`` (KEV = ~1,700 confirmed-exploited; EPSS = all CVEs
+-- predicted-likelihood) and fills the gap NVD's 2026-04-15 risk-based-
+-- enrichment retreat left (NVD now enriches EPSS only for KEV/federal/
+-- EO14028-critical CVEs; the long tail lost its EPSS). CI-side ingestion pulls
+-- the one daily CSV snapshot; idempotent full refresh (DELETE all + INSERT),
+-- so scores aged out (a CVE dropped from the EPSS model) leave no stale rows.
+CREATE TABLE IF NOT EXISTS epss (
+    cve_id       TEXT PRIMARY KEY,
+    epss         REAL,            -- 0..1 probability of exploitation in 30 days
+    percentile   REAL,            -- 0..1 proportion scored at or below this score
+    fetched_at   TEXT
+);
+
 -- Generic key/value state — the stream cursor lives here
 -- (state key "stream:mitre_cursor" = the last-processed cvelistV5 tip SHA), as
 -- do "stream:last_tick" / "stream:last_summary". A point-in-time sample, not a
@@ -1082,6 +1149,39 @@ def catalog_all(conn, enrich_state: str | None = None) -> list[dict]:
     return [_parse_defect_row(r) for r in rows]
 
 
+def defects_for_cpe_head(conn, head: str) -> list[dict]:
+    """NVD-enriched catalog rows whose affected CPE set includes ``head`` —
+    the offline assess read path. A catalog-backed observer reads these
+    instead of curling NVD: the defect axis decides from the imported spine
+    with NO network (the release condition that retires the live-curl assess
+    path).
+
+    ``head`` is a lowercased ``part:vendor:product`` CPE head (the match key
+    :func:`posture.sources.nvd_cve._cpe_head` produces). Only NVD-sourced rows
+    carry CPE heads (``fixed_raw.cpe_heads``, built by
+    :func:`posture.refresh._enriched_record`); OSV/GHSA rows are ecosystem/
+    package-shaped, not CPE-shaped, so they are excluded by construction (their
+    ``fixed_raw`` has no ``cpe_heads``). Distrusted rows are skipped — a
+    retroactively-distrusted coordinate is not re-emitted as a verdict (the
+    map is not the territory, and a distrusted map point stays distrusted).
+
+    Returns parsed rows (fixed_raw/refs/cwe/ref_tags restored to Python
+    values), ordered by id for determinism. No ``LIMIT``: the spine is a
+    point-in-time snapshot, not a paginated browse (mirrors :func:`catalog_all`
+    — the caller owns memory; assess fans out per device CPE head)."""
+    out: list[dict] = []
+    rows = conn.execute(
+        "SELECT * FROM defects WHERE source='nvd' "
+        "AND (distrusted IS NULL OR distrusted=0) ORDER BY id"
+    ).fetchall()
+    for r in rows:
+        d = _parse_defect_row(r)
+        fr = d.get("fixed_raw") or {}
+        if head in (fr.get("cpe_heads") or []):
+            out.append(d)
+    return out
+
+
 def mark_defect_distrust(conn, defect_id: str, reason: str) -> bool:
     """Retroactive distrust MARK on one catalog row (never a delete — you keep
     the fact that you no longer trust this row's provenance, auditable). Returns
@@ -1182,6 +1282,47 @@ def kev_for_cve(conn, cve_id: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# EPSS (FIRST.org) exploitability-likelihood overlay — the epss map
+# (cve_id-keyed overlay, not a defect_type)
+# ---------------------------------------------------------------------------
+
+def replace_epss(conn, rows: list[dict], fetched_at: str) -> int:
+    """Idempotent full refresh of the ``epss`` overlay: DELETE every row then
+    INSERT the freshly-pulled daily snapshot ``rows`` (each
+    ``{cve_id, epss, percentile}``). Returns the number inserted. EPSS is a
+    complete daily snapshot of every scored CVE, so a wholesale replace (not
+    INSERT OR REPLACE) means a CVE dropped from the model leaves no stale row.
+    No-wipe on the caller side: a failed fetch must NOT call this (preserve
+    last-known-good). Touches ONLY ``epss`` — never ``defects`` / ``verdicts`` /
+    territory."""
+    conn.execute("DELETE FROM epss")
+    n = 0
+    for r in rows:
+        conn.execute(
+            """INSERT OR REPLACE INTO epss
+                 (cve_id, epss, percentile, fetched_at)
+               VALUES (?,?,?,?)""",
+            (r["cve_id"], r.get("epss"), r.get("percentile"), fetched_at),
+        )
+        n += 1
+    return n
+
+
+def epss_all(conn) -> list[dict]:
+    """All epss overlay rows, ordered by cve_id — the stable shape the spine
+    export serializes and the round-trip test compares against."""
+    rows = conn.execute("SELECT * FROM epss ORDER BY cve_id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def epss_for_cve(conn, cve_id: str) -> dict | None:
+    """One epss overlay row for a cve_id, or None. The threat-axis read path:
+    the likelihood score + percentile for a device's candidate CVE."""
+    r = conn.execute("SELECT * FROM epss WHERE cve_id=?", (cve_id,)).fetchone()
+    return dict(r) if r else None
+
+
+# ---------------------------------------------------------------------------
 # Apple advisory fix-version overlay — the apple_fixes map
 # ((cve_id, product)-keyed overlay, not a defect_type)
 # ---------------------------------------------------------------------------
@@ -1234,6 +1375,126 @@ def apple_fixes_for(conn, cve_id: str, product: str) -> dict | None:
     r = conn.execute(
         "SELECT * FROM apple_fixes WHERE cve_id=? AND product=?",
         (cve_id, product)).fetchone()
+    return dict(r) if r else None
+
+
+# ---------------------------------------------------------------------------
+# Debian security-tracker fix overlay — the debian_fixes map
+# ((cve_id, release, package)-keyed overlay, not a defect_type)
+# ---------------------------------------------------------------------------
+
+def replace_debian_fixes(conn, release: str, package: str, rows: list[dict],
+                         fetched_at: str) -> int:
+    """Idempotent per-(release, package) full refresh of the ``debian_fixes``
+    overlay: DELETE every existing row for ``(release, package)`` then INSERT the
+    freshly-built sheet ``rows`` (each ``{cve_id, status, fixed_in}``). Returns
+    the number inserted. Deleting-then-inserting (rather than INSERT OR REPLACE)
+    means CVEs aged off a release sheet do not leave stale rows — the overlay
+    always reflects the current rebuild. No-wipe: touches ONLY ``debian_fixes``
+    — never ``defects`` / ``verdicts`` / territory."""
+    conn.execute(
+        "DELETE FROM debian_fixes WHERE release=? AND package=?",
+        (release, package))
+    n = 0
+    for r in rows:
+        conn.execute(
+            """INSERT OR REPLACE INTO debian_fixes
+                 (cve_id, release, package, status, fixed_in, fetched_at)
+               VALUES (?,?,?,?,?,?)""",
+            (r["cve_id"], release, package, r.get("status"),
+             r.get("fixed_in"), fetched_at),
+        )
+        n += 1
+    return n
+
+
+def debian_fixes_all(conn) -> list[dict]:
+    """All debian_fixes overlay rows, ordered by (release, package, cve_id) — the
+    stable shape the spine export serializes and the round-trip test compares
+    against."""
+    rows = conn.execute(
+        "SELECT * FROM debian_fixes ORDER BY release, package, cve_id"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def debian_fixes_for_release_package(conn, release: str, package: str) -> list[dict]:
+    """All debian_fixes overlay rows for one (release, package), ordered by cve_id
+    — the shape a observer reads at assess time (the durable status sheet for a
+    device's release + source package)."""
+    rows = conn.execute(
+        "SELECT * FROM debian_fixes WHERE release=? AND package=? ORDER BY cve_id",
+        (release, package)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def debian_fixes_for(conn, cve_id: str, release: str, package: str) -> dict | None:
+    """One debian_fixes overlay row for a (cve_id, release, package), or None. The
+    observer's decide path: read the durable status + fixed version instead of
+    replaying the Debian bulk tracker per assess."""
+    r = conn.execute(
+        "SELECT * FROM debian_fixes WHERE cve_id=? AND release=? AND package=?",
+        (cve_id, release, package)).fetchone()
+    return dict(r) if r else None
+
+
+# ---------------------------------------------------------------------------
+# Ubuntu security-tracker fix overlay — the ubuntu_fixes map
+# ((cve_id, release, package)-keyed overlay, not a defect_type)
+# ---------------------------------------------------------------------------
+
+def replace_ubuntu_fixes(conn, release: str, package: str, rows: list[dict],
+                        fetched_at: str) -> int:
+    """Idempotent per-(release, package) full refresh of the ``ubuntu_fixes``
+    overlay: DELETE every existing row for ``(release, package)`` then INSERT the
+    freshly-built sheet ``rows`` (each ``{cve_id, status, fixed_in}``). Returns
+    the number inserted. Deleting-then-inserting (rather than INSERT OR REPLACE)
+    means CVEs aged off a release sheet do not leave stale rows — the overlay
+    always reflects the current rebuild. No-wipe: touches ONLY ``ubuntu_fixes``
+    — never ``defects`` / ``verdicts`` / territory."""
+    conn.execute(
+        "DELETE FROM ubuntu_fixes WHERE release=? AND package=?",
+        (release, package))
+    n = 0
+    for r in rows:
+        conn.execute(
+            """INSERT OR REPLACE INTO ubuntu_fixes
+                 (cve_id, release, package, status, fixed_in, fetched_at)
+               VALUES (?,?,?,?,?,?)""",
+            (r["cve_id"], release, package, r.get("status"),
+             r.get("fixed_in"), fetched_at),
+        )
+        n += 1
+    return n
+
+
+def ubuntu_fixes_all(conn) -> list[dict]:
+    """All ubuntu_fixes overlay rows, ordered by (release, package, cve_id) — the
+    stable shape the spine export serializes and the round-trip test compares
+    against."""
+    rows = conn.execute(
+        "SELECT * FROM ubuntu_fixes ORDER BY release, package, cve_id"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def ubuntu_fixes_for_release_package(conn, release: str, package: str) -> list[dict]:
+    """All ubuntu_fixes overlay rows for one (release, package), ordered by cve_id
+    — the shape a observer reads at assess time (the durable status sheet for a
+    device's release + source package)."""
+    rows = conn.execute(
+        "SELECT * FROM ubuntu_fixes WHERE release=? AND package=? ORDER BY cve_id",
+        (release, package)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def ubuntu_fixes_for(conn, cve_id: str, release: str, package: str) -> dict | None:
+    """One ubuntu_fixes overlay row for a (cve_id, release, package), or None. The
+    observer's decide path: read the durable status + fixed note instead of
+    replaying the Ubuntu per-CVE tracker HTML per assess."""
+    r = conn.execute(
+        "SELECT * FROM ubuntu_fixes WHERE cve_id=? AND release=? AND package=?",
+        (cve_id, release, package)).fetchone()
     return dict(r) if r else None
 
 

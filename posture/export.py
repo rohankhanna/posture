@@ -50,7 +50,7 @@ SPINE_DIR = "spine"
 # absent: verdicts, device_posture, health_*, glossary, term_signals,
 # spine_bindings, repair_proposals, policy_versions, state.
 FLAT_TABLES = ("crosswalk", "candidates", "distrust_marks", "seen_defects", "kev",
-               "apple_fixes")
+               "apple_fixes", "debian_fixes", "ubuntu_fixes", "epss")
 
 
 def _now() -> str:
@@ -132,6 +132,9 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
         "seen_defects": _store.seen_defects,
         "kev": _store.kev_all,
         "apple_fixes": _store.apple_fixes_all,
+        "debian_fixes": _store.debian_fixes_all,
+        "ubuntu_fixes": _store.ubuntu_fixes_all,
+        "epss": _store.epss_all,
     }
     for name in FLAT_TABLES:
         rows = loaders[name](conn)
@@ -222,7 +225,8 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
 
     stats = {k: 0 for k in ("defects", "crosswalk", "candidates",
                            "distrust_marks", "seen_defects", "kev",
-                           "apple_fixes")}
+                           "apple_fixes", "debian_fixes", "ubuntu_fixes",
+                           "epss")}
 
     # --- defects: full INSERT OR REPLACE (all columns, including enrich_state,
     #     distrusted, distrust_reason, discovered_at — a faithful mirror of
@@ -322,6 +326,51 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
              row.get("advisory_id"), row.get("fetched_at")),
         )
         stats["apple_fixes"] += 1
+
+    # --- debian_fixes: INSERT OR REPLACE (cve_id, release, package PK) — the
+    #     Debian security-tracker status overlay. Per-(release, package)
+    #     idempotent refresh on the ingest side (DELETE WHERE release+package +
+    #     INSERT); on import we INSERT OR REPLACE so a re-import replaces, never
+    #     duplicates.
+    for row in _read_jsonl(root / "debian_fixes.jsonl"):
+        conn.execute(
+            """INSERT OR REPLACE INTO debian_fixes
+                 (cve_id, release, package, status, fixed_in, fetched_at)
+               VALUES (?,?,?,?,?,?)""",
+            (row["cve_id"], row.get("release"), row.get("package"),
+             row.get("status"), row.get("fixed_in"), row.get("fetched_at")),
+        )
+        stats["debian_fixes"] += 1
+
+    # --- ubuntu_fixes: INSERT OR REPLACE (cve_id, release, package PK) — the
+    #     Ubuntu security-tracker status overlay. Per-(release, package)
+    #     idempotent refresh on the ingest side (DELETE WHERE release+package +
+    #     INSERT); on import we INSERT OR REPLACE so a re-import replaces, never
+    #     duplicates.
+    for row in _read_jsonl(root / "ubuntu_fixes.jsonl"):
+        conn.execute(
+            """INSERT OR REPLACE INTO ubuntu_fixes
+                 (cve_id, release, package, status, fixed_in, fetched_at)
+               VALUES (?,?,?,?,?,?)""",
+            (row["cve_id"], row.get("release"), row.get("package"),
+             row.get("status"), row.get("fixed_in"), row.get("fetched_at")),
+        )
+        stats["ubuntu_fixes"] += 1
+
+    # --- epss: INSERT OR REPLACE (cve_id PK) — the FIRST.org exploitability-
+    #     likelihood overlay (complementary to kev; fills the NVD-degradation
+    #     gap). Idempotent full refresh on the ingest side (DELETE all + INSERT);
+    #     on import we INSERT OR REPLACE so a re-import replaces, never
+    #     duplicates.
+    for row in _read_jsonl(root / "epss.jsonl"):
+        conn.execute(
+            """INSERT OR REPLACE INTO epss
+                 (cve_id, epss, percentile, fetched_at)
+               VALUES (?,?,?,?)""",
+            (row["cve_id"], row.get("epss"), row.get("percentile"),
+             row.get("fetched_at")),
+        )
+        stats["epss"] += 1
 
     conn.commit()
     # surface any drift between manifest counts and what we loaded — but only
