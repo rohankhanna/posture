@@ -28,6 +28,14 @@ ATTRIBUTIONS: dict[str, str] = {
     # apple_advisory: Apple security advisories are public; no formal ToU
     # attribution required, but noting the source is honest.
     "apple_advisory": "Apple fix-version data from Apple security advisories (support.apple.com).",
+    # debian_tracker: Debian security tracker — public, no formal ToU attribution
+    # required, but noting the source is honest.
+    "debian_tracker": "Debian fix-status data from the Debian security tracker (security-tracker.debian.org).",
+    # ubuntu_tracker: Ubuntu security tracker — public, no formal ToU attribution
+    # required, but noting the source is honest.
+    "ubuntu_tracker": "Ubuntu fix-status data from the Ubuntu security tracker (ubuntu.com/security).",
+    # epss: FIRST.org EPSS — free/open scores; noting the source is honest.
+    "epss": "Exploit prediction scores from the FIRST.org EPSS (Exploit Prediction Scoring System).",
 }
 
 

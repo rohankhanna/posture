@@ -151,7 +151,15 @@ class DebianTrackerObserver(Observer):
                         "(device lacks cve_candidates/debian_release/debian_packages)",
             )
 
-        data, reason = self._fetch()
+        # The territory pre-pass (cli._inject_catalog_overlays) loads the
+        # imported debian_fixes overlay into ``device["debian_fixes"]`` BEFORE
+        # assess — the "consume locally" half of "feed in CI, consume locally".
+        # When present, _fetch reads the catalog (NO network, NO fixture file);
+        # the observer contract still forbids DB access in assess (no conn).
+        # Absent -> fall back to live/fixture. Live > catalog > fixture.
+        catalog = device.get("debian_fixes")
+
+        data, reason = self._fetch(catalog)
         if data is None:
             # Failed / absent bulk fetch -> complete + zero verdicts (NVD
             # stands). NEVER a fetch failure that breaks the engine (no-wipe).
@@ -213,14 +221,36 @@ class DebianTrackerObserver(Observer):
             # undetermined / anything else -> try next package, else None
         return None
 
-    # -- fetch (live curl or offline fixture) --------------------------------
+    # -- fetch (live curl, offline fixture, or offline catalog) ---------------
 
-    def _fetch(self) -> tuple[dict | None, str]:
+    def _fetch(self, catalog: dict | None = None) -> tuple[dict | None, str]:
         """Return (parsed_bulk_data_or_None, reason). None means absent/failed —
-        the caller treats it as a complete, zero-verdict no-op (no-wipe)."""
-        if not self.live:
-            return self._fetch_fixture()
-        return self._fetch_live()
+        the caller treats it as a complete, zero-verdict no-op (no-wipe).
+
+        precedence: an explicit --live operator pull wins (the operator asked
+        for the network); then the territory-injected catalog (the imported
+        debian_fixes overlay, reconstructed to this bulk shape by the territory
+        pre-pass — no network, no fixture file); then the bundled fixture (the
+        demo/hermetic corpus). Live > catalog > fixture. Mirrors
+        :class:`NvdCveObserver`'s catalog-backed fetch path.
+        """
+        if self.live:
+            return self._fetch_live()
+        if catalog is not None:
+            return self._fetch_catalog(catalog)
+        return self._fetch_fixture()
+
+    def _fetch_catalog(self, catalog: dict) -> tuple[dict | None, str]:
+        """Read the territory-injected ``debian_fixes`` overlay — NO network, NO
+        fixture file. ``catalog`` is already the bulk-data dict shape
+        :meth:`_decide` consumes (rebuilt by ``cli._inject_debian_fixes_overlay``
+        from the imported overlay rows), so it is returned directly — there is
+        ONE decision path, not a second one for the catalog. An empty catalog
+        (the overlay carries no rows for the device's release/packages) is a
+        COMPLETE absent answer: ``_decide`` returns None for every candidate -> NVD
+        stands (no fallback to the demo fixture, which would leak the bundled
+        sample CVEs into a real client's verdicts)."""
+        return catalog, "catalog"
 
     def _fetch_fixture(self) -> tuple[dict | None, str]:
         import json
