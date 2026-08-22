@@ -1,0 +1,56 @@
+{
+  "cves": [
+    {
+      "id": "CVE-2026-99901",
+      "priority": "medium",
+      "packages": [
+        {
+          "name": "linux",
+          "source": "https://ubuntu.com/security/CVE-2026-99901",
+          "statuses": [
+            {"release_codename": "noble", "status": "released", "description": "5.15.0-25.25", "component": "main", "pocket": "security"},
+            {"release_codename": "jammy", "status": "needed", "description": "", "component": "main", "pocket": "security"},
+            {"release_codename": "focal", "status": "DNE", "description": "", "component": null, "pocket": "security"}
+          ]
+        },
+        {
+          "name": "linux-nvidia-6.17",
+          "source": "https://ubuntu.com/security/CVE-2026-99901",
+          "statuses": [
+            {"release_codename": "noble", "status": "needs-triage", "description": "", "component": "universe", "pocket": "security"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "CVE-2026-99902",
+      "priority": "high",
+      "packages": [
+        {
+          "name": "linux",
+          "source": "https://ubuntu.com/security/CVE-2026-99902",
+          "statuses": [
+            {"release_codename": "noble", "status": "needs-triage", "description": "", "component": "main", "pocket": "security"},
+            {"release_codename": "jammy", "status": "released", "description": "5.15.0-1011", "component": "main", "pocket": "security"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "CVE-2026-99903",
+      "priority": "negligible",
+      "packages": [
+        {
+          "name": "linux",
+          "source": "https://ubuntu.com/security/CVE-2026-99903",
+          "statuses": [
+            {"release_codename": "noble", "status": "not-affected", "description": "5.15.0-9.12", "component": "main", "pocket": "security"}
+          ]
+        }
+      ]
+    }
+  ],
+  "offset": 0,
+  "limit": 500,
+  "total_results": 3
+}

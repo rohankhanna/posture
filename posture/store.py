@@ -284,6 +284,31 @@ CREATE TABLE IF NOT EXISTS debian_fixes (
     PRIMARY KEY (cve_id, release, package)
 );
 
+-- Ubuntu security-tracker fix overlay — the ubuntu_fixes map. Ubuntu's own
+-- tracker (ubuntu.com/security/cves.json bulk CVE feed) is AUTHORITATIVE for
+-- per-source-package / per-release CVE status — the status words
+-- ``released`` (with a fixed version note) / ``needed`` / ``pending`` /
+-- ``needs-triage`` / ``not-affected`` / ``DNE`` / ``ignored`` / ``deferred``
+-- that the OSV Ubuntu mirror does NOT carry verbatim. Those status words are
+-- what clear NVD's unknown-fix false positives on an Ubuntu host, so this is a
+-- (cve_id, release, package)-keyed OVERLAY (not a new defect_type) built from
+-- a DIFFERENT feed than the OSV catalog rows: the fix-version fields
+-- incidentally overlap with OSV's Ubuntu ecosystem rows, but the raw status
+-- column is the new signal (same justification as debian_fixes / apple_fixes).
+-- CI-side ingestion builds it from the paginated bulk CVE JSON (?package=
+-- filter, one pagination per package); per-(release, package) idempotent full
+-- refresh (DELETE WHERE release+package + INSERT), so CVEs aged off a release
+-- sheet do not leave stale rows.
+CREATE TABLE IF NOT EXISTS ubuntu_fixes (
+    cve_id       TEXT NOT NULL,
+    release      TEXT NOT NULL,   -- codename: noble, jammy, focal, ...
+    package      TEXT NOT NULL,   -- source package: linux, ...
+    status       TEXT,            -- released | needed | pending | needs-triage | not-affected | DNE | ignored | deferred (raw tracker status)
+    fixed_in     TEXT,            -- the per-release note/description (fixed version when released); NULL when empty
+    fetched_at   TEXT,
+    PRIMARY KEY (cve_id, release, package)
+);
+
 -- EPSS (Exploit Prediction Scoring System, FIRST.org) overlay — the
 -- exploitability_likelihood map. EPSS scores EVERY published CVE daily with a
 -- 0..1 probability of exploitation in the next 30 days + a percentile, free +
@@ -1376,6 +1401,66 @@ def debian_fixes_for(conn, cve_id: str, release: str, package: str) -> dict | No
     replaying the Debian bulk tracker per assess."""
     r = conn.execute(
         "SELECT * FROM debian_fixes WHERE cve_id=? AND release=? AND package=?",
+        (cve_id, release, package)).fetchone()
+    return dict(r) if r else None
+
+
+# ---------------------------------------------------------------------------
+# Ubuntu security-tracker fix overlay — the ubuntu_fixes map
+# ((cve_id, release, package)-keyed overlay, not a defect_type)
+# ---------------------------------------------------------------------------
+
+def replace_ubuntu_fixes(conn, release: str, package: str, rows: list[dict],
+                        fetched_at: str) -> int:
+    """Idempotent per-(release, package) full refresh of the ``ubuntu_fixes``
+    overlay: DELETE every existing row for ``(release, package)`` then INSERT the
+    freshly-built sheet ``rows`` (each ``{cve_id, status, fixed_in}``). Returns
+    the number inserted. Deleting-then-inserting (rather than INSERT OR REPLACE)
+    means CVEs aged off a release sheet do not leave stale rows — the overlay
+    always reflects the current rebuild. No-wipe: touches ONLY ``ubuntu_fixes``
+    — never ``defects`` / ``verdicts`` / territory."""
+    conn.execute(
+        "DELETE FROM ubuntu_fixes WHERE release=? AND package=?",
+        (release, package))
+    n = 0
+    for r in rows:
+        conn.execute(
+            """INSERT OR REPLACE INTO ubuntu_fixes
+                 (cve_id, release, package, status, fixed_in, fetched_at)
+               VALUES (?,?,?,?,?,?)""",
+            (r["cve_id"], release, package, r.get("status"),
+             r.get("fixed_in"), fetched_at),
+        )
+        n += 1
+    return n
+
+
+def ubuntu_fixes_all(conn) -> list[dict]:
+    """All ubuntu_fixes overlay rows, ordered by (release, package, cve_id) — the
+    stable shape the spine export serializes and the round-trip test compares
+    against."""
+    rows = conn.execute(
+        "SELECT * FROM ubuntu_fixes ORDER BY release, package, cve_id"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def ubuntu_fixes_for_release_package(conn, release: str, package: str) -> list[dict]:
+    """All ubuntu_fixes overlay rows for one (release, package), ordered by cve_id
+    — the shape a observer reads at assess time (the durable status sheet for a
+    device's release + source package)."""
+    rows = conn.execute(
+        "SELECT * FROM ubuntu_fixes WHERE release=? AND package=? ORDER BY cve_id",
+        (release, package)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def ubuntu_fixes_for(conn, cve_id: str, release: str, package: str) -> dict | None:
+    """One ubuntu_fixes overlay row for a (cve_id, release, package), or None. The
+    observer's decide path: read the durable status + fixed note instead of
+    replaying the Ubuntu per-CVE tracker HTML per assess."""
+    r = conn.execute(
+        "SELECT * FROM ubuntu_fixes WHERE cve_id=? AND release=? AND package=?",
         (cve_id, release, package)).fetchone()
     return dict(r) if r else None
 
