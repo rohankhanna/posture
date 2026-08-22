@@ -136,6 +136,48 @@ def parse_cve_page(html: str, release: str,
     return out
 
 
+def _normalize_overlay_status(status: str | None,
+                              fixed_in: str | None) -> tuple[str | None, str | None]:
+    """Map a RAW ``ubuntu_fixes`` overlay status word to the ``(status,
+    fixed_in)`` token :func:`_decide` acts on — the bulk-JSON counterpart of
+    :func:`_parse_status`'s HTML-text mapping. The overlay stores the raw
+    tracker words (``released`` / ``needed`` / ``needs-triage`` /
+    ``not-affected`` / ``DNE`` / ``ignored`` / ``deferred`` / ``pending``);
+    this normalizes them to the same tokens the live/fixture path produces so
+    ``_decide`` runs UNCHANGED. ``(None, None)`` means 'no override' (needs
+    triage / DNE / ignored / deferred / pending / unknown) -> NVD stands, the
+    same outcome as a ``_parse_status`` it doesn't recognize."""
+    s = (status or "").strip().lower()
+    if s == "released":
+        return ("fixed", fixed_in)
+    if s == "not-affected":
+        return ("not_affected", None)
+    if s == "needed":
+        return ("needed", None)
+    if s == "needs-triage":
+        return ("needs", None)
+    if s == "dne":
+        return ("dne", None)
+    if s == "ignored":
+        return ("ignored", None)
+    # pending / deferred / anything else -> no actionable mapping (NVD stands)
+    return (None, None)
+
+
+def found_from_catalog(
+    cve_id: str, catalog: dict
+) -> dict[str, tuple[str | None, str | None]]:
+    """Normalize the territory-injected ``ubuntu_fixes`` overlay rows for ONE
+    CVE to the same ``{package: (status, fixed_in)}`` shape :func:`parse_cve_page`
+    returns, so :meth:`UbuntuTrackerObserver._decide` runs UNCHANGED (one
+    decision path, not a second one for the catalog). A CVE absent from the
+    catalog -> ``{}`` (a COMPLETE absent answer: ``_decide`` returns None -> NVD
+    stands — no fallback to the demo fixture)."""
+    raw = catalog.get(cve_id, {})
+    return {pkg: _normalize_overlay_status(status, fixed_in)
+            for pkg, (status, fixed_in) in raw.items()}
+
+
 def _kge(installed: str, fixed: str) -> bool:
     """True if installed >= fixed, using dpkg version semantics.
 
@@ -187,23 +229,40 @@ class UbuntuTrackerObserver(Observer):
             )
 
         kernel = str(device.get("patch_level") or device.get("os_version") or "")
+        # The territory pre-pass (cli._inject_catalog_overlays) loads the
+        # imported ubuntu_fixes overlay into ``device["ubuntu_fixes"]`` BEFORE
+        # assess — keyed per-CVE per-package with RAW tracker status words.
+        # When present and not live, _decide consumes the normalized overlay
+        # with NO network (the catalog-backed assess path, mirroring
+        # NvdCveObserver). Absent -> fall back to live/fixture.
+        # Live > catalog > fixture.
+        catalog = device.get("ubuntu_fixes")
+        use_catalog = not self.live and catalog is not None
+
         verdicts: list[Verdict] = []
         complete = True
         reasons: list[str] = []
 
         for cid in cves:
-            html, ok, reason = self._fetch(cid)
-            if not ok:
-                complete = False
-                reasons.append(reason or f"{cid} incomplete")
-                continue
-            found = parse_cve_page(html, release, packages)
+            if use_catalog:
+                found = found_from_catalog(cid, catalog)
+            else:
+                html, ok, reason = self._fetch(cid)
+                if not ok:
+                    complete = False
+                    reasons.append(reason or f"{cid} incomplete")
+                    continue
+                found = parse_cve_page(html, release, packages)
             v = self._decide(cid, found, kernel, release)
             if v is not None:
                 verdicts.append(v)
 
-        out_reason = "; ".join(reasons) if reasons else (
-            "fixture" if not self.live else "live")
+        if reasons:
+            out_reason = "; ".join(reasons)
+        elif use_catalog:
+            out_reason = "catalog"
+        else:
+            out_reason = "fixture" if not self.live else "live"
         return ObserverResult(verdicts=verdicts, complete=complete, reason=out_reason)
 
     # -- decide one CVE -> a Verdict (or None: NVD stands) ---------------------

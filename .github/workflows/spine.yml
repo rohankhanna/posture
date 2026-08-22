@@ -151,6 +151,21 @@ jobs:
           restore-keys: posture-db-v1-
           enableCrossOsArchive: true
 
+      # EPSS daily-gate marker: run-id-unique key (mirrors the posture.db cache
+      # at line 145 so the marker SAVES every run and restores the most recent
+      # prior one — a fixed key would exact-hit-skip-save and the marker would
+      # never advance). The Ingest EPSS step writes today's UTC date here once it
+      # refreshes; subsequent same-day runs skip. enableCrossOsArchive so a
+      # runner-OS flip doesn't invalidate it.
+      - name: Cache EPSS daily marker (restore + save)
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: cache/.epss.date
+          key: epss-date-v1-${{ github.run_id }}
+          restore-keys: epss-date-v1-
+          enableCrossOsArchive: true
+
       - name: Stream (MITRE detect — skeletons only, only-adds)
         run: |
           mkdir -p cache
@@ -195,6 +210,69 @@ jobs:
       - name: Ingest Apple (advisory fix-version overlay)
         run: |
           posture ingest apple --db "$DB_PATH"
+
+      # Debian security-tracker status overlay (debian_fixes). Debian's own
+      # tracker is authoritative for the status words the OSV Debian mirror
+      # drops (resolved/open/undetermined) — they clear NVD's unknown-fix false
+      # positives on a Debian host. No secret — security-tracker.debian.org is
+      # public. Best-effort: a transient tracker outage must NOT block the
+      # hourly core-spine refresh; the no-wipe ingest retains the last-known-
+      # good overlay, so the spine exports with the prior rows (the core
+      # defects/kev/apple shards are unaffected). Scope: active LTS x linux
+      # (the headline kernel over-reporting gap on a fully-updated Debian host);
+      # the operator owns the public-spine editorial choice.
+      - name: Ingest Debian (security-tracker status overlay)
+        run: |
+          set +e
+          posture ingest debian --release trixie --release bookworm \
+            --package linux --db "$DB_PATH"
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "::warning::debian ingest failed (rc=$rc); last-known-good retained, spine continues"
+            exit 0
+          fi
+
+      # Ubuntu security-tracker status overlay (ubuntu_fixes). Ubuntu's own
+      # bulk CVE JSON carries the per-release status words the OSV Ubuntu mirror
+      # drops (released/needed/needs-triage/not-affected/DNE/...). No secret —
+      # ubuntu.com/security/cves.json is public. Best-effort (same rationale as
+      # Debian above). Scope: active LTS x linux (the three supported LTS
+      # releases; the operator owns the public-spine editorial choice).
+      - name: Ingest Ubuntu (security-tracker status overlay)
+        run: |
+          set +e
+          posture ingest ubuntu --release noble --release jammy --release focal \
+            --package linux --db "$DB_PATH"
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "::warning::ubuntu ingest failed (rc=$rc); last-known-good retained, spine continues"
+            exit 0
+          fi
+
+      # EPSS exploitability overlay (epss). FIRST.org scores EVERY published
+      # CVE daily (0..1 exploitation probability) — the signal NVD's 2026-04-15
+      # risk-based retreat dropped from the long tail. No secret — the bulk
+      # gzipped CSV is free + unauthenticated. EPSS is a DAILY snapshot, so this
+      # step is daily-gated (the marker survives via the cache below): the
+      # hourly spine call no-ops 23 of 24 runs, avoiding a needless ~270k-row
+      # rewrite each hour. Best-effort like the distro overlays.
+      - name: Ingest EPSS (FIRST.org exploitability overlay; daily-gated)
+        run: |
+          set +e
+          mkdir -p cache
+          marker="cache/.epss.date"
+          today=$(date -u +%Y-%m-%d)
+          if [ -f "$marker" ] && [ "$(cat "$marker")" = "$today" ]; then
+            echo "EPSS already refreshed today ($today); skipping (daily snapshot)"
+            exit 0
+          fi
+          posture ingest epss --db "$DB_PATH"
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "::warning::epss ingest failed (rc=$rc); last-known-good retained, spine continues"
+            exit 0
+          fi
+          echo "$today" > "$marker"
 
       - name: Refresh (catalog-only; NO devices, NO verdicts)
         if: github.event_name != 'pull_request'

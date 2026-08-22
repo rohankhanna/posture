@@ -97,15 +97,24 @@ def _inject_catalog_overlays(device: dict, conn) -> None:
     device declares no ``apple_product`` or the local store has no overlay rows
     for that product (the observer then falls back to its per-assess replay).
 
-    Two overlays are consumed today:
+    Four overlays are consumed today:
       * ``apple_fixes`` — the Apple fix-version map (per ``apple_product``).
       * ``catalog_defects`` — the imported spine defects table keyed by CPE
         head, consumed by :class:`NvdCveObserver`'s catalog-backed fetch path
-        so the vulnerability axis decides from the spine with NO network. kev
-        remains operator-supplied (``device["kev"]`` / ``kev_path``).
+        so the vulnerability axis decides from the spine with NO network.
+      * ``debian_fixes`` — the Debian security-tracker status overlay,
+        reconstructed to the bulk-data dict shape ``DebianTrackerObserver``'s
+        ``_decide`` consumes, so the distro axis decides from the spine with NO
+        network (mirrors the NvdCveObserver catalog path).
+      * ``ubuntu_fixes`` — the Ubuntu security-tracker status overlay, keyed
+        per-CVE per-package, normalized at assess time by
+        :class:`UbuntuTrackerObserver`'s catalog path. kev remains
+        operator-supplied (``device["kev"]`` / ``kev_path``).
     """
     _inject_apple_fixes_overlay(device, conn)
     _inject_catalog_defects(device, conn)
+    _inject_debian_fixes_overlay(device, conn)
+    _inject_ubuntu_fixes_overlay(device, conn)
 
 
 def _inject_apple_fixes_overlay(device: dict, conn) -> None:
@@ -151,6 +160,79 @@ def _inject_catalog_defects(device: dict, conn) -> None:
     if not has_catalog:
         return
     device["catalog_defects"] = {h: _store.defects_for_cpe_head(conn, h) for h in heads}
+
+
+def _inject_debian_fixes_overlay(device: dict, conn) -> None:
+    """Inject the Debian security-tracker status overlay a device's
+    :class:`DebianTrackerObserver` consumes, reconstructed to the bulk-data dict
+    shape its ``_decide`` reads, so the distro axis assesses from the spine with
+    NO network path (the catalog-backed assess path, mirroring
+    :class:`NvdCveObserver`).
+
+    Only injected when the DB carries debian_fixes rows — a fresh/demo DB has
+    none, so ``debian_fixes`` is left ABSENT and the observer falls back to its
+    bundled fixture (preserving ``posture demo``). Once the overlay IS present,
+    the bulk dict is rebuilt from the device's ``debian_release`` +
+    ``debian_packages`` (an uncovered release/package yields an empty block ->
+    ``_decide`` returns None -> NVD stands: a COMPLETE-absent answer, NOT a
+    fixture leak). Additive: a device that pre-supplies ``debian_fixes``
+    (operator input / hermetic test) is left untouched.
+    """
+    release = str(device.get("debian_release") or "").strip().lower()
+    packages = [p for p in (device.get("debian_packages") or []) if p]
+    if not release or not packages or "debian_fixes" in device:
+        return
+    try:
+        has_overlay = conn.execute("SELECT 1 FROM debian_fixes LIMIT 1").fetchone()
+    except Exception:
+        return  # no overlay table / unreadable -> skip; observer falls back to fixture
+    if not has_overlay:
+        return
+    # Rebuild the bulk-data dict shape ``_decide`` consults:
+    # {package: {cve_id: {"releases": {release: {"status", "fixed_version"}}}}}.
+    # The overlay's ``fixed_in`` column maps to the tracker's ``fixed_version``.
+    data: dict = {}
+    for pkg in packages:
+        pblock: dict = {}
+        for r in _store.debian_fixes_for_release_package(conn, release, pkg):
+            pblock[r["cve_id"]] = {"releases": {release: {
+                "status": r.get("status"), "fixed_version": r.get("fixed_in")}}}
+        if pblock:
+            data[pkg] = pblock
+    device["debian_fixes"] = data
+
+
+def _inject_ubuntu_fixes_overlay(device: dict, conn) -> None:
+    """Inject the Ubuntu security-tracker status overlay a device's
+    :class:`UbuntuTrackerObserver` consumes, keyed per-CVE per-package, so the
+    distro axis assesses from the spine with NO network path (the catalog-backed
+    assess path, mirroring :class:`NvdCveObserver`).
+
+    The overlay stores the RAW tracker status words (``released`` /
+    ``needed`` / ``needs-triage`` / ``not-affected`` / ``DNE`` / ``ignored`` /
+    ``deferred``); the observer normalizes them at assess time to the same
+    ``{pkg: (status, fixed_in)}`` shape :func:`parse_cve_page` produces, so
+    ``_decide`` runs UNCHANGED (one decision path, not a second one for the
+    catalog). Same fresh-DB / complete-absent / no-clobber contract as the
+    Debian injector above.
+    """
+    release = str(device.get("ubuntu_release") or "").strip().lower()
+    packages = [p for p in (device.get("ubuntu_packages") or []) if p]
+    if not release or not packages or "ubuntu_fixes" in device:
+        return
+    try:
+        has_overlay = conn.execute("SELECT 1 FROM ubuntu_fixes LIMIT 1").fetchone()
+    except Exception:
+        return  # no overlay table / unreadable -> skip; observer falls back to fixture
+    if not has_overlay:
+        return
+    # Per-CVE -> {package: (raw_status, fixed_in)}; the observer normalizes this
+    # to the ``found`` shape ``_decide`` consumes (mirrors parse_cve_page).
+    by_cve: dict = {}
+    for pkg in packages:
+        for r in _store.ubuntu_fixes_for_release_package(conn, release, pkg):
+            by_cve.setdefault(r["cve_id"], {})[pkg] = (r.get("status"), r.get("fixed_in"))
+    device["ubuntu_fixes"] = by_cve
 
 
 # ---------------------------------------------------------------------------
