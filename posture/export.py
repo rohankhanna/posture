@@ -229,8 +229,8 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
                            "epss")}
 
     # --- defects: full INSERT OR REPLACE (all columns, including enrich_state,
-    #     distrusted, distrust_reason, discovered_at — a faithful mirror of
-    #     the signed map; upsert_defect would drop those) ---
+    #     distrusted, distrust_reason, discovered_at, prompt_hash, raw_text_hash
+    #     — a faithful mirror of the signed map; upsert_defect would drop those) ---
     for shard_path in sorted((root / "defects").glob("*.jsonl")):
         for row in _read_jsonl(shard_path):
             conn.execute(
@@ -238,8 +238,8 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
                      (id, defect_type, published, cvss, severity, cvss_vector,
                       description, fixed_raw, refs, cwe, ref_tags, enrich_state,
                       source, fetched_at, policy_version, complete, distrusted,
-                      distrust_reason, discovered_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      distrust_reason, discovered_at, prompt_hash, raw_text_hash)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     row["id"], row.get("defect_type"), row.get("published"),
                     row.get("cvss"),
@@ -255,6 +255,7 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
                     int(row.get("complete") or 0),
                     int(row.get("distrusted") or 0),
                     row.get("distrust_reason"), row.get("discovered_at"),
+                    row.get("prompt_hash"), row.get("raw_text_hash"),
                 ),
             )
             stats["defects"] += 1
