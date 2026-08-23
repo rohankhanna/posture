@@ -204,7 +204,9 @@ CREATE TABLE IF NOT EXISTS defects (
     complete        INTEGER,          -- provenance: was the underlying fetch provably whole
     distrusted      INTEGER DEFAULT 0,
     distrust_reason TEXT,
-    discovered_at   TEXT              -- when the stream first sighted this defect
+    discovered_at   TEXT,             -- when the stream first sighted this defect
+    prompt_hash     TEXT,             -- LLM-draft provenance: sha256 of the prompt sent (sha256:<hex>)
+    raw_text_hash   TEXT              -- LLM-draft provenance: sha256 of the raw source text fed (sha256:<hex>)
 );
 CREATE INDEX IF NOT EXISTS ix_defects_enrich_state ON defects(enrich_state);
 CREATE INDEX IF NOT EXISTS ix_defects_published ON defects(published);
@@ -365,7 +367,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     the additive, introspection-guarded ALTERs that older dbs need, then bumps
     `user_version`. v0->v1 + v1->v2 reshape the catalog/crosswalk; v3 dedups
     candidates; v4 renames the five id columns witness->observer; v5 renames the
-    catalog layer flaw->defect (tables + three columns). Territory rows
+    catalog layer flaw->defect (tables + three columns); v6 adds per-row
+    LLM-draft provenance columns (prompt_hash, raw_text_hash). Territory rows
     (verdicts / device_posture values) are never deleted — v4 changes their
     column NAMES but preserves their DATA. Each step is guarded so it is safe to
     re-run on an already-migrated db (and a no-op on a fresh db created with the
@@ -499,6 +502,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 and "defect_id" not in _columns(conn, "crosswalk"):
             conn.execute("ALTER TABLE crosswalk RENAME COLUMN flaw_id TO defect_id")
         conn.execute("PRAGMA user_version = 5")
+        conn.commit()
+
+    if version < 6:
+        # v5 -> v6: per-row LLM-draft provenance. An LLM-drafted row already
+        # carries provider+model in source='llm:<model>'; the two new columns
+        # add the prompt sent and the raw source text fed, each as a sha256
+        # digest, so retroactive distrust of a provider (or of one prompt
+        # template / one advisory text) is one sweep over exactly its rows
+        # (node_680976461c89). NULL on every non-llm row and on llm rows whose
+        # provider did not report provenance — additive, no data rewrite.
+        # Guarded so a fresh db (columns already in SCHEMA) and a re-open of a
+        # v6 db both no-op; territory (verdicts / device_posture) untouched.
+        if "prompt_hash" not in _columns(conn, "defects"):
+            conn.execute("ALTER TABLE defects ADD COLUMN prompt_hash TEXT")
+        if "raw_text_hash" not in _columns(conn, "defects"):
+            conn.execute("ALTER TABLE defects ADD COLUMN raw_text_hash TEXT")
+        conn.execute("PRAGMA user_version = 6")
         conn.commit()
 
 
@@ -1192,6 +1212,35 @@ def mark_defect_distrust(conn, defect_id: str, reason: str) -> bool:
         (reason, defect_id),
     )
     return cur.rowcount > 0
+
+
+def audit_llm_provider(conn, model: str) -> list[dict]:
+    """All catalog rows drafted by the LLM provider ``model`` (source =
+    ``llm:<model>``), parsed — the audit view for retroactive distrust. Mirrors
+    :func:`audit_observer` for verdicts: ask, later, what a provider ever told
+    the spine and whether it still holds. Rows are kept (never deleted) so the
+    distrust is auditable and re-evaluable."""
+    rows = conn.execute(
+        "SELECT * FROM defects WHERE source=? ORDER BY id",
+        (f"llm:{model}",),
+    ).fetchall()
+    return [_parse_defect_row(r) for r in rows]
+
+
+def mark_llm_provider_distrust(conn, model: str, reason: str) -> int:
+    """Retroactive distrust MARK on EVERY catalog row the LLM provider ``model``
+    drafted (source = ``llm:<model>``) — the one-sweep retraction provenance
+    enables (node_680976461c89): a provider found biased or captured is
+    retractable in a single UPDATE that marks exactly its rows, never a delete.
+    Returns the count of newly-marked rows. Real-source precedence still holds:
+    a row a real source has since enriched has source='nvd' (not 'llm:<model>'),
+    so it is untouched — only rows still owned by the provider are marked."""
+    cur = conn.execute(
+        "UPDATE defects SET distrusted=1, distrust_reason=? "
+        "WHERE source=? AND (distrusted IS NULL OR distrusted=0)",
+        (reason, f"llm:{model}"),
+    )
+    return cur.rowcount
 
 
 # ---------------------------------------------------------------------------

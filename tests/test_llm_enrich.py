@@ -477,3 +477,211 @@ def test_validator_is_provider_independent():
         stats = llm_enrich.llm_enrich_tick(c, lambda r: bad, model=model)
         assert stats["rejected"] == 1 and stats["drafted"] == 0, model
         assert store.get_defect(c, "CVE-M")["source"] == "mitre"
+
+
+# --- per-row provenance: prompt_hash + raw_text_hash (retractability) --------
+
+def test_hash_text_canonical_sha256():
+    """hash_text produces the canonical sha256:<hex> form stored in the
+    provenance columns — same text, same digest, across providers."""
+    assert llm_enrich.hash_text("abc") == llm_enrich.hash_text("abc")
+    assert llm_enrich.hash_text("abc").startswith("sha256:")
+    assert llm_enrich.hash_text("abc") != llm_enrich.hash_text("abd")
+    # the digest is the real sha256 of the utf-8 bytes (no hidden salt/nonce)
+    import hashlib
+    expected = "sha256:" + hashlib.sha256(b"abc").hexdigest()
+    assert llm_enrich.hash_text("abc") == expected
+
+
+def test_tick_stamps_provenance_from_reserved_key(conn):
+    """A draft_fn that attaches _provenance={prompt_hash, raw_text_hash} has
+    those digests stamped on the row. The reserved key is STRIPPED before
+    validation and field-merge — it is never treated as a catalog field and
+    never reaches the validator."""
+    _skeleton(conn, "CVE-M", source="mitre")
+    ph = llm_enrich.hash_text("prompt-for-CVE-M")
+    rth = llm_enrich.hash_text("raw advisory text for CVE-M")
+
+    def draft(row):
+        return {"cvss": 7.5, "severity": "HIGH",
+                "_provenance": {"prompt_hash": ph, "raw_text_hash": rth}}
+
+    stats = llm_enrich.llm_enrich_tick(conn, draft, model="stub")
+    assert stats["drafted"] == 1 and stats["rejected"] == 0
+    row = store.get_defect(conn, "CVE-M")
+    assert row["prompt_hash"] == ph
+    assert row["raw_text_hash"] == rth
+    assert row["source"] == "llm:stub"
+
+
+def test_tick_strips_provenance_before_validator(conn):
+    """The _provenance key is stripped before validate_draft, so a draft that
+    is valid EXCEPT for the reserved key is not rejected, and a malformed
+    draft whose _provenance is fine is still rejected on the real fields.
+    Provenance never interferes with the trust boundary."""
+    _skeleton(conn, "OK", source="mitre")
+    _skeleton(conn, "BAD", source="mitre")
+
+    def draft(row):
+        if row["id"] == "OK":
+            return {"cvss": 5.0,
+                    "_provenance": {"prompt_hash": llm_enrich.hash_text("p")}}
+        return {"cvss": 99.9,  # out of range -> rejected
+                "_provenance": {"prompt_hash": llm_enrich.hash_text("p2")}}
+
+    stats = llm_enrich.llm_enrich_tick(conn, draft, model="stub")
+    assert stats["drafted"] == 1 and stats["rejected"] == 1
+    ok_row = store.get_defect(conn, "OK")
+    assert ok_row["prompt_hash"] == llm_enrich.hash_text("p")
+    assert ok_row["raw_text_hash"] is None  # not reported -> stays NULL
+    # the rejected row was never written, so no provenance landed either
+    assert store.get_defect(conn, "BAD")["source"] == "mitre"
+    assert store.get_defect(conn, "BAD")["prompt_hash"] is None
+
+
+def test_tick_ignores_malformed_provenance_attachment(conn):
+    """A non-dict _provenance attachment is ignored (provenance stays NULL)
+    without affecting the draft itself — the strip is defensive."""
+    _skeleton(conn, "CVE-M", source="mitre")
+
+    def draft(row):
+        return {"cvss": 5.0, "severity": "MEDIUM", "_provenance": "not a dict"}
+
+    stats = llm_enrich.llm_enrich_tick(conn, draft, model="stub")
+    assert stats["drafted"] == 1
+    row = store.get_defect(conn, "CVE-M")
+    assert row["cvss"] == 5.0
+    assert row["prompt_hash"] is None and row["raw_text_hash"] is None
+
+
+def test_tick_ignores_unknown_provenance_keys(conn):
+    """Only prompt_hash / raw_text_hash are honored; a provider cannot smuggle
+    another column through the provenance attachment."""
+    _skeleton(conn, "CVE-M", source="mitre")
+
+    def draft(row):
+        return {"cvss": 5.0,
+                "_provenance": {"prompt_hash": llm_enrich.hash_text("p"),
+                                "distrusted": 1, "source": "nvd"}}
+
+    llm_enrich.llm_enrich_tick(conn, draft, model="stub")
+    row = store.get_defect(conn, "CVE-M")
+    assert row["prompt_hash"] == llm_enrich.hash_text("p")
+    assert row["source"] == "llm:stub"  # not smuggled to 'nvd'
+    assert row["distrusted"] in (None, 0)  # not smuggled
+
+
+def test_provenance_optional_no_attachment(conn):
+    """A draft_fn that reports no provenance drafts normally; the provenance
+    columns stay NULL (the row is still retractable by provider+model)."""
+    _skeleton(conn, "CVE-M", source="mitre")
+    llm_enrich.llm_enrich_tick(conn, lambda r: {"cvss": 5.0}, model="stub")
+    row = store.get_defect(conn, "CVE-M")
+    assert row["source"] == "llm:stub"
+    assert row["prompt_hash"] is None and row["raw_text_hash"] is None
+
+
+def test_provenance_survives_spine_export_roundtrip(conn, tmp_path):
+    """The prompt_hash / raw_text_hash columns flow through export and
+    re-import intact — per-row provenance is part of the signed map, so a
+    retracted provider is still identifiable after a spine round-trip."""
+    _skeleton(conn, "CVE-M", source="mitre")
+    ph = llm_enrich.hash_text("prompt")
+    rth = llm_enrich.hash_text("raw")
+    llm_enrich.llm_enrich_tick(
+        conn, lambda r: {"cvss": 7.0, "severity": "HIGH",
+                         "_provenance": {"prompt_hash": ph,
+                                         "raw_text_hash": rth}},
+        model="stub")
+    out = tmp_path / "out"
+    export.export_spine(conn, out_dir=out, policy_version="v")
+    other = store.connect(":memory:")
+    export.import_spine(other, from_dir=out)
+    row = store.get_defect(other, "CVE-M")
+    assert row["source"] == "llm:stub"
+    assert row["prompt_hash"] == ph
+    assert row["raw_text_hash"] == rth
+
+
+# --- retroactive provider distrust (one-sweep retraction) --------------------
+
+def test_distrust_provider_marks_exactly_its_rows(conn):
+    """distrust_provider marks every row the provider drafted (source=
+    llm:<model>) and NO other — a real NVD row and another provider's draft
+    are untouched. Real-source precedence: a row a real source later enriched
+    carries source='nvd' and is NOT marked."""
+    _skeleton(conn, "M-STUB", source="mitre")
+    _skeleton(conn, "M-OTHER", source="mitre")
+    _skeleton(conn, "M-REAL", source="mitre")
+
+    def stub_only(row):
+        return {"cvss": 5.0} if row["id"] == "M-STUB" else None
+
+    def real_only(row):
+        # M-REAL is drafted by stub too, then a real source takes it over
+        return {"cvss": 5.0} if row["id"] == "M-REAL" else None
+
+    def other_only(row):
+        return {"cvss": 6.0} if row["id"] == "M-OTHER" else None
+
+    llm_enrich.llm_enrich_tick(conn, stub_only, model="stub")
+    llm_enrich.llm_enrich_tick(conn, real_only, model="stub")
+    llm_enrich.llm_enrich_tick(conn, other_only, model="other")
+    # M-REAL: drafted by stub, then a real NVD enrichment takes it over
+    _enriched_nvd(conn, cid="M-REAL")
+    assert store.get_defect(conn, "M-REAL")["source"] == "nvd"
+
+    n = llm_enrich.distrust_provider(conn, "stub", "biased")
+    assert n == 1  # only M-STUB is still source='llm:stub'
+    stub_row = store.get_defect(conn, "M-STUB")
+    other_row = store.get_defect(conn, "M-OTHER")
+    real_row = store.get_defect(conn, "M-REAL")
+    assert stub_row["distrusted"] == 1
+    assert stub_row["distrust_reason"] == "biased"
+    assert other_row["distrusted"] in (None, 0)  # different provider
+    assert real_row["distrusted"] in (None, 0)   # real source won precedence
+
+
+def test_distrust_provider_is_idempotent_and_keeps_record(conn):
+    """Re-distrusting the same provider marks nothing new (already marked) and
+    never deletes — the row is kept, auditable and re-evaluable."""
+    _skeleton(conn, "CVE-M", source="mitre")
+    llm_enrich.llm_enrich_tick(conn, lambda r: {"cvss": 5.0}, model="stub")
+    assert llm_enrich.distrust_provider(conn, "stub", "r1") == 1
+    assert llm_enrich.distrust_provider(conn, "stub", "r2") == 0  # already marked
+    row = store.get_defect(conn, "CVE-M")
+    assert row["distrusted"] == 1
+    assert row["distrust_reason"] == "r1"  # first reason kept, not overwritten
+
+
+def test_audit_provider_lists_only_that_provider(conn):
+    """audit_provider returns exactly the rows one provider drafted, each
+    carrying its per-row provenance — the audit view before a retraction."""
+    _skeleton(conn, "A", source="mitre")
+    _skeleton(conn, "B", source="mitre")
+    ph = llm_enrich.hash_text("prompt-A")
+
+    def stub_a(row):
+        if row["id"] != "A":
+            return None
+        return {"cvss": 5.0, "_provenance": {"prompt_hash": ph}}
+
+    def other_b(row):
+        return {"cvss": 6.0} if row["id"] == "B" else None
+
+    llm_enrich.llm_enrich_tick(conn, stub_a, model="stub")
+    llm_enrich.llm_enrich_tick(conn, other_b, model="other")
+    rows = llm_enrich.audit_provider(conn, "stub")
+    assert [r["id"] for r in rows] == ["A"]
+    assert rows[0]["prompt_hash"] == ph
+    assert rows[0]["source"] == "llm:stub"
+
+
+def test_distrusted_provider_row_excluded_from_redraft(conn):
+    """A distrusted LLM row is excluded from the thin pool (thin_defect_ids
+    filters distrusted), so a retracted provider is not silently re-drafted by
+    a later tick — the retraction sticks."""
+    _skeleton(conn, "CVE-M", source="mitre")
+    llm_enrich.llm_enrich_tick(conn, lambda r: {"cvss": 5.0}, model="stub")
+    llm_enrich.distrust_provider(conn, "stub", "retracted")
+    assert "CVE-M" not in llm_enrich.thin_defect_ids(conn)

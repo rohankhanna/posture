@@ -69,9 +69,27 @@ through :func:`posture.export.export_spine` unchanged — they are defects rows
 with a visible ``source='llm:<model>'`` label, retractable in signed git
 history. The label is the honesty mechanism: a draft is never mistaken for a
 foreign-authored map point.
+
+PER-ROW PROVENANCE (node_680976461c89 — provenance makes a provider
+retractable):
+
+  Every drafted row carries provider+model in ``source='llm:<model>'`` and,
+  when the provider reports it, a ``prompt_hash`` and ``raw_text_hash`` column
+  (each ``sha256:<hex>``, produced by :func:`hash_text`) — the digest of the
+  prompt actually sent and the raw source text actually fed. A provider's
+  ``draft_fn`` attaches them under the reserved :data:`_PROVENANCE_KEY`; the
+  tick strips that key before validation and field-merge and stamps the
+  columns. With provider+model+prompt+raw-text on every row,
+  :func:`distrust_provider` is a one-sweep retraction that marks exactly one
+  provider's rows (and :func:`audit_provider` lists them first) — retroactive
+  distrust of a provider is a single UPDATE, never a delete. The digests are
+  also a public-transparency feature: the spine's construction is auditable by
+  construction. A provider that reports no provenance simply omits the key;
+  the columns stay NULL and the row is still retractable by provider+model.
 """
 from __future__ import annotations
 
+import hashlib as _hashlib
 import json as _json
 import os
 import re as _re
@@ -86,6 +104,14 @@ LLM_SOURCE_PREFIX = "llm:"
 #: existing 'mitre' | 'nvd' | 'osv' | 'ghsa' states; the assess decide path
 #: selects source='nvd' only, so this state never reaches a trust decision.
 LLM_ENRICH_STATE = "llm"
+
+#: Reserved key a provider's ``draft_fn`` may attach to its returned dict to
+#: carry per-row LLM provenance (the prompt hash + raw-source-text hash). It is
+#: NOT a catalog field: the tick strips it before :func:`validate_draft` and
+#: before :func:`upsert_llm_draft`'s field-merge, then passes it to the upsert
+#: to stamp the ``prompt_hash`` / ``raw_text_hash`` columns. A provider that
+#: reports no provenance simply omits it (the columns stay NULL).
+_PROVENANCE_KEY = "_provenance"
 
 # Per-tick cap on LLM drafts (the expensive part — one provider call per row).
 # Safe to cap: undrafted thin rows stay thin for the next tick, no loss.
@@ -217,6 +243,17 @@ def validate_draft(drafted: object) -> tuple[bool, list[str]]:
     return (not errors), errors
 
 
+def hash_text(text: str) -> str:
+    """Canonical sha256 digest of a text blob, as ``sha256:<hex>`` — the form
+    stored in the ``prompt_hash`` / ``raw_text_hash`` columns. A provider's
+    ``draft_fn`` calls this on the prompt it actually sent and the raw source
+    text it actually fed, then attaches the two digests under
+    :data:`_PROVENANCE_KEY`. Centralizing the digest here keeps the stored
+    shape canonical across providers (a provider cannot invent its own hash
+    format and break the one-sweep retraction query)."""
+    return "sha256:" + _hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _now() -> str:
     import datetime as _dt
     return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
@@ -284,7 +321,8 @@ def thin_defect_ids(conn, source: str | None = None,
 
 def upsert_llm_draft(conn, defect_id: str, drafted: dict, model: str,
                      policy_version: str = "",
-                     fetched_at: str | None = None) -> bool:
+                     fetched_at: str | None = None,
+                     provenance: dict | None = None) -> bool:
     """Write the DRAFTED catalog map fields into one defect row, labeling it an
     LLM draft. Enforces the invariant:
 
@@ -299,6 +337,11 @@ def upsert_llm_draft(conn, defect_id: str, drafted: dict, model: str,
       * ``source`` becomes ``llm:<model>`` and ``enrich_state`` becomes ``llm``,
         so the assess decide path (which selects ``source='nvd'``) structurally
         bars this row from ever producing a trust/DEFCON verdict.
+      * ``provenance`` (optional, from the provider's ``_provenance`` attachment)
+        stamps the ``prompt_hash`` / ``raw_text_hash`` columns — the per-row
+        provenance that makes a provider retractable in one sweep. Only the two
+        known keys are honored; unknown keys are ignored (a provider cannot
+        smuggle other columns through provenance).
 
     Returns True if the row was drafted, False if it was skipped (real source
     won / row vanished / draft added nothing the row lacked / draft failed
@@ -340,20 +383,37 @@ def upsert_llm_draft(conn, defect_id: str, drafted: dict, model: str,
     if not merged:
         return False  # draft added nothing the row lacked
 
+    # per-row LLM provenance: stamp the prompt + raw-text digests when the
+    # provider reported them. Only the two known keys are honored; values are
+    # coerced to str so a non-string cannot break the column. The source column
+    # already carries provider+model; these two digests are the finer-grained
+    # retraction handles (distrust by prompt template / by advisory text).
+    prov = provenance or {}
+    prov_cols: dict[str, str] = {}
+    for k in ("prompt_hash", "raw_text_hash"):
+        v = prov.get(k)
+        if v is not None:
+            prov_cols[k] = str(v)
+
     ts = fetched_at or _now()
-    set_cols = list(merged.keys()) + ["source", "enrich_state",
-                                      "fetched_at", "policy_version"]
+    set_cols = (list(merged.keys()) + ["source", "enrich_state",
+                                       "fetched_at", "policy_version"]
+                + list(prov_cols.keys()))
     set_sql = ", ".join(f"{c}=?" for c in set_cols)
     vals = [(_json.dumps(merged[c], default=str, sort_keys=True)
             if c in _JSON_COLS else merged[c])
            for c in merged.keys()]
     vals += [f"{LLM_SOURCE_PREFIX}{model}", LLM_ENRICH_STATE, ts, policy_version]
+    vals += list(prov_cols.values())
     conn.execute(f"UPDATE defects SET {set_sql} WHERE id=?", (*vals, defect_id))
     return True
 
 
 #: A provider draft function: given a parsed defect row, return the drafted
-#: catalog fields (a subset of the ``_DRAFT_FIELDS``), or None to skip.
+#: catalog fields (a subset of the ``_DRAFT_FIELDS``), or None to skip. The
+#: returned dict may also carry the reserved :data:`_PROVENANCE_KEY`
+#: (``{"prompt_hash", "raw_text_hash"}``) to stamp per-row LLM provenance; the
+#: tick strips it before validation and passes it to :func:`upsert_llm_draft`.
 DraftFn = Callable[[dict], Optional[dict]]
 
 
@@ -370,6 +430,11 @@ def llm_enrich_tick(conn, draft_fn: DraftFn, model: str,
     No-wipe: a ``draft_fn`` that returns None or raises is SKIPPED — the tick
     never raises and never deletes. A draft that fails :func:`validate_draft`
     is REJECTED (counted separately) and never written — the trust boundary.
+    A ``draft_fn`` may attach per-row provenance under the reserved
+    :data:`_PROVENANCE_KEY` (``{"prompt_hash", "raw_text_hash"}``); the tick
+    strips it before validation and field-merge and passes it to
+    :func:`upsert_llm_draft` to stamp the provenance columns — the provider
+    never has to call the upsert itself to record provenance.
     Returns a stats dict
     ``{selected, drafted, skipped, rejected, errors, provider, source}``."""
     ts = now or _now()
@@ -390,12 +455,21 @@ def llm_enrich_tick(conn, draft_fn: DraftFn, model: str,
         if not drafted:
             stats["skipped"] += 1
             continue
+        # strip the reserved provenance attachment before validation + merge so
+        # it is never treated as a catalog field; pass it to the upsert to stamp
+        # the prompt_hash / raw_text_hash columns.
+        provenance = None
+        if isinstance(drafted, dict) and _PROVENANCE_KEY in drafted:
+            prov = drafted[_PROVENANCE_KEY]
+            drafted = {k: v for k, v in drafted.items() if k != _PROVENANCE_KEY}
+            provenance = prov if isinstance(prov, dict) else None
         ok, _errors = validate_draft(drafted)
         if not ok:
             stats["rejected"] += 1
             continue  # no-wipe: a malformed draft is rejected, never written
         if upsert_llm_draft(conn, cid, drafted, model,
-                            policy_version=policy_version, fetched_at=ts):
+                            policy_version=policy_version, fetched_at=ts,
+                            provenance=provenance):
             stats["drafted"] += 1
         else:
             stats["skipped"] += 1
@@ -419,3 +493,29 @@ def default_draft_fn(_row: dict) -> Optional[dict]:
         "POSTURE_LLM is set but no provider draft_fn is wired; pass a real "
         "draft_fn to llm_enrich_tick (the operator-gated provider, "
         "node_680976461c89).")
+
+
+# --- retroactive provider distrust (provenance makes a provider retractable) --
+
+def audit_provider(conn, model: str) -> list[dict]:
+    """All catalog rows the LLM provider ``model`` drafted (source =
+    ``llm:<model>``), parsed — the audit view for retroactive distrust. Mirrors
+    :func:`posture.provenance.audit` for verdicts: ask, later, what a provider
+    ever told the spine. The per-row ``prompt_hash`` / ``raw_text_hash`` columns
+    on each returned row are the finer-grained retraction handles (distrust by
+    prompt template / by advisory text, not just by provider)."""
+    return _store.audit_llm_provider(conn, model)
+
+
+def distrust_provider(conn, model: str, reason: str) -> int:
+    """Retroactive distrust MARK on every row the LLM provider ``model``
+    drafted (source = ``llm:<model>``) — the one-sweep retraction that
+    per-row provenance enables (node_680976461c89): the validator makes
+    providers interchangeable, provenance makes a provider retractable. Rows
+    are MARKED, never deleted, so the distrust is auditable and re-evaluable
+    (same keep-the-record discipline as :func:`posture.provenance.distrust`).
+    Real-source precedence still holds: a row a real source has since enriched
+    carries source='nvd' and is untouched. Returns the count of newly-marked
+    rows. A distrusted LLM row is also excluded from future re-drafting by
+    :func:`thin_defect_ids`'s distrusted filter."""
+    return _store.mark_llm_provider_distrust(conn, model, reason)
