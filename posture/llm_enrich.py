@@ -30,6 +30,25 @@ an LLM could talk its way around):
     foreign-authored map point always wins over an LLM draft. The LLM never
     clobbers a real source's value.
 
+THE VALIDATOR (the REAL trust boundary, node_680976461c89):
+
+  :func:`validate_draft` deterministically rejects a malformed LLM draft
+  *before* it is written, so a provider's bad output cannot pollute the signed
+  spine even though the ``source='nvd'`` bar already forbids it from a trust
+  decision. The validator — not the prompt — is what makes providers
+  interchangeable: a cheap model that hallucinates ``cvss=99.9`` or prose
+  ``severity="very bad"`` is rejected by code the model cannot talk its way
+  around. The checks here are the hermetic, provider-independent FORMAT gates
+  (cvss range, severity vocabulary, CVSS-vector grammar, http(s) refs,
+  CWE-<digits> ids, fixed_raw range shapes). The LIVE halves — url-RESOLVES
+  (a HEAD check), CWE-EXISTS (against the MITRE CWE catalog), and semantic
+  version-PARSE (against the package ecosystem's comparator) — are deferred
+  to the provider-wiring follow-up: they need a network or a catalog the
+  off-by-default seam does not ship with, and the no-local-feeding rule
+  forbids network in CI tests. The format gates are the provider-independent
+  trust boundary today; the live gates are additive layers on top, not
+  replacements.
+
 THE SEAM (off-by-default, operator-gated, provider-replaceable):
 
   The provider is NOT wired here — by design, so the trust boundary never
@@ -55,7 +74,9 @@ from __future__ import annotations
 
 import json as _json
 import os
+import re as _re
 from typing import Callable, Optional
+from urllib.parse import urlparse as _urlparse
 
 from . import store as _store
 
@@ -76,6 +97,124 @@ _DRAFT_FIELDS = ("cvss", "severity", "cvss_vector", "description",
                  "fixed_raw", "refs", "cwe", "ref_tags")
 # Defects columns stored as JSON; a drafted value must be serialized on write.
 _JSON_COLS = frozenset({"fixed_raw", "refs", "cwe", "ref_tags"})
+
+# --- the deterministic draft validator (provider-independent trust boundary) -
+# CVSS vector grammar: ``CVSS:<2|3>[.x]/<METRIC>:<value>[/<METRIC>:<value>...]``.
+# Keys are letters (AV, AC, PR, ...); values are any non-slash run (N, L, H,
+# 'M'/'S'/'U' for Scope, etc.). One metric minimum; matches v2 and v3.x shapes.
+_CVSS_VECTOR = _re.compile(r"^CVSS:[23](?:\.\d)?(?:/[A-Za-z]+:[^/\s]+)+$")
+# CWE ids are ``CWE-<digits>``. CWE-EXISTS against the real MITRE catalog is the
+# deferred live gate (posture ships no CWE catalog today); this format check is
+# the provider-independent floor.
+_CWE_ID = _re.compile(r"^CWE-\d+$")
+# Severity vocabulary = NVD (CRITICAL/HIGH/MEDIUM/LOW) ∪ OSV (MODERATE/UNKNOWN).
+# An LLM prose severity ("very bad", "high-risk") is rejected by code, not by a
+# prompt the model could ignore. Case-insensitive.
+_SEVERITIES = frozenset(s.upper() for s in
+                        ("CRITICAL", "HIGH", "MEDIUM", "MODERATE", "LOW",
+                         "UNKNOWN"))
+# fixed_raw range bound keys whose values (if present) must be strings (the
+# structural floor of version-PARSE; semantic parsing against the package
+# ecosystem's comparator is the deferred live gate — NVD CPE versions and
+# dpkg versions are different schemes, so a single semantic parser would be a
+# false gate today).
+_RANGE_BOUND_KEYS = ("vstart_incl", "vend_excl", "vstart_excl", "vend_incl",
+                     "introduced", "fixed", "last_affected")
+
+
+def _valid_refs(refs: object) -> bool:
+    """True if every ref is an http(s) URL with a network location — the
+    provider-independent url-FORMAT gate. url-RESOLVES (a live HEAD check) is the
+    deferred layer: it needs network, which the no-local-feeding rule forbids in
+    CI and which the off-by-default seam ships without."""
+    for r in refs:  # type: ignore[union-attr]
+        if not isinstance(r, str):
+            return False
+        p = _urlparse(r)
+        if p.scheme not in ("http", "https") or not p.netloc:
+            return False
+    return True
+
+
+def _validate_fixed_raw(fr: object) -> tuple[bool, str]:
+    """Structural check on a drafted ``fixed_raw`` dict: must be a dict; if it
+    carries ``ranges``, each range is a dict whose version-bound keys (if
+    present) are strings. Returns (ok, error-or-empty)."""
+    if not isinstance(fr, dict):
+        return False, "fixed_raw must be a dict"
+    ranges = fr.get("ranges")
+    if ranges is None:
+        return True, ""  # cpe_heads-only / advisory-link drafts carry no ranges
+    if not isinstance(ranges, list):
+        return False, "fixed_raw.ranges must be a list"
+    for r in ranges:
+        if not isinstance(r, dict):
+            return False, "fixed_raw.ranges entries must be dicts"
+        for bk in _RANGE_BOUND_KEYS:
+            v = r.get(bk)
+            if v is not None and not isinstance(v, str):
+                return False, f"fixed_raw range bound {bk} must be a string"
+    return True, ""
+
+
+def validate_draft(drafted: object) -> tuple[bool, list[str]]:
+    """Deterministic validation of an LLM-drafted field set — the REAL trust
+    boundary (node_680976461c89). A draft that fails any check is REJECTED: it
+    is never written to the catalog, so malformed LLM output cannot pollute the
+    signed spine even with the ``source='nvd'`` bar already barring it from a
+    trust decision.
+
+    Returns ``(ok, errors)``. Only the ``_DRAFT_FIELDS`` a draft actually
+    carries are checked; absent fields are not errors (a draft may fill a
+    subset). The checks are the hermetic, provider-independent FORMAT gates;
+    see the module docstring for the deferred live gates (url-RESOLVES,
+    CWE-EXISTS, semantic version-PARSE)."""
+    errors: list[str] = []
+    if not isinstance(drafted, dict):
+        return False, ["draft must be a dict"]
+
+    cvss = drafted.get("cvss")
+    if cvss is not None:
+        # bool is an int subclass — reject it explicitly.
+        if isinstance(cvss, bool) or not isinstance(cvss, (int, float)):
+            errors.append("cvss must be a number")
+        elif not (0.0 <= float(cvss) <= 10.0):
+            errors.append("cvss out of range [0, 10]")
+
+    sev = drafted.get("severity")
+    if sev is not None and (not isinstance(sev, str) or sev.upper() not in _SEVERITIES):
+        errors.append("severity not in known vocabulary "
+                      "(CRITICAL/HIGH/MEDIUM/MODERATE/LOW/UNKNOWN)")
+
+    vec = drafted.get("cvss_vector")
+    if vec is not None and (not isinstance(vec, str) or not _CVSS_VECTOR.match(vec)):
+        errors.append("cvss_vector not a well-formed CVSS vector")
+
+    desc = drafted.get("description")
+    if desc is not None and (not isinstance(desc, str) or not desc.strip()):
+        errors.append("description must be a non-empty string")
+
+    refs = drafted.get("refs")
+    if refs is not None and (not isinstance(refs, list) or not _valid_refs(refs)):
+        errors.append("refs must be a list of http(s) URLs")
+
+    cwe = drafted.get("cwe")
+    if (cwe is not None and (not isinstance(cwe, list) or not cwe or
+            not all(isinstance(c, str) and _CWE_ID.match(c) for c in cwe))):
+        errors.append("cwe must be a non-empty list of CWE-<digits> ids")
+
+    ref_tags = drafted.get("ref_tags")
+    if (ref_tags is not None and (not isinstance(ref_tags, list) or
+            not all(isinstance(t, str) for t in ref_tags))):
+        errors.append("ref_tags must be a list of strings")
+
+    fr = drafted.get("fixed_raw")
+    if fr is not None:
+        ok_fr, fr_err = _validate_fixed_raw(fr)
+        if not ok_fr:
+            errors.append(fr_err)
+
+    return (not errors), errors
 
 
 def _now() -> str:
@@ -162,7 +301,14 @@ def upsert_llm_draft(conn, defect_id: str, drafted: dict, model: str,
         bars this row from ever producing a trust/DEFCON verdict.
 
     Returns True if the row was drafted, False if it was skipped (real source
-    won / row vanished / draft added nothing the row lacked)."""
+    won / row vanished / draft added nothing the row lacked / draft failed
+    validation)."""
+    # Defense in depth: the trust boundary is :func:`validate_draft`, applied in
+    # the tick before this is called. Re-check here so a DIRECT caller cannot
+    # bypass it and write a malformed draft to the catalog.
+    ok, _errors = validate_draft(drafted)
+    if not ok:
+        return False
     row = _store.get_defect(conn, defect_id)
     if row is None:
         return False
@@ -222,11 +368,13 @@ def llm_enrich_tick(conn, draft_fn: DraftFn, model: str,
     refuses, so the tick drafts nothing until the operator gates a provider.
 
     No-wipe: a ``draft_fn`` that returns None or raises is SKIPPED — the tick
-    never raises and never deletes. Returns a stats dict
-    ``{selected, drafted, skipped, errors, provider, source}``."""
+    never raises and never deletes. A draft that fails :func:`validate_draft`
+    is REJECTED (counted separately) and never written — the trust boundary.
+    Returns a stats dict
+    ``{selected, drafted, skipped, rejected, errors, provider, source}``."""
     ts = now or _now()
-    stats = {"selected": 0, "drafted": 0, "skipped": 0, "errors": 0,
-             "provider": model, "source": source}
+    stats = {"selected": 0, "drafted": 0, "skipped": 0, "rejected": 0,
+             "errors": 0, "provider": model, "source": source}
     ids = thin_defect_ids(conn, source=source, limit=cap)
     stats["selected"] = len(ids)
     for cid in ids:
@@ -242,6 +390,10 @@ def llm_enrich_tick(conn, draft_fn: DraftFn, model: str,
         if not drafted:
             stats["skipped"] += 1
             continue
+        ok, _errors = validate_draft(drafted)
+        if not ok:
+            stats["rejected"] += 1
+            continue  # no-wipe: a malformed draft is rejected, never written
         if upsert_llm_draft(conn, cid, drafted, model,
                             policy_version=policy_version, fetched_at=ts):
             stats["drafted"] += 1

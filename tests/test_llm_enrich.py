@@ -313,3 +313,167 @@ def test_llm_draft_export_roundtrip_preserves_label(conn, tmp_path):
     assert row["source"] == "llm:stub"
     assert row["enrich_state"] == "llm"
     assert row["cvss"] == 7.0
+
+
+# --- the deterministic validator: the provider-independent trust boundary ----
+
+_GOOD = {"cvss": 7.5, "severity": "HIGH",
+         "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+         "description": "drafted desc", "refs": ["https://example.com/d"],
+         "cwe": ["CWE-89"], "ref_tags": ["Vendor Advisory"],
+         "fixed_raw": {"ranges": [{"criteria": "cpe:2.3:o:v:p",
+                                   "vstart_incl": "1.0", "vend_excl": "1.5"}],
+                        "cpe_heads": ["cpe:2.3:o:v:p"]}}
+
+
+def test_validate_draft_accepts_well_formed():
+    """A complete, well-formed draft passes every gate."""
+    ok, errors = llm_enrich.validate_draft(dict(_GOOD))
+    assert ok is True and errors == []
+
+
+def test_validate_draft_accepts_partial_draft():
+    """Only the fields a draft actually carries are checked; absent fields are
+    not errors (a draft may fill a subset)."""
+    ok, errors = llm_enrich.validate_draft({"cvss": 5.0})
+    assert ok is True and errors == []
+
+
+@pytest.mark.parametrize("bad,frag", [
+    ({"cvss": 99.9}, "out of range"),
+    ({"cvss": -0.1}, "out of range"),
+    ({"cvss": "7.5"}, "must be a number"),
+    ({"cvss": True}, "must be a number"),   # bool is an int subclass
+])
+def test_validate_draft_rejects_bad_cvss(bad, frag):
+    ok, errors = llm_enrich.validate_draft(bad)
+    assert ok is False and any(frag in e for e in errors)
+
+
+def test_validate_draft_severity_vocabulary():
+    """Known severity words pass (NVD ∪ OSV); LLM prose is rejected by code."""
+    for sev in ("CRITICAL", "high", "Medium", "moderate", "low", "unknown"):
+        assert llm_enrich.validate_draft({"severity": sev})[0] is True, sev
+    ok, errors = llm_enrich.validate_draft({"severity": "very bad"})
+    assert ok is False and any("severity" in e for e in errors)
+
+
+@pytest.mark.parametrize("vec,good", [
+    ("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", True),
+    ("CVSS:2.0/AV:N/AC:L/Au:N/C:P/I:P/A:P", True),
+    ("CVSS:3.0/AV:N/AC:L", True),
+    ("AV:N/AC:L", False),                 # missing CVSS: prefix
+    ("CVSS:4.0/AV:N/AC:L", False),         # unsupported major
+    ("CVSS:3.1/", False),                 # no metrics
+    ("CVSS:3.1/AV:N AC:L", False),        # space not slash
+])
+def test_validate_draft_cvss_vector(vec, good):
+    assert llm_enrich.validate_draft({"cvss_vector": vec})[0] is good, vec
+
+
+@pytest.mark.parametrize("refs,good", [
+    (["https://example.com/x", "http://nvd.nist.gov/y"], True),
+    (["ftp://example.com/x"], False),     # non-http scheme
+    (["not a url"], False),                # no scheme/netloc
+    (["https://example.com/x", 42], False),  # non-string entry
+    ([], True),                            # empty list is fine
+])
+def test_validate_draft_refs(refs, good):
+    assert llm_enrich.validate_draft({"refs": refs})[0] is good, refs
+
+
+@pytest.mark.parametrize("cwe,good", [
+    (["CWE-89", "CWE-79"], True),
+    (["CWE-1"], True),
+    (["CWE-abc"], False),
+    (["weakness"], False),
+    ([], False),                           # empty cwe list rejected
+    (["CWE-89", "NOT-CWE"], False),
+])
+def test_validate_draft_cwe(cwe, good):
+    assert llm_enrich.validate_draft({"cwe": cwe})[0] is good, cwe
+
+
+def test_validate_draft_ref_tags_must_be_strings():
+    assert llm_enrich.validate_draft({"ref_tags": ["Patch"]})[0] is True
+    assert llm_enrich.validate_draft({"ref_tags": ["a", 1]})[0] is False
+
+
+@pytest.mark.parametrize("fr,good", [
+    ({"cpe_heads": ["cpe:2.3:o:v:p"]}, True),            # no ranges is fine
+    ({"ranges": [{"criteria": "cpe:x"}]}, True),         # range with no bounds
+    ({"ranges": [{"vstart_incl": "1.0", "fixed": "1.5"}]}, True),
+    ("not a dict", False),
+    ({"ranges": "x"}, False),                            # ranges not a list
+    ({"ranges": ["x"]}, False),                          # range not a dict
+    ({"ranges": [{"vstart_incl": 1.0}]}, False),         # bound not a string
+])
+def test_validate_draft_fixed_raw(fr, good):
+    assert llm_enrich.validate_draft({"fixed_raw": fr})[0] is good, fr
+
+
+def test_validate_draft_rejects_non_dict():
+    ok, errors = llm_enrich.validate_draft("not a dict")
+    assert ok is False and errors == ["draft must be a dict"]
+
+
+def test_tick_rejects_malformed_draft_no_write(conn):
+    """A malformed draft is rejected by the tick, counted separately, and
+    NEVER written — the row stays thin for the next tick (no-wipe)."""
+    _skeleton(conn, "CVE-M", source="mitre")
+    stats = llm_enrich.llm_enrich_tick(
+        conn, lambda r: {"cvss": 99.9, "severity": "very bad"}, model="stub")
+    assert stats["rejected"] == 1 and stats["drafted"] == 0
+    row = store.get_defect(conn, "CVE-M")
+    assert row["source"] == "mitre"  # untouched, not written, not wiped
+
+
+def test_tick_rejects_counted_separately_from_skipped_errors(conn):
+    """One valid (drafted), one None (skipped), one malformed (rejected), one
+    raising (errors) — the four outcomes are distinct counts."""
+    _skeleton(conn, "OK", source="mitre")
+    _skeleton(conn, "NONE", source="mitre")
+    _skeleton(conn, "BAD", source="mitre")
+    _skeleton(conn, "BOOM", source="mitre")
+
+    def draft(row):
+        if row["id"] == "OK":
+            return {"cvss": 5.5, "severity": "MEDIUM"}
+        if row["id"] == "NONE":
+            return None
+        if row["id"] == "BAD":
+            return {"cvss": 99.9}  # out of range -> rejected
+        raise RuntimeError("provider blew up")
+
+    stats = llm_enrich.llm_enrich_tick(conn, draft, model="stub")
+    assert stats["drafted"] == 1
+    assert stats["skipped"] == 1
+    assert stats["rejected"] == 1
+    assert stats["errors"] == 1
+    assert store.get_defect(conn, "BAD")["source"] == "mitre"  # not written
+
+
+def test_upsert_llm_draft_defensive_guard_rejects_invalid(conn):
+    """A DIRECT upsert of a malformed draft is rejected (returns False) and
+    never written — the trust boundary cannot be bypassed by skipping the
+    tick."""
+    _skeleton(conn, "CVE-M", source="mitre")
+    ok = llm_enrich.upsert_llm_draft(conn, "CVE-M",
+                                    {"cvss": 99.9, "severity": "garbage"},
+                                    model="stub")
+    assert ok is False
+    row = store.get_defect(conn, "CVE-M")
+    assert row["source"] == "mitre" and row["cvss"] is None
+
+
+def test_validator_is_provider_independent():
+    """The same malformed draft is rejected regardless of the model label —
+    the validator, not the prompt, is the trust boundary that makes providers
+    interchangeable."""
+    bad = {"cvss": 99.9}
+    for model in ("gemini-flash", "llama-3.3-70b", "qwen-2.5-32b"):
+        c = store.connect(":memory:")
+        _skeleton(c, "CVE-M", source="mitre")
+        stats = llm_enrich.llm_enrich_tick(c, lambda r: bad, model=model)
+        assert stats["rejected"] == 1 and stats["drafted"] == 0, model
+        assert store.get_defect(c, "CVE-M")["source"] == "mitre"

@@ -924,8 +924,8 @@ def _cmd_enrich_llm(args) -> int:
         conn.commit()
     src_label = f" [source={stats['source']}]" if stats["source"] else ""
     print(f"llm enrich: selected {stats['selected']} · drafted {stats['drafted']} · "
-          f"skipped {stats['skipped']} · errors {stats['errors']}{src_label} "
-          f"(model={stats['provider']})")
+          f"skipped {stats['skipped']} · rejected {stats['rejected']} · "
+          f"errors {stats['errors']}{src_label} (model={stats['provider']})")
     if stats["drafted"] == 0 and not os.environ.get("POSTURE_LLM"):
         print("  POSTURE_LLM unset: the LLM seam is off; drafts require the "
               "operator to gate a provider (node_680976461c89). Use --dry-run "
@@ -933,6 +933,9 @@ def _cmd_enrich_llm(args) -> int:
     elif stats["errors"] and os.environ.get("POSTURE_LLM"):
         print("  POSTURE_LLM is set but no provider draft_fn is wired; pass a "
               "real draft_fn to llm_enrich_tick (the operator-gated provider).")
+    if stats["rejected"]:
+        print("  rejected drafts failed the deterministic validator and were "
+              "not written (the provider-independent trust boundary).")
     return 0
 
 
