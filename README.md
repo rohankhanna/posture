@@ -483,6 +483,7 @@ gated) lives in [`docs/sources.md`](docs/sources.md).
 | `posture ingest kev` | CISA KEV overlay (annotates existing CVE rows; not a new defect type). Idempotent full refresh, ~1,660 entries. |
 | `posture ingest apple [--product …] [--history]` | Apple advisory fix-version overlay, CVE+product-keyed, per-product full refresh. `--history` recovers pre-index CVEs from Wayback (more fetches). |
 | `posture refresh [--devices <yaml> \| --no-devices]` | Incremental NVD enrichment + per-CVE re-decide; upserts verdicts one key at a time, never a bulk swap. |
+| `posture enrich llm [--source …] [--cap N] [--model M] [--dry-run]` | Source-agnostic LLM draft over thin/unscored catalog rows (every peer scheme, not just NVD). LLM-as-map/human-as-trust: the LLM drafts catalog MAP fields only, drafts are labeled `source='llm:<model>'`, and the assess decide path selects `source='nvd'` only, so a draft is structurally barred from ever producing a trust/DEFCON verdict. Off-by-default `POSTURE_LLM` seam (no provider until the operator gates one); `--dry-run` inspects the thin pool with no provider. |
 
 ### CI ingestion (the recommended publication path)
 
@@ -589,6 +590,7 @@ Every subcommand takes `--help` for full options. Common options include
 | `posture backfill --cap N` | cvelistV5 back-catalog (self-disables when done) |
 | `posture ingest {kev\|osv\|ghsa\|apple}` | aggregator peers + overlays (`apple`: `--product`, `--history`) |
 | `posture refresh [--no-devices\|--devices <yaml>] [--cap N]` | incremental NVD enrichment + re-decide |
+| `posture enrich llm [--source …] [--dry-run]` | source-agnostic LLM draft over thin/unscored rows (off-by-default `POSTURE_LLM`; LLM-as-map, never trust) |
 
 **Governance & development**
 

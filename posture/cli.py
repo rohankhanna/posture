@@ -18,6 +18,7 @@ used (project rule: the map is foreign-authored; say so).
 from __future__ import annotations
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -39,6 +40,7 @@ from . import attribution as _attr
 from . import stream as _stream
 from . import refresh as _refresh
 from . import export as _export
+from . import llm_enrich as _llm_enrich
 from .sources import build_default_registry
 from .sources.nvd_cve import NvdCveObserver
 from .sources import kev as _kev_mod
@@ -896,6 +898,44 @@ def _cmd_refresh(args) -> int:
     return 0
 
 
+def _cmd_enrich_llm(args) -> int:
+    """Source-agnostic LLM draft over thin/unscored catalog rows, behind the
+    off-by-default POSTURE_LLM seam. The LLM drafts catalog MAP fields only and
+    is structurally barred from trust/DEFCON decisions (drafted rows carry
+    source='llm:<model>'; the assess decide path selects source='nvd' only)."""
+    from . import llm_enrich
+    with _open_db(args.db) as conn:
+        if args.dry_run:
+            ids = llm_enrich.thin_defect_ids(conn, source=args.source,
+                                             limit=args.cap)
+            label = f" [source={args.source}]" if args.source else " (any source)"
+            print(f"{len(ids)} thin/unscored defect(s) eligible for LLM draft{label}:")
+            for cid in ids:
+                print(f"  {cid}")
+            if not os.environ.get("POSTURE_LLM"):
+                print("(POSTURE_LLM unset: dry-run only; the LLM seam is off "
+                      "until the operator gates a provider)")
+            return 0
+        policy = _load_policy(args.policy)
+        _install_policy_if_needed(conn, policy)
+        stats = llm_enrich.llm_enrich_tick(
+            conn, llm_enrich.default_draft_fn, model=args.model, cap=args.cap,
+            source=args.source, policy_version=policy.version)
+        conn.commit()
+    src_label = f" [source={stats['source']}]" if stats["source"] else ""
+    print(f"llm enrich: selected {stats['selected']} · drafted {stats['drafted']} · "
+          f"skipped {stats['skipped']} · errors {stats['errors']}{src_label} "
+          f"(model={stats['provider']})")
+    if stats["drafted"] == 0 and not os.environ.get("POSTURE_LLM"):
+        print("  POSTURE_LLM unset: the LLM seam is off; drafts require the "
+              "operator to gate a provider (node_680976461c89). Use --dry-run "
+              "to inspect the thin pool without drafting.")
+    elif stats["errors"] and os.environ.get("POSTURE_LLM"):
+        print("  POSTURE_LLM is set but no provider draft_fn is wired; pass a "
+              "real draft_fn to llm_enrich_tick (the operator-gated provider).")
+    return 0
+
+
 def _cmd_catalog(args) -> int:
     with _open_db(args.db, readonly=True) as conn:
         if args.sub == "show":
@@ -1075,6 +1115,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-devices", action="store_true",
                     help="catalog-only enrichment: no fleet, no verdicts, no vendor trackers (for CI)")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_refresh)
+
+    sp = sub.add_parser("enrich", help="LLM draft over thin/unscored catalog rows (source-agnostic; off-by-default POSTURE_LLM seam; LLM-as-map/human-as-trust)")
+    epsub = sp.add_subparsers(dest="enrich_peer", required=True)
+    spl = epsub.add_parser("llm", help="draft catalog map fields for thin/unscored defects with an LLM (never trust/DEFCON; drafts labeled source='llm:<model>' and barred from the assess decide path)")
+    spl.add_argument("--source", default=None,
+                     help="restrict the thin pool to one provenance (mitre|osv|ghsa|...); default any source")
+    spl.add_argument("--cap", type=int, default=_llm_enrich.DEFAULT_CAP,
+                     help="max rows drafted this tick")
+    spl.add_argument("--model", default="unset",
+                     help="model id stamped on source='llm:<model>' (default 'unset')")
+    spl.add_argument("--dry-run", action="store_true",
+                     help="list the thin/unscored pool without drafting (no provider needed)")
+    db_arg(spl); pol_arg(spl); spl.set_defaults(func=_cmd_enrich_llm)
 
     sp = sub.add_parser("catalog", help="defect catalog: show <defect_id> | list | pending")
     sp.add_argument("sub", choices=["show", "list", "pending"])
