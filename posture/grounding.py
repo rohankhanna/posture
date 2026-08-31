@@ -26,6 +26,8 @@ import ipaddress
 import json
 from pathlib import Path
 
+from .sources.live_cpe import enrich_device_matchers
+
 
 # ---------------------------------------------------------------------------
 # Static CPE-to-port mapping
@@ -348,7 +350,7 @@ def _load_json(path: str | Path) -> dict | list | None:
     return data
 
 
-def device_grounding(device: dict) -> dict:
+def device_grounding(device: dict, *, use_live_cpe: bool = False) -> dict:
     """Compose all grounding axes into a single device grounding assessment.
 
     This is the posture-side API that a consumer (forebode's attack graph, a
@@ -378,7 +380,9 @@ def device_grounding(device: dict) -> dict:
     - ``reachable_subnets``: ``list[str]`` of subnet CIDR strings from
       non-loopback UP interfaces.
     - ``cpe_ports``: ``dict[str, list[int]]`` mapping the device's CPE
-      matchers to their default service ports.
+      matchers to their default service ports.  When ``use_live_cpe`` is
+      ``True``, live-discovered CPE matchers (from the host's package manager)
+      are merged into the device's matchers before computing this dict.
     - ``firewall_default_policy``: ``str`` — ``"deny"``, ``"allow"``, or
       ``""`` (absent).
 
@@ -412,7 +416,10 @@ def device_grounding(device: dict) -> dict:
     fw_allowed, fw_denied, fw_default = _parse_firewall(device)
     listening_exposed, listening_loopback = _parse_local_exposure(device)
     has_net, subnets = _parse_interfaces(device)
-    cpe_ports = grounding_for_matchers(device.get("matchers") or [])
+    matchers = device.get("matchers") or []
+    if use_live_cpe:
+        matchers = enrich_device_matchers(device)
+    cpe_ports = grounding_for_matchers(matchers)
 
     # Truly exposed = port is listening (non-loopback) AND firewall allows it.
     # When the firewall default policy is "allow", a listening port that is
