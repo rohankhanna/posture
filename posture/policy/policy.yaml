@@ -7,8 +7,8 @@
 # Produced / re-evaluated by the `source-alignment` repo against evidence on a
 # cadence. Initial values are conservative working assumptions, not verdicts.
 
-version: "2026-08-31.3"
-supersedes: "2026-08-31.2"
+version: "2026-08-31.4"
+supersedes: "2026-08-31.3"
 dated: 2026-08-31
 rationale: |
   Initial skeleton policy (2026-08-01.1): NVD is the CVE spine today — a
@@ -54,6 +54,7 @@ rationale: |
   2026-08-31.1: firewall observer wired on the exposure axis (grounding probe for node_e95e4e3281d9). Reads a firewall snapshot the device supplies (inline dict or local JSON file) and emits closed/exposed verdicts per inbound rule. At order 5 it overrides local_exposure (order 10) on the same proto/port key — a firewalled port is closed even when a socket is listening. This gives the attack graph measured network-reachability ground truth to suppress impossible chains. No observer order changes except the new observer at order 5 on exposure.
   2026-08-31.2: network_interfaces observer wired on the exposure axis (grounding probe for node_e95e4e3281d9, slice 3). Reads an interface snapshot the device supplies (inline list or local JSON file) and emits reachable/loopback verdicts per UP interface address, keyed by subnet CIDR (e.g. 192.168.1.0/24). At order 15 it is supplementary context (lower authority than local_exposure at 10 and firewall at 5) — its subnet keys never conflict with proto/port keys. This gives the attack graph network-topology ground truth to suppress cross-network chains: a CVE requiring reachability to a subnet the device is not on is unreachable.
   2026-08-31.3: live_network_interfaces observer wired on the exposure axis (grounding probe for node_e95e4e3281d9, slice 5). Shells out to `ip -j addr` (JSON output from iproute2) to read the kernel's actual interface table, converts it to the snapshot format, and delegates Verdict emission to network_interfaces. At order 14 it overrides network_interfaces (order 15) on the same subnet key — live ground truth is higher authority than a device-supplied snapshot. When `ip -j addr` is unavailable (no binary, permission denied, non-Linux), it falls back to the device-supplied snapshot (inline or JSON file); when neither is available, honest no-op. Subnet keys never conflict with proto/port keys from local_exposure/firewall.
+  2026-08-31.4: live_firewall + live_local_exposure observers wired on the exposure axis (grounding probes for node_e95e4e3281d9, slices 6-7). live_firewall (order 4 < firewall order 5) shells out to `ufw status verbose` then `iptables -S` and delegates to firewall — live kernel firewall state overrides the device-supplied snapshot. live_local_exposure (order 9 < local_exposure order 10) shells out to `ss -tulpn` and delegates to local_exposure — live kernel socket table overrides the device-supplied socket capture. Both fall back to the device-supplied snapshot when their live tool is unavailable (no binary, permission denied, non-Linux); when neither live data nor snapshot is available, honest no-op. This was missing from slice 6's policy wiring (the observer was committed but unregistered); this version also retro-registers live_firewall.
   2026-08-06.3: the last three stubbed axes are now wired with REAL observers —
   local_exposure (exposure: reads a local socket capture the device supplies,
   emits exposed/closed per proto/port; loopback bind = closed, wildcard or
@@ -108,6 +109,17 @@ observers:
       - "Apple hosts only: device supplies cve_candidates + apple_product + os_version"
       - "CVE not in Apple's feed -> no verdict (NVD stands)"
       - "candidate CVEs are a device input (the fan-out is pure; no peeking at NVD's verdicts)"
+  live_local_exposure:
+    axes: [exposure]
+    weight: medium
+    bias: false-safe           # a missing bind is assumed exposed, not closed
+    order: 9                    # < local_exposure 10 -> runs last -> overrides on the proto/port key
+    conditions:
+      - "LIVE: shells out to `ss -tulpn` to read the kernel's actual socket table; no network"
+      - "when `ss -tulpn` is unavailable (no binary, permission denied, non-Linux), falls back to device['exposure'] or device['exposure_path'] (same as local_exposure)"
+      - "delegates Verdict emission to local_exposure (same loopback detection, dangerous-port severity, false-safe missing-bind)"
+      - "one Verdict per listening socket keyed proto/port; overrides local_exposure on the same key (live ground truth > device-supplied snapshot)"
+      - "no live data and no device snapshot -> honest no-op (zero verdicts); firewall/live_firewall verdicts stand"
   local_exposure:
     axes: [exposure]
     weight: medium
@@ -118,6 +130,17 @@ observers:
       - "loopback bind (127/8, ::1, localhost) -> closed; wildcard / non-loopback / missing bind -> exposed (false-safe)"
       - "no exposure surface supplied -> honest no-op (zero verdicts); axis falls to UNKNOWN via loud degradation"
       - "one Verdict per socket keyed proto/port; severity HIGH on a dangerous exposed port (ssh/rdp/telnet + common DBs), else MEDIUM; closed -> None"
+  live_firewall:
+    axes: [exposure]
+    weight: high
+    bias: false-safe           # a missing default_policy is not "clean"; deny unknown ports
+    order: 4                   # < firewall 5 -> runs last -> overrides on the proto/port key
+    conditions:
+      - "LIVE: shells out to `ufw status verbose` (Ubuntu) then `iptables -S` (universal Linux) to read the kernel's actual firewall rules; no network"
+      - "when neither `ufw` nor `iptables` is available (no binary, permission denied, non-Linux), falls back to device['firewall'] or device['firewall_path'] (same as firewall)"
+      - "delegates Verdict emission to firewall (same deny→closed, allow→exposed, dangerous-port severity, outbound skipping)"
+      - "one Verdict per inbound rule keyed proto/port; overrides firewall on the same key (live ground truth > device-supplied snapshot)"
+      - "no live data and no device snapshot -> honest no-op (zero verdicts); firewall/local_exposure verdicts stand"
   firewall:
     axes: [exposure]
     weight: high
