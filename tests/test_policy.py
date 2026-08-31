@@ -57,7 +57,7 @@ def test_missing_dated_rejected():
 
 def test_bundled_default_policy_loads():
     p = Policy.from_file(default_policy_path())
-    assert p.version == "2026-08-31.1"
+    assert p.version == "2026-08-31.2"
     # all six axes are covered by the bundled observer entries
     covered = {a for wp in p.observers.values() for a in wp.axes}
     assert covered == {"vulnerability", "configuration", "exposure",
