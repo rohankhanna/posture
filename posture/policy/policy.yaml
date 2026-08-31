@@ -7,9 +7,9 @@
 # Produced / re-evaluated by the `source-alignment` repo against evidence on a
 # cadence. Initial values are conservative working assumptions, not verdicts.
 
-version: "2026-08-06.3"
-supersedes: "2026-08-06.2"
-dated: 2026-08-06
+version: "2026-08-31.1"
+supersedes: "2026-08-06.3"
+dated: 2026-08-31
 rationale: |
   Initial skeleton policy (2026-08-01.1): NVD is the CVE spine today — a
   foreign (US NIST) coordinate system that over-reports for backport distros
@@ -51,6 +51,7 @@ rationale: |
   defect with no cve anchors as a first-class peer. Ingestion peers (cvelistV5
   back-fill + OSV + GHSA + CISA KEV) are being wired on this foundation. No
   observer order/bias changes; the observer layer is unaffected.
+  2026-08-31.1: firewall observer wired on the exposure axis (grounding probe for node_e95e4e3281d9). Reads a firewall snapshot the device supplies (inline dict or local JSON file) and emits closed/exposed verdicts per inbound rule. At order 5 it overrides local_exposure (order 10) on the same proto/port key — a firewalled port is closed even when a socket is listening. This gives the attack graph measured network-reachability ground truth to suppress impossible chains. No observer order changes except the new observer at order 5 on exposure.
   2026-08-06.3: the last three stubbed axes are now wired with REAL observers —
   local_exposure (exposure: reads a local socket capture the device supplies,
   emits exposed/closed per proto/port; loopback bind = closed, wildcard or
@@ -115,6 +116,19 @@ observers:
       - "loopback bind (127/8, ::1, localhost) -> closed; wildcard / non-loopback / missing bind -> exposed (false-safe)"
       - "no exposure surface supplied -> honest no-op (zero verdicts); axis falls to UNKNOWN via loud degradation"
       - "one Verdict per socket keyed proto/port; severity HIGH on a dangerous exposed port (ssh/rdp/telnet + common DBs), else MEDIUM; closed -> None"
+  firewall:
+    axes: [exposure]
+    weight: high
+    bias: false-safe           # a missing default_policy is not "clean"; deny unknown ports
+    order: 5                   # < local_exposure 10 -> runs last -> overrides on the proto/port key
+    conditions:
+      - "LOCAL only: reads device['firewall'] (inline dict with 'rules' list + optional 'default_policy') or device['firewall_path'] (local JSON file); no network"
+      - "inbound deny rule -> closed (firewall blocks this port; even a listening socket is not reachable)"
+      - "inbound allow rule -> exposed (firewall explicitly permits this port); severity HIGH on dangerous ports, else MEDIUM"
+      - "outbound rules are read but do not produce exposure verdicts (exposure is inbound reachability)"
+      - "direction defaults to 'inbound' when omitted; unknown actions are skipped"
+      - "no firewall snapshot supplied -> honest no-op (zero verdicts); local_exposure verdicts stand"
+      - "one Verdict per inbound rule keyed proto/port; overrides local_exposure on the same key (firewall is higher authority on reachability)"
   kev:
     axes: [threat]
     weight: high

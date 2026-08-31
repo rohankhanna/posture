@@ -85,9 +85,11 @@ def default_registry(fresh: bool = False) -> ObserverRegistry:
     # imports keep top-level import cycles out: each module imports Observer
     # + ObserverResult/Verdict from ..observer, not from this base module).
     from .local_exposure import LocalExposureObserver
+    from .firewall import FirewallObserver
     from .kev_observer import KevThreatObserver
     from .sigverify import SigVerifyObserver
     reg.register(LocalExposureObserver())     # exposure: local surface reader
+    reg.register(FirewallObserver())           # exposure: firewall-state grounding probe
     reg.register(KevThreatObserver())         # threat: CISA KEV overlay
     reg.register(SigVerifyObserver())         # trust: signature verification
     return reg
