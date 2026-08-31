@@ -169,6 +169,29 @@ def test_export_shards_by_published_month(conn, tmp_path):
     assert shards["unknown.jsonl"][0]["id"] == "CVE-2026-1003"
 
 
+def test_export_splits_oversized_monthly_shards(conn, tmp_path, monkeypatch):
+    """Oversized months become numbered parts, the manifest counts every part,
+    import still restores every row, and the unsplit old filename is cleaned."""
+    _seed(conn)
+    out = tmp_path / "out"
+    export.export_spine(conn, out_dir=out, policy_version="v")
+    assert (out / "spine" / "defects" / "2026-07.jsonl").exists()
+
+    monkeypatch.setattr(export, "MAX_DEFECT_SHARD_BYTES", 1)
+    manifest = export.export_spine(conn, out_dir=out, policy_version="v")
+
+    defects_dir = out / "spine" / "defects"
+    assert not (defects_dir / "2026-07.jsonl").exists()
+    assert (defects_dir / "2026-07-000001.jsonl").exists()
+    assert (defects_dir / "2026-07-000002.jsonl").exists()
+    assert manifest["counts"]["defects"] == 4
+
+    other = store.connect(":memory:")
+    stats = export.import_spine(other, from_dir=out)
+    assert stats["defects"] == 4
+    assert store.catalog_all(other) == store.catalog_all(conn)
+
+
 def test_export_self_cleans_stale_shards(conn, tmp_path):
     """Re-running export after a format rename drops stale shards it no longer
     writes (e.g. a prior run's spine/flaws/*.jsonl + seen_flaws.jsonl) instead of
