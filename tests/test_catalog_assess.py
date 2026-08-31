@@ -134,6 +134,13 @@ def test_catalog_assess_matches_fixture_assess_verdict_for_verdict(conn):
         assert cv.fixed_in == fv.fixed_in, key
         assert cv.severity == fv.severity, key
         assert cv.detail == fv.detail, key
+        assert cv.cvss == fv.cvss, key
+        assert cv.cvss_vector == fv.cvss_vector, key
+        # published: the catalog path truncates to the date part (YYYY-MM-DD)
+        # via _enriched_record; the fixture path carries the full NVD timestamp.
+        # Both must be non-None and agree on the date prefix.
+        assert cv.published is not None and fv.published is not None, key
+        assert fv.published.startswith(cv.published), key
         assert cv.provenance.observer == "nvd"
     # spot-check the four known verdicts (pinned by the fixture test too)
     assert by_cat["CVE-2026-99901"].status == "unpatched"
@@ -272,3 +279,45 @@ def test_full_engine_assess_falls_back_to_fixture_on_fresh_db():
     by_axis = {a.axis: a for a in dp.axes}
     assert by_axis["vulnerability"].status == "unpatched"  # 4 fixture verdicts
     assert "nvd" in dp.used_observers
+
+# --- verdict fidelity: cvss, cvss_vector, published --------------------------
+
+def test_fixture_verdicts_carry_real_cvss_vector_and_published():
+    """The NvdCveObserver populates the real numeric CVSS score, CVSS vector
+    string, and publish date on each Verdict — not just the severity string.
+    This is the fidelity gap that the posture adapter previously worked around
+    with threshold-mapped severity→cvss; now the real values flow through."""
+    device = _sample_device()
+    pol = Policy.from_file(default_policy_path())
+    result = NvdCveObserver(live=False).assess(device, pol)
+    assert result.complete is True
+    assert len(result.verdicts) == 4
+    for v in result.verdicts:
+        assert v.cvss is not None, f"{v.key}: cvss should be populated"
+        assert v.cvss_vector is not None, f"{v.key}: cvss_vector should be populated"
+        assert v.published is not None, f"{v.key}: published should be populated"
+    # spot-check known fixture values
+    by_key = {v.key: v for v in result.verdicts}
+    crit = by_key["CVE-2026-99901"]
+    assert crit.severity == "CRITICAL"
+    assert crit.cvss >= 9.0  # CRITICAL threshold
+    assert crit.cvss_vector.startswith("CVSS:")
+    assert len(crit.published) >= 10  # ISO date
+
+
+def test_catalog_verdicts_carry_real_cvss_vector_and_published(conn):
+    """The catalog-backed assess path also populates cvss, cvss_vector, and
+    published — the _defect_row_to_vuln reconstruction includes them so
+    the catalog path matches the fixture path on the new fields too."""
+    _seed_catalog_from_fixture(conn)
+    head = _cpe_head("cpe:2.3:o:linux:linux_kernel")
+    device = _sample_device()
+    device["catalog_defects"] = {head: store.defects_for_cpe_head(conn, head)}
+    pol = Policy.from_file(default_policy_path())
+    result = NvdCveObserver(live=False).assess(device, pol)
+    assert result.complete is True
+    assert len(result.verdicts) == 4
+    for v in result.verdicts:
+        assert v.cvss is not None, f"{v.key}: cvss should be populated from catalog"
+        assert v.cvss_vector is not None, f"{v.key}: cvss_vector should be populated from catalog"
+        assert v.published is not None, f"{v.key}: published should be populated from catalog"

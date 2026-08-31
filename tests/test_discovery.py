@@ -134,7 +134,7 @@ def test_v3_migration_dedups_duplicate_candidate_urls_and_raises_unique_index(tm
     rows = store.candidates(conn)
     assert len(rows) == 2                     # one row per url (dup collapsed)
     assert {r["url"] for r in rows} == {"https://x", "https://y"}
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
     idx = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='index' AND name='candidates_url_uq'"
     ).fetchone()

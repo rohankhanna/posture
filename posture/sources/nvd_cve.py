@@ -404,6 +404,7 @@ class NvdCveObserver(Observer):
         } for rng in (fr.get("ranges") or []) if rng.get("criteria")]
         cve: dict = {
             "id": row.get("id"),
+            "published": row.get("published"),
             "configurations": [{"nodes": [{"cpeMatch": cpe_match}]}] if cpe_match else [],
             "descriptions": [{"lang": "en", "value": row.get("description") or ""}],
             "references": [{"url": u} for u in (row.get("refs") or [])],
@@ -472,6 +473,8 @@ class NvdCveObserver(Observer):
             cve, device_ver, cpe)
         if status is None:
             return None  # CVE doesn't touch this device's CPE -> skip
+        score, _sev, vec = _metrics(cve)
+        published = cve.get("published")
         ref = next((u for u in _refs(cve)
                     if "nvd.nist.gov/vuln/detail" in u), None) or f"{NVD_URL}?cveId={cid}"
         return Verdict(
@@ -481,6 +484,9 @@ class NvdCveObserver(Observer):
             detail=detail,
             severity=severity,
             fixed_in=fixed_in,
+            cvss=score,
+            cvss_vector=vec,
+            published=published,
             provenance=Provenance(
                 observer=self.id, policy_version="", fetched_at="",
                 complete=True, raw_ref=ref,
