@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-from unittest.mock import patch
 import yaml
 
 from posture.axis import Axis
@@ -45,12 +44,8 @@ def test_full_six_axis_posture_one_real_five_unknown():
     reg = build_default_registry()
     pol = Policy.from_file(default_policy_path())
     conn = store.connect(":memory:")
-    # Mock ip -j addr so the live_network_interfaces observer does not pick
-    # up real system state — keeps the test deterministic.
-    with patch("posture.sources.live_network_interfaces.subprocess.run",
-               side_effect=FileNotFoundError("no ip binary in test")):
-        dp = engine.assess(_sample_device(), reg, pol, conn=conn,
-                           now="2026-08-01T00:00:00+00:00")
+    dp = engine.assess(_sample_device(), reg, pol, conn=conn,
+                       now="2026-08-01T00:00:00+00:00")
     by_axis = {a.axis: a for a in dp.axes}
     # the one real axis
     assert by_axis["vulnerability"].status == "unpatched"
@@ -68,10 +63,8 @@ def test_audit_and_distrust_roundtrip_through_store():
     reg = build_default_registry()
     pol = Policy.from_file(default_policy_path())
     conn = store.connect(":memory:")
-    with patch("posture.sources.live_network_interfaces.subprocess.run",
-               side_effect=FileNotFoundError("no ip binary in test")):
-        engine.assess(_sample_device(), reg, pol, conn=conn,
-                      now="2026-08-01T00:00:00+00:00")
+    engine.assess(_sample_device(), reg, pol, conn=conn,
+                  now="2026-08-01T00:00:00+00:00")
     # 4 vulnerability verdicts rest on nvd
     rows = _prov.audit(conn, "nvd")
     assert len(rows) == 4
