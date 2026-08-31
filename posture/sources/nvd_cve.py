@@ -487,6 +487,8 @@ class NvdCveObserver(Observer):
             cvss=score,
             cvss_vector=vec,
             published=published,
+            cwe=_cwes(cve) or None,
+            ref_tags=_ref_tags(cve) or None,
             provenance=Provenance(
                 observer=self.id, policy_version="", fetched_at="",
                 complete=True, raw_ref=ref,

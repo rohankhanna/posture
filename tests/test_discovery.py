@@ -130,11 +130,11 @@ def test_v3_migration_dedups_duplicate_candidate_urls_and_raises_unique_index(tm
     raw.execute("PRAGMA user_version = 2")
     raw.commit(); raw.close()
 
-    conn = store.connect(str(db))             # runs _migrate -> v6 (v3 dedups, v4/v5/v6 no-op here)
+    conn = store.connect(str(db))             # runs _migrate -> v8 (v3 dedups, v4/v5/v6/v7 no-op here)
     rows = store.candidates(conn)
     assert len(rows) == 2                     # one row per url (dup collapsed)
     assert {r["url"] for r in rows} == {"https://x", "https://y"}
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
     idx = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='index' AND name='candidates_url_uq'"
     ).fetchone()

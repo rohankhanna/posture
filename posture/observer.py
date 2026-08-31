@@ -107,6 +107,8 @@ class Verdict:
     cvss: float | None = None
     cvss_vector: str | None = None
     published: str | None = None
+    cwe: list[str] | None = None
+    ref_tags: list[str] | None = None
     provenance: Provenance | None = None
 
     def to_dict(self) -> dict:
@@ -120,6 +122,8 @@ class Verdict:
             "cvss": self.cvss,
             "cvss_vector": self.cvss_vector,
             "published": self.published,
+            "cwe": self.cwe,
+            "ref_tags": self.ref_tags,
         }
         if self.provenance is not None:
             d["provenance"] = self.provenance.to_dict()
