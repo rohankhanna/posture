@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS verdicts (
     severity      TEXT,
     fixed_in      TEXT,
     detail        TEXT,
+    cvss          REAL,
+    cvss_vector   TEXT,
+    published     TEXT,
     observer       TEXT,
     policy_version TEXT,
     fetched_at    TEXT,
@@ -521,6 +524,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA user_version = 6")
         conn.commit()
 
+    if version < 7:
+        # v6 -> v7: carry the real numeric CVSS score, CVSS vector string, and
+        # publish date through the verdict (not just the severity string). The
+        # defects catalog already had these columns; the verdicts table did not.
+        # ALTER TABLE ADD COLUMN is idempotent-guarded (a fresh db created with
+        # the current SCHEMA already has the columns; a re-open of a v7 db
+        # never enters). All three default NULL so existing rows and observers
+        # that don't populate them are unaffected.
+        verdicts_cols = _columns(conn, "verdicts")
+        for col, decl in [("cvss", "REAL"), ("cvss_vector", "TEXT"), ("published", "TEXT")]:
+            if col not in verdicts_cols:
+                conn.execute(f"ALTER TABLE verdicts ADD COLUMN {col} {decl}")
+        conn.execute("PRAGMA user_version = 7")
+        conn.commit()
+
 
 def connect(path: str, readonly: bool = False) -> sqlite3.Connection:
     """Open (and migrate) the posture DB. Creates the file if missing.
@@ -593,12 +611,14 @@ def commit_device_verdicts(
     conn.executemany(
         """INSERT OR REPLACE INTO verdicts
            (device_id, axis, key, status, severity, fixed_in, detail,
+            cvss, cvss_vector, published,
             observer, policy_version, fetched_at, complete, raw_ref, computed_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 device_id, v["axis"], v["key"], v["status"], v.get("severity"),
                 v.get("fixed_in"), v.get("detail", ""),
+                v.get("cvss"), v.get("cvss_vector"), v.get("published"),
                 v["provenance"]["observer"], v["provenance"]["policy_version"],
                 v["provenance"]["fetched_at"], int(v["provenance"]["complete"]),
                 v["provenance"].get("raw_ref"), ts,

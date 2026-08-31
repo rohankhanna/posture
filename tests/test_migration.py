@@ -21,6 +21,11 @@ v5: the catalog layer's words move flaw -> defect — on a real v4 db the legacy
 v6: per-row LLM-draft provenance — adds the ``prompt_hash`` / ``raw_text_hash``
     columns to ``defects`` (NULL on every non-llm row). Additive, no data
     rewrite; no-op on a fresh db (columns already in SCHEMA).
+v7: verdict fidelity — adds the ``cvss`` (REAL), ``cvss_vector`` (TEXT), and
+    ``published`` (TEXT) columns to ``verdicts`` so the real numeric CVSS score,
+    CVSS vector string, and publish date carry through the verdict (not just the
+    severity string). Additive, no data rewrite; no-op on a fresh db (columns
+    already in SCHEMA).
 
 The migrations must be (a) introspection-guarded + idempotent (safe to re-run on
 an already-migrated db), (b) safe on a fresh db created with the current SCHEMA,
@@ -224,7 +229,7 @@ def test_v0_db_migrates_to_defects_and_alias_graph(tmp_path):
     assert "defect_id" in scol and "cve_id" not in scol
 
     # the migrations ran exactly once each + bumped user_version to 6
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
     conn.close()
 
 
@@ -248,7 +253,7 @@ def test_v1_db_renames_cves_to_defects_and_seen_cves_cve_id_to_defect_id(tmp_pat
     assert [tuple(r) for r in seen] == [("CVE-2026-1", "2026-08-01"),
                                        ("GHSA-aaaa", "2026-08-02")]
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
     conn.close()
 
 
@@ -271,7 +276,7 @@ def test_migration_is_idempotent(tmp_path):
     _make_v0_db(str(db))
     store.connect(str(db)).close()
     conn = store.connect(str(db))
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
     rows = conn.execute("SELECT defect_id, alias, kind FROM crosswalk").fetchall()
     assert len(rows) == 1
     # a v1 db re-opened after migration is also a no-op
@@ -279,20 +284,21 @@ def test_migration_is_idempotent(tmp_path):
     _make_v1_db(str(db2))
     store.connect(str(db2)).close()
     conn2 = store.connect(str(db2))
-    assert conn2.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert conn2.execute("PRAGMA user_version").fetchone()[0] == 7
     assert not store._has_table(conn2, "cves")
     conn2.close()
 
 
-def test_fresh_db_is_already_at_v6():
-    """A fresh db created with the current SCHEMA is at user_version 6 after
+def test_fresh_db_is_already_at_v7():
+    """A fresh db created with the current SCHEMA is at user_version 7 after
     connect; v0->v1 + v1->v2 + v3 are safe no-ops on it, v4 is a no-op (the
     id columns are already `observer`), v5 is a no-op (the catalog layer is
     already `defect*`), v6 is a no-op (the prompt_hash / raw_text_hash
-    columns are already in SCHEMA), and v3 raises the candidates unique index
+    columns are already in SCHEMA), v7 is a no-op (the cvss / cvss_vector /
+    published columns are already in SCHEMA), and v3 raises the candidates unique index
     (a no-op dedup on an empty table)."""
     conn = store.connect(":memory:")
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
     # current shape: defects (not cves/flaws), seen_defects with defect_id, crosswalk defect_id
     assert store._has_table(conn, "defects") and not store._has_table(conn, "cves")
     assert not store._has_table(conn, "flaws") and not store._has_table(conn, "seen_flaws")
@@ -303,6 +309,9 @@ def test_fresh_db_is_already_at_v6():
     # v6: the per-row LLM-provenance columns are present on a fresh db
     dcols = {r[1] for r in conn.execute("PRAGMA table_info(defects)")}
     assert "prompt_hash" in dcols and "raw_text_hash" in dcols
+    # v7: the verdict fidelity columns are present on a fresh db
+    vcols = {r[1] for r in conn.execute("PRAGMA table_info(verdicts)")}
+    assert "cvss" in vcols and "cvss_vector" in vcols and "published" in vcols
     # v3: candidates has the url unique index on a fresh db (enables idempotent upsert)
     idx = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='index' AND name='candidates_url_uq'"
@@ -421,7 +430,7 @@ def test_v3_db_renames_witness_columns_to_observer(tmp_path):
     # the stream cursor (state table) is untouched by the rename
     assert conn.execute("SELECT value FROM state WHERE key='stream_cursor'").fetchone()[0] == "abc123"
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
     conn.close()
 
 
@@ -558,7 +567,7 @@ def test_v4_db_renames_flaw_layer_to_defect(tmp_path):
     assert tuple(v) == ("nvd", "CVE-2026-1", "unpatched")
     assert conn.execute("SELECT value FROM state WHERE key='stream:mitre_cursor'").fetchone()[0] == "tipSHA"
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
     conn.close()
 
 
@@ -574,7 +583,23 @@ def test_v4_to_v5_is_idempotent(tmp_path):
     raw.commit(); raw.close()
     store.connect(str(db)).close()            # migrate to v5
     conn = store.connect(str(db))              # re-open -> no-op
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
     assert store._has_table(conn, "defects") and not store._has_table(conn, "flaws")
     assert conn.execute("SELECT defect_type FROM defects").fetchone()[0] == "cve"
+    conn.close()
+
+# --- v6 -> v7 (the verdict fidelity columns) --------------------------------
+
+def test_v7_migration_is_idempotentt(tmp_path):
+    """Re-opening an already-v7 db leaves the column additions as a no-op."""
+    db = tmp_path / "v7_idempotent.db"
+    raw = sqlite3.connect(str(db))
+    raw.executescript(_V3_WITNESS_SCHEMA)
+    raw.execute("PRAGMA user_version = 3")
+    raw.commit(); raw.close()
+    store.connect(str(db)).close()   # migrate 3 -> 7
+    conn = store.connect(str(db))    # re-open -> no-op
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+    vcols = {r[1] for r in conn.execute("PRAGMA table_info(verdicts)")}
+    assert "cvss" in vcols and "cvss_vector" in vcols and "published" in vcols
     conn.close()

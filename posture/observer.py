@@ -104,6 +104,9 @@ class Verdict:
     detail: str = ""
     severity: str | None = None
     fixed_in: str | None = None
+    cvss: float | None = None
+    cvss_vector: str | None = None
+    published: str | None = None
     provenance: Provenance | None = None
 
     def to_dict(self) -> dict:
@@ -114,6 +117,9 @@ class Verdict:
             "detail": self.detail,
             "severity": self.severity,
             "fixed_in": self.fixed_in,
+            "cvss": self.cvss,
+            "cvss_vector": self.cvss_vector,
+            "published": self.published,
         }
         if self.provenance is not None:
             d["provenance"] = self.provenance.to_dict()
