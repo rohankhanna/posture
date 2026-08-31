@@ -26,14 +26,15 @@ The pure functions ``parse_ufw_status`` and ``parse_iptables_rules`` are
 exported for deterministic testing without subprocess calls.
 
 Probe priority: ``ufw`` first (simplest, most common on Ubuntu desktop),
-then ``iptables`` (universal on Linux).  ``nft`` (nftables) is a future
-addition — its JSON output is complex and nft is less common on the fleet
-devices; it can be added as a third probe without changing the delegation
-pattern.
+then ``iptables`` (universal on Linux).  ``nft`` (nftables) is the third probe — the modern
+Linux firewall, default on Debian 10+, Fedora, and Arch.  Its JSON output
+(``nft list ruleset --json``) is parsed by ``parse_nft_ruleset`` into the same
+snapshot shape; it joins the delegation chain without changing the pattern.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -200,6 +201,145 @@ def parse_iptables_rules(text: str) -> dict | None:
     return {"default_policy": default_policy, "rules": rules}
 
 
+
+
+def parse_nft_ruleset(text: str) -> dict | None:
+    """Convert ``nft list ruleset --json`` output to the firewall snapshot
+    dict that ``FirewallObserver`` expects.
+
+    ``nft list ruleset --json`` emits a top-level JSON array of objects.
+    Each object has one key — ``"metainfo"``, ``"table"``, ``"chain"``, or
+    ``"rule"`` — describing an element of the ruleset.  This parser extracts
+    only inbound-filter semantics relevant to the exposure axis:
+
+      - chains with ``hook == "input"`` supply the ``default_policy``
+        (``accept`` -> ``allow``, ``drop`` -> ``deny``); the most restrictive
+        policy across all input chains wins (``deny`` > ``allow`` > ``""``).
+      - rules on input chains that match a destination port (``dport``)
+        and terminate with ``accept`` / ``drop`` / ``reject`` become
+        per-port ``allow`` / ``deny`` entries.
+
+    Rules without a dport match (catch-all, established-connection
+    matchers, etc.) are skipped — they don't map to a specific port key.
+
+    Returns ``None`` when the text is empty, not valid JSON, or contains
+    no chains/rules — this signals the caller that nft produced no useful
+    data.
+
+    Pure: no subprocess, no I/O.  Deterministic and testable.
+    """
+    if not text or not isinstance(text, str):
+        return None
+
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+
+    if not isinstance(data, list):
+        return None
+
+    # Collect input-chain names and their policies.
+    # Key: chain name -> policy string ("allow" | "deny" | "")
+    input_chains: dict[str, str] = {}
+
+    for obj in data:
+        if not isinstance(obj, dict):
+            continue
+        chain = obj.get("chain")
+        if not isinstance(chain, dict):
+            continue
+        hook = str(chain.get("hook") or "").strip().lower()
+        if hook != "input":
+            continue
+        name = str(chain.get("name") or "").strip()
+        if not name:
+            continue
+        policy_raw = str(chain.get("policy") or "").strip().lower()
+        if policy_raw == "accept":
+            policy = "allow"
+        elif policy_raw == "drop":
+            policy = "deny"
+        else:
+            policy = ""
+        # Most restrictive wins: deny > allow > ""
+        existing = input_chains.get(name, "")
+        if policy == "deny" or (policy == "allow" and existing == ""):
+            input_chains[name] = policy
+
+    # Determine the overall default policy from all input chains.
+    default_policy = ""
+    for p in input_chains.values():
+        if p == "deny":
+            default_policy = "deny"
+            break
+        if p == "allow":
+            default_policy = "allow"
+
+    rules: list[dict] = []
+
+    for obj in data:
+        if not isinstance(obj, dict):
+            continue
+        rule = obj.get("rule")
+        if not isinstance(rule, dict):
+            continue
+        chain_name = str(rule.get("chain") or "").strip()
+        # Only consider rules on input chains.
+        if chain_name not in input_chains:
+            continue
+
+        exprs = rule.get("expr")
+        if not isinstance(exprs, list):
+            continue
+
+        # Walk the expression list to find a dport match + terminal verdict.
+        dport_proto: str | None = None
+        dport_num: int | None = None
+        verdict: str | None = None  # "allow" | "deny"
+
+        for expr in exprs:
+            if not isinstance(expr, dict):
+                continue
+
+            # Match expression: {"match": {"left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 22}}
+            match = expr.get("match")
+            if isinstance(match, dict):
+                left = match.get("left")
+                right = match.get("right")
+                if isinstance(left, dict):
+                    payload = left.get("payload")
+                    if isinstance(payload, dict):
+                        field = str(payload.get("field") or "").strip().lower()
+                        proto = str(payload.get("protocol") or "").strip().lower()
+                        if field == "dport" and right is not None:
+                            try:
+                                dport_num = int(right)
+                                dport_proto = proto
+                            except (TypeError, ValueError):
+                                pass
+
+            # Terminal verdicts: {"accept": null}, {"drop": null}, {"reject": null}
+            if "accept" in expr:
+                verdict = "allow"
+            elif "drop" in expr or "reject" in expr:
+                verdict = "deny"
+
+        # Only emit a rule if we found both a dport and a verdict.
+        if dport_proto and dport_num is not None and verdict:
+            rules.append({
+                "action": verdict,
+                "proto": dport_proto,
+                "port": dport_num,
+                "direction": "inbound",
+            })
+
+    # If we found nothing at all, return None.
+    if not default_policy and not rules:
+        return None
+
+    return {"default_policy": default_policy, "rules": rules}
+
 # ---------------------------------------------------------------------------
 # Observer
 # ---------------------------------------------------------------------------
@@ -207,9 +347,9 @@ def parse_iptables_rules(text: str) -> dict | None:
 class LiveFirewallObserver(Observer):
     """Live firewall-state reader on the exposure axis.
 
-    Shells out to ``ufw status verbose`` (Ubuntu's default firewall manager)
-    or ``iptables -S`` (universal Linux fallback) to read the kernel's actual
-    firewall rules, converts the text to the snapshot format, and delegates
+    Shells out to ``ufw status verbose`` (Ubuntu's default firewall manager),
+    ``iptables -S`` (universal Linux fallback), or ``nft list ruleset --json``
+    (nftables, modern Linux) to read the kernel's actual firewall rules, converts the text to the snapshot format, and delegates
     Verdict emission to ``FirewallObserver``.  When no live tool is available
     (no binary, permission denied, non-Linux), falls back to the device-
     supplied snapshot (inline ``device["firewall"]`` or
@@ -269,9 +409,10 @@ class LiveFirewallObserver(Observer):
     # -- live probing --------------------------------------------------------
 
     def _get_firewall(self, device: dict) -> tuple[dict | None, str]:
-        """Try live ``ufw status verbose`` then ``iptables -S``; fall back to
-        the device-supplied snapshot.  Returns (snapshot_dict, source_ref) or
-        (None, "") when no data is available."""
+        """Try live ``ufw status verbose``, then ``iptables -S``, then
+        ``nft list ruleset --json``; fall back to the device-supplied
+        snapshot.  Returns (snapshot_dict, source_ref) or (None, "") when
+        no data is available."""
         # Try ufw first (simplest output, most common on Ubuntu).
         ufw = self._probe_ufw()
         if ufw is not None:
@@ -281,6 +422,13 @@ class LiveFirewallObserver(Observer):
         ipt = self._probe_iptables()
         if ipt is not None:
             return ipt, "live:iptables -S"
+
+        # Try nft (nftables) — the modern Linux firewall, default on
+        # Debian 10+, Fedora, and Arch.  Its JSON output is richer but
+        # parse_nft_ruleset extracts the same snapshot shape.
+        nft = self._probe_nft()
+        if nft is not None:
+            return nft, "live:nft list ruleset --json"
 
         # Fall back to the device-supplied snapshot.
         fw = device.get("firewall")
@@ -333,3 +481,22 @@ class LiveFirewallObserver(Observer):
             return None
 
         return parse_iptables_rules(proc.stdout)
+
+    def _probe_nft(self) -> dict | None:
+        """Run ``nft list ruleset --json`` and return the parsed snapshot
+        dict, or None when nft is unavailable or fails.  None means "no live
+        data, try fallback" — never raises."""
+        try:
+            proc = subprocess.run(
+                ["nft", "list", "ruleset", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return None
+
+        return parse_nft_ruleset(proc.stdout)

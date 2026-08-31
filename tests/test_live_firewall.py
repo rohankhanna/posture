@@ -18,6 +18,7 @@ on the shared default registry / policy file, which a sibling agent may be
 editing concurrently).  Mirrors test_firewall.py's style.
 """
 
+import json
 from pathlib import Path
 
 from posture.axis import Axis
@@ -29,6 +30,7 @@ from posture.sources.live_firewall import (
     LiveFirewallObserver,
     parse_ufw_status,
     parse_iptables_rules,
+    parse_nft_ruleset,
 )
 
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "posture" / "fixtures"
@@ -397,5 +399,231 @@ def test_engine_live_firewall_only_works_standalone(monkeypatch):
             store.verdicts_for_device_axis(conn, "demo-host", "exposure")}
     assert rows["tcp/22"]["status"] == "exposed"
     assert rows["tcp/445"]["status"] == "closed"
+    assert rows["tcp/22"]["observer"] == "live_firewall"
+    assert "live_firewall" in dp.used_observers
+
+
+# ---------------------------------------------------------------------------
+# parse_nft_ruleset — pure function
+# ---------------------------------------------------------------------------
+
+_NFT_OUTPUT = """[
+  {"metainfo": {"version": "1.0.0", "release": "nftables 1.0.6"}},
+  {"table": {"family": "inet", "name": "filter", "handle": 1}},
+  {"chain": {"family": "inet", "table": "filter", "name": "input", "handle": 2, "type": "filter", "hook": "input", "prio": 0, "policy": "drop"}},
+  {"chain": {"family": "inet", "table": "filter", "name": "forward", "handle": 3, "type": "filter", "hook": "forward", "prio": 0, "policy": "drop"}},
+  {"chain": {"family": "inet", "table": "filter", "name": "output", "handle": 4, "type": "filter", "hook": "output", "prio": 0, "policy": "accept"}},
+  {"rule": {"family": "inet", "table": "filter", "chain": "input", "handle": 10, "expr": [{"match": {"left": {"payload": {"protocol": "tcp", "field": "dport"}}, "op": "==", "right": 22}}, {"accept": null}]}},
+  {"rule": {"family": "inet", "table": "filter", "chain": "input", "handle": 11, "expr": [{"match": {"left": {"payload": {"protocol": "tcp", "field": "dport"}}, "op": "==", "right": 445}}, {"drop": null}]}},
+  {"rule": {"family": "inet", "table": "filter", "chain": "input", "handle": 12, "expr": [{"match": {"left": {"payload": {"protocol": "udp", "field": "dport"}}, "op": "==", "right": 53}}, {"accept": null}]}},
+  {"rule": {"family": "inet", "table": "filter", "chain": "input", "handle": 13, "expr": [{"match": {"left": {"ct": {"key": "state", "dir": "original"}}, "op": "in", "right": "established"}}, {"accept": null}]}},
+  {"rule": {"family": "inet", "table": "filter", "chain": "forward", "handle": 14, "expr": [{"match": {"left": {"payload": {"protocol": "tcp", "field": "dport"}}, "op": "==", "right": 80}}, {"accept": null}]}}
+]"""
+
+_NFT_OUTPUT_REJECT = """[
+  {"chain": {"family": "inet", "table": "filter", "name": "input", "handle": 2, "type": "filter", "hook": "input", "prio": 0, "policy": "drop"}},
+  {"rule": {"family": "inet", "table": "filter", "chain": "input", "handle": 11, "expr": [{"match": {"left": {"payload": {"protocol": "tcp", "field": "dport"}}, "op": "==", "right": 445}}, {"reject": null}]}}
+]"""
+
+_NFT_OUTPUT_ACCEPT_DEFAULT = """[
+  {"chain": {"family": "inet", "table": "filter", "name": "input", "handle": 2, "type": "filter", "hook": "input", "prio": 0, "policy": "accept"}},
+  {"rule": {"family": "inet", "table": "filter", "chain": "input", "handle": 10, "expr": [{"match": {"left": {"payload": {"protocol": "tcp", "field": "dport"}}, "op": "==", "right": 445}}, {"drop": null}]}}
+]"""
+
+_NFT_OUTPUT_EMPTY = "[]"
+_NFT_OUTPUT_NOT_JSON = "not json at all"
+_NFT_OUTPUT_NO_INPUT_CHAIN = """[
+  {"chain": {"family": "inet", "table": "filter", "name": "forward", "handle": 3, "type": "filter", "hook": "forward", "prio": 0, "policy": "drop"}}
+]"""
+
+
+def test_parse_nft_ruleset_with_rules():
+    snap = parse_nft_ruleset(_NFT_OUTPUT)
+    assert snap is not None
+    assert snap["default_policy"] == "deny"
+    rules = snap["rules"]
+    keys = {(r["proto"], r["port"], r["action"]) for r in rules}
+    assert ("tcp", 22, "allow") in keys
+    assert ("tcp", 445, "deny") in keys
+    assert ("udp", 53, "allow") in keys
+    for r in rules:
+        assert r["direction"] == "inbound"
+    # established-connection matcher (no dport) is skipped
+    assert all(r["proto"] and r["port"] for r in rules)
+    # forward-chain rule is excluded (only input chain)
+    assert ("tcp", 80, "allow") not in keys
+
+
+def test_parse_nft_ruleset_reject_is_deny():
+    snap = parse_nft_ruleset(_NFT_OUTPUT_REJECT)
+    assert snap is not None
+    assert snap["rules"][0]["action"] == "deny"
+
+
+def test_parse_nft_ruleset_accept_default():
+    snap = parse_nft_ruleset(_NFT_OUTPUT_ACCEPT_DEFAULT)
+    assert snap is not None
+    assert snap["default_policy"] == "allow"
+    assert len(snap["rules"]) == 1
+    assert snap["rules"][0]["action"] == "deny"
+
+
+def test_parse_nft_ruleset_empty_returns_none():
+    assert parse_nft_ruleset(_NFT_OUTPUT_EMPTY) is None
+
+
+def test_parse_nft_ruleset_not_json_returns_none():
+    assert parse_nft_ruleset(_NFT_OUTPUT_NOT_JSON) is None
+
+
+def test_parse_nft_ruleset_none_returns_none():
+    assert parse_nft_ruleset(None) is None
+    assert parse_nft_ruleset("") is None
+
+
+def test_parse_nft_ruleset_no_input_chain_returns_none():
+    assert parse_nft_ruleset(_NFT_OUTPUT_NO_INPUT_CHAIN) is None
+
+
+def test_parse_nft_ruleset_multiple_input_chains_most_restrictive_wins():
+    """Two input chains (different tables) — deny policy dominates."""
+    text = json.dumps([
+        {"chain": {"family": "inet", "table": "filter", "name": "input", "hook": "input", "policy": "accept"}},
+        {"chain": {"family": "ip", "table": "other", "name": "input", "hook": "input", "policy": "drop"}},
+    ])
+    snap = parse_nft_ruleset(text)
+    assert snap is not None
+    assert snap["default_policy"] == "deny"
+
+
+# ---------------------------------------------------------------------------
+# LiveFirewallObserver — nft probe integration
+# ---------------------------------------------------------------------------
+
+def test_observer_nft_fallback_when_ufw_and_iptables_unavailable(monkeypatch):
+    """When ufw and iptables return None, the observer tries nft."""
+    obs = LiveFirewallObserver()
+    pol = _policy()
+
+    monkeypatch.setattr(obs, "_probe_ufw", lambda: None)
+    monkeypatch.setattr(obs, "_probe_iptables", lambda: None)
+    monkeypatch.setattr(obs, "_probe_nft", lambda: parse_nft_ruleset(_NFT_OUTPUT))
+
+    device = {"id": "host"}
+    result = obs.assess(device, pol)
+    assert result.complete is True
+    by_key = {v.key: v for v in result.verdicts}
+    assert by_key["tcp/22"].status == "exposed"
+    assert by_key["tcp/445"].status == "closed"
+    assert by_key["udp/53"].status == "exposed"
+    for v in result.verdicts:
+        assert v.provenance.observer == "live_firewall"
+        assert v.provenance.raw_ref == "live:nft list ruleset --json"
+
+
+def test_observer_nft_skipped_when_ufw_succeeds(monkeypatch):
+    """When ufw succeeds, nft is never tried (probe priority)."""
+    obs = LiveFirewallObserver()
+    pol = _policy()
+
+    nft_called = []
+
+    def _nft_should_not_be_called():
+        nft_called.append(True)
+        return None
+
+    monkeypatch.setattr(obs, "_probe_ufw", lambda: parse_ufw_status(_UFW_VERBOSE_OUTPUT))
+    monkeypatch.setattr(obs, "_probe_iptables", lambda: None)
+    monkeypatch.setattr(obs, "_probe_nft", _nft_should_not_be_called)
+
+    device = {"id": "host"}
+    result = obs.assess(device, pol)
+    assert result.complete is True
+    assert len(nft_called) == 0
+    for v in result.verdicts:
+        assert v.provenance.raw_ref == "live:ufw status verbose"
+
+
+def test_observer_nft_skipped_when_iptables_succeeds(monkeypatch):
+    """When iptables succeeds, nft is never tried (probe priority)."""
+    obs = LiveFirewallObserver()
+    pol = _policy()
+
+    nft_called = []
+
+    def _nft_should_not_be_called():
+        nft_called.append(True)
+        return None
+
+    monkeypatch.setattr(obs, "_probe_ufw", lambda: None)
+    monkeypatch.setattr(obs, "_probe_iptables", lambda: parse_iptables_rules(_IPTABLES_OUTPUT))
+    monkeypatch.setattr(obs, "_probe_nft", _nft_should_not_be_called)
+
+    device = {"id": "host"}
+    result = obs.assess(device, pol)
+    assert result.complete is True
+    assert len(nft_called) == 0
+    for v in result.verdicts:
+        assert v.provenance.raw_ref == "live:iptables -S"
+
+
+def test_observer_nft_then_device_fallback(monkeypatch):
+    """When all three live probes fail, the observer falls back to device
+    snapshot."""
+    obs = LiveFirewallObserver()
+    pol = _policy()
+
+    monkeypatch.setattr(obs, "_probe_ufw", lambda: None)
+    monkeypatch.setattr(obs, "_probe_iptables", lambda: None)
+    monkeypatch.setattr(obs, "_probe_nft", lambda: None)
+
+    device = {
+        "id": "host",
+        "firewall": {
+            "default_policy": "deny",
+            "rules": [
+                {"action": "allow", "proto": "tcp", "port": 22, "direction": "inbound"},
+            ],
+        },
+    }
+    result = obs.assess(device, pol)
+    assert result.complete is True
+    by_key = {v.key: v for v in result.verdicts}
+    assert by_key["tcp/22"].status == "exposed"
+    for v in result.verdicts:
+        assert v.provenance.raw_ref == "inline:device.firewall (fallback)"
+
+
+def test_engine_live_firewall_with_nft_overrides_snapshot(monkeypatch):
+    """In the engine, nft-sourced live_firewall verdicts override the
+    snapshot firewall on the same proto/port key (order 4 < order 5)."""
+    reg = _registry_both_firewalls()
+    pol = _policy()
+    conn = store.connect(":memory:")
+    device = {
+        "id": "demo-host",
+        "firewall": {
+            "default_policy": "allow",
+            "rules": [
+                {"action": "allow", "proto": "tcp", "port": 445, "direction": "inbound"},
+            ],
+        },
+    }
+
+    for obs in reg._by_id.values():
+        if isinstance(obs, LiveFirewallObserver):
+            monkeypatch.setattr(obs, "_probe_ufw", lambda: None)
+            monkeypatch.setattr(obs, "_probe_iptables", lambda: None)
+            monkeypatch.setattr(obs, "_probe_nft", lambda: parse_nft_ruleset(_NFT_OUTPUT))
+
+    dp = engine.assess(device, reg, pol, conn=conn,
+                       now="2026-08-31T00:00:00+00:00")
+    rows = {r["key"]: r for r in
+            store.verdicts_for_device_axis(conn, "demo-host", "exposure")}
+    # tcp/445: snapshot says allow (exposed), nft says drop (closed) -> closed
+    assert rows["tcp/445"]["status"] == "closed"
+    assert rows["tcp/445"]["observer"] == "live_firewall"
+    # tcp/22: nft says accept (exposed) -> exposed
+    assert rows["tcp/22"]["status"] == "exposed"
     assert rows["tcp/22"]["observer"] == "live_firewall"
     assert "live_firewall" in dp.used_observers
