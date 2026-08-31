@@ -11,6 +11,7 @@ empty/incomplete pull deleting ~14000 rows).
 """
 
 from __future__ import annotations
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -40,6 +41,8 @@ CREATE TABLE IF NOT EXISTS verdicts (
     cvss          REAL,
     cvss_vector   TEXT,
     published     TEXT,
+    cwe            TEXT,             -- JSON array of CWE ids (weakness-class signal for attack-graph chaining)
+    ref_tags       TEXT,             -- JSON array of reference tags (exploit/patch-availability signal)
     observer       TEXT,
     policy_version TEXT,
     fetched_at    TEXT,
@@ -539,6 +542,24 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA user_version = 7")
         conn.commit()
 
+    if version < 8:
+        # v7 -> v8: carry CWE ids and reference tags through the verdict (not
+        # just the catalog). The defects catalog already had cwe + ref_tags
+        # columns; the verdicts table did not. These enable evidence-based
+        # attack-graph chaining (node_91813484fd27): CWE informs preconditions
+        # (weakness class), ref_tags carry exploit/patch-availability signals
+        # (e.g. "Exploit", "Patch", "Vendor Advisory"). ALTER TABLE ADD
+        # COLUMN is idempotent-guarded (a fresh db created with the current
+        # SCHEMA already has the columns; a re-open of a v8 db never enters).
+        # Both default NULL so existing rows and observers that do not populate
+        # them are unaffected.
+        verdicts_cols = _columns(conn, "verdicts")
+        for col in ("cwe", "ref_tags"):
+            if col not in verdicts_cols:
+                conn.execute(f"ALTER TABLE verdicts ADD COLUMN {col} TEXT")
+        conn.execute("PRAGMA user_version = 8")
+        conn.commit()
+
 
 def connect(path: str, readonly: bool = False) -> sqlite3.Connection:
     """Open (and migrate) the posture DB. Creates the file if missing.
@@ -611,14 +632,16 @@ def commit_device_verdicts(
     conn.executemany(
         """INSERT OR REPLACE INTO verdicts
            (device_id, axis, key, status, severity, fixed_in, detail,
-            cvss, cvss_vector, published,
+            cvss, cvss_vector, published, cwe, ref_tags,
             observer, policy_version, fetched_at, complete, raw_ref, computed_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 device_id, v["axis"], v["key"], v["status"], v.get("severity"),
                 v.get("fixed_in"), v.get("detail", ""),
                 v.get("cvss"), v.get("cvss_vector"), v.get("published"),
+                json.dumps(v["cwe"]) if v.get("cwe") else None,
+                json.dumps(v["ref_tags"]) if v.get("ref_tags") else None,
                 v["provenance"]["observer"], v["provenance"]["policy_version"],
                 v["provenance"]["fetched_at"], int(v["provenance"]["complete"]),
                 v["provenance"].get("raw_ref"), ts,
@@ -655,7 +678,19 @@ def verdicts_for_device_axis(conn, device_id: str, axis: str) -> list[dict]:
            ORDER BY key, observer""",
         (device_id, axis),
     ).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["cwe"] = json.loads(d["cwe"]) if d.get("cwe") else None
+        except (ValueError, TypeError):
+            d["cwe"] = None
+        try:
+            d["ref_tags"] = json.loads(d["ref_tags"]) if d.get("ref_tags") else None
+        except (ValueError, TypeError):
+            d["ref_tags"] = None
+        out.append(d)
+    return out
 
 
 def axis_posture(conn, device_id: str, axis: str) -> dict | None:
@@ -1607,17 +1642,21 @@ def upsert_verdict(conn, v: dict, ts: str) -> None:
     conn.execute(
         """INSERT INTO verdicts
              (device_id, axis, key, status, severity, fixed_in, detail,
+              cwe, ref_tags,
               observer, policy_version, fetched_at, complete, raw_ref, computed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(device_id, axis, key, observer) DO UPDATE SET
              status=excluded.status, severity=excluded.severity,
              fixed_in=excluded.fixed_in, detail=excluded.detail,
+             cwe=excluded.cwe, ref_tags=excluded.ref_tags,
              policy_version=excluded.policy_version, fetched_at=excluded.fetched_at,
              complete=excluded.complete, raw_ref=excluded.raw_ref,
              computed_at=excluded.computed_at""",
         (
             v["device_id"], v["axis"], v["key"], v["status"],
             v.get("severity"), v.get("fixed_in"), v.get("detail", ""),
+            json.dumps(v["cwe"]) if v.get("cwe") else None,
+            json.dumps(v["ref_tags"]) if v.get("ref_tags") else None,
             prov.get("observer") or v.get("observer", ""),
             prov.get("policy_version", ""),
             prov.get("fetched_at", ""),
