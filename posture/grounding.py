@@ -22,6 +22,10 @@ The mapping key is `<part>:<vendor>:<product>` (case-insensitive).
 """
 from __future__ import annotations
 
+import ipaddress
+import json
+from pathlib import Path
+
 
 # ---------------------------------------------------------------------------
 # Static CPE-to-port mapping
@@ -167,3 +171,269 @@ def grounding_for_matchers(matchers: list[dict]) -> dict[str, list[int]]:
 def known_cpe_keys() -> list[str]:
     """All CPE keys in the static mapping (for introspection / testing)."""
     return sorted(_CPE_PORTS.keys())
+
+
+
+# ---------------------------------------------------------------------------
+# Composite device grounding — all axes in one call
+# ---------------------------------------------------------------------------
+
+def _is_loopback_bind(bind) -> bool:
+    """True when a socket bind address is loopback (host-only reachability)."""
+    if not bind:
+        return False
+    b = str(bind).strip().lower()
+    if b in ("localhost", "::1"):
+        return True
+    if b.startswith("127."):
+        return True
+    return False
+
+
+def _is_loopback_ip(ip: str) -> bool:
+    """True when the IP is in the 127/8 IPv4 loopback range or is ::1."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return addr.is_loopback
+
+
+def _is_loopback_iface(name: str) -> bool:
+    """Heuristic: the loopback interface is conventionally named ``lo``."""
+    return str(name).strip().lower() == "lo"
+
+
+def _parse_firewall(device: dict) -> tuple[set[str], set[str], str]:
+    """Extract (allowed_ports, denied_ports, default_policy) from a device's
+    firewall snapshot.
+
+    Returns sets of ``"proto/port"`` strings and the lower-cased default
+    policy (``""`` when absent).  When no firewall data is supplied, all sets
+    are empty and the default policy is ``""``.
+    """
+    fw = device.get("firewall")
+    if not isinstance(fw, dict):
+        path = device.get("firewall_path")
+        if path:
+            fw = _load_json(path)
+    if not isinstance(fw, dict):
+        return set(), set(), ""
+
+    rules = fw.get("rules")
+    if not isinstance(rules, list):
+        rules = []
+    default_policy = str(fw.get("default_policy") or "").strip().lower()
+
+    allowed: set[str] = set()
+    denied: set[str] = set()
+    for r in rules:
+        if not isinstance(r, dict):
+            continue
+        action = str(r.get("action") or "").strip().lower()
+        proto = str(r.get("proto") or "").strip().lower()
+        port = r.get("port")
+        direction = str(r.get("direction") or "inbound").strip().lower()
+        if direction != "inbound" or not proto or port is None:
+            continue
+        try:
+            port_i = int(port)
+        except (TypeError, ValueError):
+            continue
+        key = f"{proto}/{port_i}"
+        if action == "allow":
+            allowed.add(key)
+        elif action == "deny":
+            denied.add(key)
+    return allowed, denied, default_policy
+
+
+def _parse_local_exposure(device: dict) -> tuple[set[str], set[str]]:
+    """Extract (exposed_ports, loopback_ports) from a device's socket capture.
+
+    Returns sets of ``"proto/port"`` strings.  ``exposed_ports`` are sockets
+    with a non-loopback (or missing) bind; ``loopback_ports`` are sockets
+    bound to 127/8, ::1, or localhost.  When no exposure data is supplied,
+    both sets are empty.
+    """
+    surface = device.get("exposure")
+    if not isinstance(surface, list):
+        path = device.get("exposure_path")
+        if path:
+            surface = _load_json(path)
+    if not isinstance(surface, list):
+        return set(), set()
+
+    exposed: set[str] = set()
+    loopback: set[str] = set()
+    for s in surface:
+        if not isinstance(s, dict):
+            continue
+        proto = str(s.get("proto") or "").strip().lower()
+        port = s.get("port")
+        if not proto or port is None:
+            continue
+        try:
+            port_i = int(port)
+        except (TypeError, ValueError):
+            continue
+        key = f"{proto}/{port_i}"
+        if _is_loopback_bind(s.get("bind")):
+            loopback.add(key)
+        else:
+            exposed.add(key)
+    return exposed, loopback
+
+
+def _parse_interfaces(device: dict) -> tuple[bool, list[str]]:
+    """Extract (has_network_access, reachable_subnets) from a device's
+    interface snapshot.
+
+    ``has_network_access`` is True when at least one UP interface has a
+    non-loopback address.  ``reachable_subnets`` is the list of subnet CIDR
+    strings from those interfaces.  When no interface data is supplied,
+    returns ``(False, [])``.
+    """
+    interfaces = device.get("interfaces")
+    if not isinstance(interfaces, list):
+        path = device.get("interfaces_path")
+        if path:
+            interfaces = _load_json(path)
+    if not isinstance(interfaces, list):
+        return False, []
+
+    has_net = False
+    subnets: list[str] = []
+    for iface in interfaces:
+        if not isinstance(iface, dict):
+            continue
+        state = str(iface.get("state") or "").strip().lower()
+        if state != "up":
+            continue
+        name = str(iface.get("name") or "").strip()
+        is_lo = _is_loopback_iface(name)
+        addresses = iface.get("addresses")
+        if not isinstance(addresses, list):
+            continue
+        for addr in addresses:
+            if not isinstance(addr, dict):
+                continue
+            ip = str(addr.get("ip") or "").strip()
+            prefix = addr.get("prefix")
+            if not ip or prefix is None:
+                continue
+            try:
+                prefix_i = int(prefix)
+            except (TypeError, ValueError):
+                continue
+            loopback = is_lo or _is_loopback_ip(ip)
+            try:
+                net = ipaddress.ip_network(f"{ip}/{prefix_i}", strict=False)
+            except ValueError:
+                continue
+            if not loopback:
+                has_net = True
+                subnets.append(str(net))
+    return has_net, subnets
+
+
+def _load_json(path: str | Path) -> dict | list | None:
+    """Read a JSON file from the given path.  Returns the parsed content on
+    success, or ``None`` when the file is not found or unparseable."""
+    p = Path(path)
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return None
+    return data
+
+
+def device_grounding(device: dict) -> dict:
+    """Compose all grounding axes into a single device grounding assessment.
+
+    This is the posture-side API that a consumer (forebode's attack graph, a
+    fleet dashboard, or any downstream tool) calls to get the complete
+    grounding picture for a device in one call, rather than running each
+    observer separately and composing the results.
+
+    The function reads the device's supplied snapshots — firewall rules,
+    listening sockets, network interfaces, and CPE matchers — and produces a
+    grounding dict with these keys:
+
+    - ``truly_exposed_ports``: ``set[str]`` of ``"proto/port"`` strings that
+      are *both* firewall-allowed AND listening on a non-loopback bind.  A
+      port in this set is genuinely reachable from the network.  When the
+      firewall default policy is ``"allow"``, ports that are listening
+      (non-loopback) and not explicitly denied are also included.
+    - ``firewall_allowed``: ``set[str]`` of ports the firewall explicitly
+      allows (inbound).
+    - ``firewall_denied``: ``set[str]`` of ports the firewall explicitly
+      denies (inbound).
+    - ``listening_exposed``: ``set[str]`` of ports with a non-loopback
+      (or missing) bind — sockets that are listening and potentially
+      network-reachable.
+    - ``listening_loopback``: ``set[str]`` of ports bound to loopback.
+    - ``has_network_access``: ``bool`` — whether the device has at least one
+      UP non-loopback interface address.
+    - ``reachable_subnets``: ``list[str]`` of subnet CIDR strings from
+      non-loopback UP interfaces.
+    - ``cpe_ports``: ``dict[str, list[int]]`` mapping the device's CPE
+      matchers to their default service ports.
+    - ``firewall_default_policy``: ``str`` — ``"deny"``, ``"allow"``, or
+      ``""`` (absent).
+
+    All axes degrade gracefully: a missing snapshot yields an empty set or
+    ``False``, never an error.  The caller treats an empty
+    ``truly_exposed_ports`` as "no port is provably reachable" and an empty
+    ``cpe_ports`` as "no CPE-specific grounding available".
+
+    Example::
+
+        grounding = device_grounding({
+            "firewall": {"default_policy": "deny", "rules": [
+                {"action": "allow", "proto": "tcp", "port": 22, "direction": "inbound"},
+            ]},
+            "exposure": [
+                {"proto": "tcp", "port": 22, "bind": "0.0.0.0"},
+            ],
+            "interfaces": [
+                {"name": "eth0", "state": "up", "addresses": [
+                    {"ip": "192.168.1.42", "prefix": 24},
+                ]},
+            ],
+            "matchers": [
+                {"type": "nvd_cpe", "cpe": "cpe:2.3:a:openssh:openssh:9.6p1"},
+            ],
+        })
+        # grounding["truly_exposed_ports"] == {"tcp/22"}
+        # grounding["has_network_access"] == True
+        # grounding["cpe_ports"] == {"cpe:2.3:a:openssh:openssh:9.6p1": [22]}
+    """
+    fw_allowed, fw_denied, fw_default = _parse_firewall(device)
+    listening_exposed, listening_loopback = _parse_local_exposure(device)
+    has_net, subnets = _parse_interfaces(device)
+    cpe_ports = grounding_for_matchers(device.get("matchers") or [])
+
+    # Truly exposed = port is listening (non-loopback) AND firewall allows it.
+    # When the firewall default policy is "allow", a listening port that is
+    # not explicitly denied is also truly exposed (the firewall permits by
+    # default).  When the default policy is "deny" or absent, only ports with
+    # an explicit allow rule are truly exposed.
+    truly_exposed: set[str] = set()
+    for key in listening_exposed:
+        if key in fw_allowed:
+            truly_exposed.add(key)
+        elif key not in fw_denied and fw_default == "allow":
+            truly_exposed.add(key)
+
+    return {
+        "truly_exposed_ports": truly_exposed,
+        "firewall_allowed": fw_allowed,
+        "firewall_denied": fw_denied,
+        "firewall_default_policy": fw_default,
+        "listening_exposed": listening_exposed,
+        "listening_loopback": listening_loopback,
+        "has_network_access": has_net,
+        "reachable_subnets": subnets,
+        "cpe_ports": cpe_ports,
+    }
