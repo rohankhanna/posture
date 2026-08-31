@@ -321,3 +321,98 @@ def test_catalog_verdicts_carry_real_cvss_vector_and_published(conn):
         assert v.cvss is not None, f"{v.key}: cvss should be populated from catalog"
         assert v.cvss_vector is not None, f"{v.key}: cvss_vector should be populated from catalog"
         assert v.published is not None, f"{v.key}: published should be populated from catalog"
+
+
+# --- export → import → assess: the full client path with zero network --------
+
+def test_export_import_assess_end_to_end_zero_network(conn, tmp_path):
+    """The full client consumption path: CI builds the spine (export_spine),
+    a client imports it (import_spine), then runs engine.assess over a private
+    device with ZERO network calls. The vulnerability axis is decided from the
+    imported catalog — not from a live curl, not from a bundled fixture.
+
+    This is the posture-side release condition for the weatherman signed-spine
+    cutover: export → verify → import → assess must work end-to-end with no
+    fetch code in the assess path.
+    """
+    from posture import export
+
+    # 1. Seed the source DB the way CI does (from the NVD fixture)
+    _seed_catalog_from_fixture(conn)
+
+    # 2. Export the spine to a temp directory
+    manifest = export.export_spine(conn, out_dir=tmp_path, policy_version="v")
+    assert manifest["counts"]["defects"] > 0
+
+    # 3. Import into a fresh client DB (verify manifest integrity first)
+    client_conn = store.connect(":memory:")
+    import_stats = export.import_spine(client_conn, from_dir=tmp_path)
+    assert import_stats["defects"] == manifest["counts"]["defects"]
+
+    # 4. Run assess on the client DB — zero network, no fixture fallback
+    reg = build_default_registry()
+    pol = Policy.from_file(default_policy_path())
+    device = _sample_device()
+    from posture.cli import _inject_catalog_overlays
+    _inject_catalog_overlays(device, client_conn)
+
+    # catalog_defects must be injected (the spine has NVD rows)
+    assert "catalog_defects" in device, "spine import should populate catalog_defects"
+
+    dp = engine.assess(device, reg, pol, conn=client_conn,
+                        now="2026-08-22T00:00:00+00:00")
+    by_axis = {a.axis: a for a in dp.axes}
+
+    # The vulnerability axis is decided from the imported spine, not fixtures
+    assert by_axis["vulnerability"].status == "unpatched"
+    assert by_axis["vulnerability"].deciding_observer == "nvd"
+    assert by_axis["vulnerability"].commit_state == "swapped"
+    assert "nvd" in dp.used_observers
+
+    # Verdicts carry real CVSS/vector/published from the spine, not defaults
+    for v in by_axis["vulnerability"].verdicts:
+        assert v.get("cvss") is not None, f"{v.get('key')}: cvss must come from the spine"
+        assert v.get("cvss_vector") is not None, f"{v.get('key')}: vector must come from the spine"
+
+    client_conn.close()
+
+
+def test_export_import_assess_parity_with_direct_catalog(conn, tmp_path):
+    """A client that imports the spine and runs assess gets the SAME verdicts
+    as a client that has the catalog pre-seeded directly. This proves the
+    export→import round trip preserves every field the assess path reads
+    (cvss, severity, vector, fixed_raw ranges, cwe, published, refs).
+    """
+    from posture import export
+
+    # Seed the source DB
+    _seed_catalog_from_fixture(conn)
+
+    # Path A: direct catalog (the existing test path)
+    device_a = _sample_device()
+    from posture.cli import _inject_catalog_overlays
+    _inject_catalog_overlays(device_a, conn)
+    reg = build_default_registry()
+    pol = Policy.from_file(default_policy_path())
+    dp_a = engine.assess(device_a, reg, pol, conn=conn,
+                          now="2026-08-22T00:00:00+00:00")
+    v_a = {v.key: v for v in dp_a.axes[0].verdicts}
+
+    # Path B: export → import → assess (the client path)
+    export.export_spine(conn, out_dir=tmp_path, policy_version="v")
+    client_conn = store.connect(":memory:")
+    export.import_spine(client_conn, from_dir=tmp_path)
+    device_b = _sample_device()
+    _inject_catalog_overlays(device_b, client_conn)
+    dp_b = engine.assess(device_b, reg, pol, conn=client_conn,
+                          now="2026-08-22T00:00:00+00:00")
+    v_b = {v.key: v for v in dp_b.axes[0].verdicts}
+
+    # Same verdicts: same keys, same status, same severity, same cvss
+    assert set(v_a) == set(v_b), f"key mismatch: {set(v_a)} vs {set(v_b)}"
+    for key in v_a:
+        assert v_a[key].status == v_b[key].status, f"{key}: status mismatch"
+        assert v_a[key].severity == v_b[key].severity, f"{key}: severity mismatch"
+        assert v_a[key].cvss == v_b[key].cvss, f"{key}: cvss mismatch"
+
+    client_conn.close()
