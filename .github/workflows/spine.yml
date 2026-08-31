@@ -117,24 +117,25 @@ jobs:
 
       # --- persistent state across runs (else the stream cursor resets and
       #     stream would re-bootstrap every run, producing nothing) ---
-      # cvelist: fixed key — a blobless base clone; `git fetch` updates it each
-      # run on the runner, so an exact-hit-skip-save is fine (the cached base is
-      # refreshed in-place; daily restore access keeps the 7-day retention alive).
+      # cvelist: run-id-unique key. GitHub Actions caches are immutable, so a
+      # fixed key would restore the original clone forever and each run would
+      # have to fetch an ever-growing backlog. A unique save key + prefix
+      # restore gives each run the newest saved clone and one hour of delta.
       - name: Cache cvelistV5 clone (restore + save)
         uses: actions/cache@v4
         with:
           path: ${{ env.CLONE_DIR }}
-          key: cvelist-blobless-v1
-          restore-keys: cvelist-blobless-
+          key: cvelist-blobless-v2-${{ github.run_id }}
+          restore-keys: cvelist-blobless-v2-
 
-      # advisory-database: fixed-key blobless clone for the GHSA peer (same
-      # pattern as cvelist — `git fetch` refreshes it in place each run).
+      # advisory-database: run-id-unique key for the GHSA peer (same immutable
+      # cache problem and newest-save-prefix solution as cvelist).
       - name: Cache advisory-database clone (restore + save)
         uses: actions/cache@v4
         with:
           path: ${{ env.GHSA_DIR }}
-          key: ghsa-blobless-v1
-          restore-keys: ghsa-blobless-
+          key: ghsa-blobless-v2-${{ github.run_id }}
+          restore-keys: ghsa-blobless-v2-
 
       # posture.db: run-id-unique key so the post-run save ALWAYS writes a fresh
       # entry (a fixed key would exact-hit-skip-save and the stream cursor —

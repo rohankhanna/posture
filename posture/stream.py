@@ -127,8 +127,37 @@ def _changed_cve_paths(repo: Path, old: str, new: str) -> list[str]:
     """Paths under ``cves/`` that changed between two commits. Only CVE JSON
     files (``cves/<year>/<prefix>/<CVEID>.json``) are returned; cvelistV5 also
     commits metadata files outside ``cves/`` we don't care about."""
-    out = _git(repo, "diff", "--name-only", old, new, "--", "cves/").splitlines()
+    out = _git(repo, "diff", "--name-only", "--diff-filter=ACMRT",
+               old, new, "--", "cves/").splitlines()
     return [p for p in (x.strip() for x in out) if p.endswith(".json")]
+
+
+def _prefetch_blobs(repo: Path, ref: str, paths: list[str]) -> None:
+    """Materialize exactly the changed CVE files via sparse checkout.
+
+    A blobless clone otherwise lazily fetches one blob per ``git show``, which
+    is fine for a tiny tick but can turn a catch-up sweep into thousands of
+    network round trips. Sparse checkout fetches the whole changed-path set in
+    one batch, while still avoiding a full working-tree checkout.
+    """
+    if not paths:
+        return
+    patterns = "\n".join(f"/{path}" for path in paths)
+    commands = (
+        ["git", "-C", str(repo), "sparse-checkout", "init", "--no-cone"],
+        ["git", "-C", str(repo), "sparse-checkout", "set", "--stdin"],
+        ["git", "-C", str(repo), "checkout", "--detach", ref],
+    )
+    for command in commands:
+        if "--stdin" in command:
+            result = subprocess.run(command, input=patterns, text=True,
+                                    capture_output=True)
+        else:
+            result = subprocess.run(command, text=True, capture_output=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"git {' '.join(command[3:])} failed ({result.returncode}): "
+                f"{result.stderr.strip()}")
 
 
 def _read_blob(repo: Path, ref: str, path: str) -> dict | None:
@@ -203,6 +232,12 @@ def stream_tick(
         return stats
 
     stats["changed_files"] = len(paths)
+
+    try:
+        _prefetch_blobs(repo, new, paths)
+    except Exception as exc:
+        stats["error"] = f"blob prefetch failed: {exc}"
+        return stats
 
     n_new = 0
     for path in paths:
