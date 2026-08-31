@@ -7,8 +7,8 @@
 # Produced / re-evaluated by the `source-alignment` repo against evidence on a
 # cadence. Initial values are conservative working assumptions, not verdicts.
 
-version: "2026-08-31.1"
-supersedes: "2026-08-06.3"
+version: "2026-08-31.2"
+supersedes: "2026-08-31.1"
 dated: 2026-08-31
 rationale: |
   Initial skeleton policy (2026-08-01.1): NVD is the CVE spine today — a
@@ -52,6 +52,7 @@ rationale: |
   back-fill + OSV + GHSA + CISA KEV) are being wired on this foundation. No
   observer order/bias changes; the observer layer is unaffected.
   2026-08-31.1: firewall observer wired on the exposure axis (grounding probe for node_e95e4e3281d9). Reads a firewall snapshot the device supplies (inline dict or local JSON file) and emits closed/exposed verdicts per inbound rule. At order 5 it overrides local_exposure (order 10) on the same proto/port key — a firewalled port is closed even when a socket is listening. This gives the attack graph measured network-reachability ground truth to suppress impossible chains. No observer order changes except the new observer at order 5 on exposure.
+  2026-08-31.2: network_interfaces observer wired on the exposure axis (grounding probe for node_e95e4e3281d9, slice 3). Reads an interface snapshot the device supplies (inline list or local JSON file) and emits reachable/loopback verdicts per UP interface address, keyed by subnet CIDR (e.g. 192.168.1.0/24). At order 15 it is supplementary context (lower authority than local_exposure at 10 and firewall at 5) — its subnet keys never conflict with proto/port keys. This gives the attack graph network-topology ground truth to suppress cross-network chains: a CVE requiring reachability to a subnet the device is not on is unreachable.
   2026-08-06.3: the last three stubbed axes are now wired with REAL observers —
   local_exposure (exposure: reads a local socket capture the device supplies,
   emits exposed/closed per proto/port; loopback bind = closed, wildcard or
@@ -129,6 +130,18 @@ observers:
       - "direction defaults to 'inbound' when omitted; unknown actions are skipped"
       - "no firewall snapshot supplied -> honest no-op (zero verdicts); local_exposure verdicts stand"
       - "one Verdict per inbound rule keyed proto/port; overrides local_exposure on the same key (firewall is higher authority on reachability)"
+  network_interfaces:
+    axes: [exposure]
+    weight: low
+    bias: false-safe           # a missing interface snapshot is not "clean"; the topology is unknown
+    order: 15                  # > local_exposure 10, firewall 5 -> supplementary context, never overrides port-level verdicts
+    conditions:
+      - "LOCAL only: reads device['interfaces'] (inline list of {name, state, addresses: [{ip, prefix, family?}]}) or device['interfaces_path'] (local JSON file); no network"
+      - "UP non-loopback interface address -> reachable (the device can send/receive on this subnet); severity LOW (informational grounding)"
+      - "UP loopback interface address (name 'lo' or IP 127/8 or ::1) -> loopback (host-only; no external reachability)"
+      - "DOWN interface -> no verdict (no reachability signal; neither reachable nor evidence of absence)"
+      - "one Verdict per UP interface address keyed subnet CIDR (e.g. 192.168.1.0/24); subnet keys do not conflict with proto/port keys from local_exposure/firewall"
+      - "no interface snapshot supplied -> honest no-op (zero verdicts); local_exposure/firewall verdicts stand"
   kev:
     axes: [threat]
     weight: high
