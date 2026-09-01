@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the posture spine build daily at 03:07 UTC
+
+[Timer]
+OnCalendar=*-*-* 03:07:00 UTC
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=15min
+Unit=posture-spine.service
+
+[Install]
+WantedBy=timers.target

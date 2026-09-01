@@ -1,0 +1,32 @@
+[
+  {
+    "name": "lo",
+    "state": "up",
+    "addresses": [
+      {"ip": "127.0.0.1", "prefix": 8, "family": "ipv4"},
+      {"ip": "::1", "prefix": 128, "family": "ipv6"}
+    ]
+  },
+  {
+    "name": "eth0",
+    "state": "up",
+    "addresses": [
+      {"ip": "192.168.1.42", "prefix": 24, "family": "ipv4"}
+    ]
+  },
+  {
+    "name": "eth1",
+    "state": "up",
+    "addresses": [
+      {"ip": "10.0.0.5", "prefix": 8, "family": "ipv4"},
+      {"ip": "fd00::5", "prefix": 64, "family": "ipv6"}
+    ]
+  },
+  {
+    "name": "wlan0",
+    "state": "down",
+    "addresses": [
+      {"ip": "172.16.0.10", "prefix": 16, "family": "ipv4"}
+    ]
+  }
+]

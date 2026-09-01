@@ -16,9 +16,8 @@ are territory (device-specific) or engine-internal. No device data ever leaves C
 Layout under --out DIR (default .)::
 
     DIR/spine/manifest.json          # cosign signs THIS -> state.sig
-    DIR/spine/defects/2026-07.jsonl         # sharded by published month; oversized
-    DIR/spine/defects/2026-07-000001.jsonl  # months split into numbered parts
-    DIR/spine/defects/unknown.jsonl         # rows with no date -> 'unknown')
+    DIR/spine/defects/2026-07.jsonl    # sharded by published month (100MB-file
+    DIR/spine/defects/unknown.jsonl    #   limit; rows with no date -> 'unknown')
     DIR/spine/crosswalk.jsonl
     DIR/spine/candidates.jsonl
     DIR/spine/distrust_marks.jsonl
@@ -47,7 +46,6 @@ from . import store as _store
 
 MANIFEST_VERSION = "1"
 SPINE_DIR = "spine"
-MAX_DEFECT_SHARD_BYTES = 48 * 1024 * 1024
 # The MAP tables — the spine. Territory/engine-internal tables are deliberately
 # absent: verdicts, device_posture, health_*, glossary, term_signals,
 # spine_bindings, repair_proposals, policy_versions, state.
@@ -65,29 +63,6 @@ def _defect_shard_key(row: dict) -> str:
     dropped — the spine is a complete snapshot."""
     pub = row.get("published") or ""
     return pub[:7] if len(pub) >= 7 else "unknown"
-
-
-def _split_rows(rows: list[dict], max_bytes: int) -> list[list[dict]]:
-    """Split a row bucket into serialized parts no larger than max_bytes.
-
-    A single row is always kept intact. The ceiling leaves headroom below the
-    repository host's hard file-size limit and its lower warning threshold.
-    """
-    parts: list[list[dict]] = []
-    current: list[dict] = []
-    current_bytes = 0
-    for row in rows:
-        serialized = json.dumps(row, sort_keys=True, default=str) + "\n"
-        row_bytes = len(serialized.encode("utf-8"))
-        if current and current_bytes + row_bytes > max_bytes:
-            parts.append(current)
-            current = []
-            current_bytes = 0
-        current.append(row)
-        current_bytes += row_bytes
-    if current:
-        parts.append(current)
-    return parts
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> tuple[str, int]:
@@ -146,13 +121,8 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
     for row in defects:
         buckets.setdefault(_defect_shard_key(row), []).append(row)
     for shard, rows in sorted(buckets.items()):
-        parts = _split_rows(rows, MAX_DEFECT_SHARD_BYTES)
-        for index, part in enumerate(parts, start=1):
-            filename = (f"{shard}.jsonl" if len(parts) == 1
-                        else f"{shard}-{index:06d}.jsonl")
-            sha, count = _write_jsonl(root / "defects" / filename, part)
-            files.append({"path": f"defects/{filename}", "sha256": sha,
-                          "count": count})
+        sha, n = _write_jsonl(root / "defects" / f"{shard}.jsonl", rows)
+        files.append({"path": f"defects/{shard}.jsonl", "sha256": sha, "count": n})
 
     # --- flat tables ---
     loaders = {
@@ -259,8 +229,8 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
                            "epss")}
 
     # --- defects: full INSERT OR REPLACE (all columns, including enrich_state,
-    #     distrusted, distrust_reason, discovered_at — a faithful mirror of
-    #     the signed map; upsert_defect would drop those) ---
+    #     distrusted, distrust_reason, discovered_at, prompt_hash, raw_text_hash
+    #     — a faithful mirror of the signed map; upsert_defect would drop those) ---
     for shard_path in sorted((root / "defects").glob("*.jsonl")):
         for row in _read_jsonl(shard_path):
             conn.execute(
@@ -268,8 +238,8 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
                      (id, defect_type, published, cvss, severity, cvss_vector,
                       description, fixed_raw, refs, cwe, ref_tags, enrich_state,
                       source, fetched_at, policy_version, complete, distrusted,
-                      distrust_reason, discovered_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      distrust_reason, discovered_at, prompt_hash, raw_text_hash)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     row["id"], row.get("defect_type"), row.get("published"),
                     row.get("cvss"),
@@ -285,6 +255,7 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
                     int(row.get("complete") or 0),
                     int(row.get("distrusted") or 0),
                     row.get("distrust_reason"), row.get("discovered_at"),
+                    row.get("prompt_hash"), row.get("raw_text_hash"),
                 ),
             )
             stats["defects"] += 1

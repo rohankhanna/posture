@@ -28,6 +28,8 @@ def stamp(verdicts: list[Verdict], policy_version: str, fetched_at: str,
         if v.provenance is None:
             v = Verdict(axis=v.axis, key=v.key, status=v.status, detail=v.detail,
                         severity=v.severity, fixed_in=v.fixed_in,
+                        cvss=v.cvss, cvss_vector=v.cvss_vector,
+                        published=v.published, cwe=v.cwe, ref_tags=v.ref_tags,
                         provenance=Provenance(observer="", policy_version=policy_version,
                                               fetched_at=fetched_at, complete=complete))
         else:
@@ -35,6 +37,8 @@ def stamp(verdicts: list[Verdict], policy_version: str, fetched_at: str,
             v = Verdict(
                 axis=v.axis, key=v.key, status=v.status, detail=v.detail,
                 severity=v.severity, fixed_in=v.fixed_in,
+                cvss=v.cvss, cvss_vector=v.cvss_vector,
+                published=v.published, cwe=v.cwe, ref_tags=v.ref_tags,
                 provenance=Provenance(
                     observer=p.observer,
                     policy_version=policy_version or p.policy_version,
