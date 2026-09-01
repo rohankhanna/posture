@@ -1,0 +1,30 @@
+[Unit]
+Description=posture — daily spine build and export
+Documentation=man:posture(1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=posture
+Group=posture
+WorkingDirectory=/opt/posture
+StateDirectory=posture
+Environment=PYTHONUNBUFFERED=1
+Environment=POSTURE_STATE_DIR=/var/lib/posture
+Environment=POSTURE_EXPORT_DIR=/var/lib/posture
+Environment=POSTURE_CVELIST_DIR=/var/lib/posture/cvelist
+Environment=POSTURE_GHSA_DIR=/var/lib/posture/ghsa
+Environment=POSTURE_DB_PATH=/var/lib/posture/posture.db
+Environment=POSTURE_BACKFILL_CAP=5000
+Environment=POSTURE_OSV_CAP=5000
+Environment=POSTURE_REFRESH_CAP=200
+EnvironmentFile=-/etc/posture/posture.env
+ExecStart=/usr/bin/env bash /opt/posture/scripts/vps_spine.sh
+TimeoutStartSec=6h
+Nice=10
+CPUSchedulingPolicy=batch
+CPUQuota=50%
+MemoryMax=2G
+StandardOutput=journal
+StandardError=journal
