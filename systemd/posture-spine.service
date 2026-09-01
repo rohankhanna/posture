@@ -11,6 +11,7 @@ Group=posture
 WorkingDirectory=/opt/posture
 StateDirectory=posture
 Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/opt/posture/.venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=POSTURE_STATE_DIR=/var/lib/posture
 Environment=POSTURE_EXPORT_DIR=/var/lib/posture
 Environment=POSTURE_CVELIST_DIR=/var/lib/posture/cvelist
