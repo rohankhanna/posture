@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 022
 
 # Lightweight posture spine runner for a single small VPS.
 # This is the data-plane job GitHub Actions used to own. It keeps the catalog
