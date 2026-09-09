@@ -206,20 +206,34 @@ def ubuntu_ingest_tick(conn, releases: list[str] | None = None,
                           "(no default public-spine scope is wired)")
         return stats
 
-    # fetch every package's full CVE set first; a single package outage fails
-    # the whole tick (no-wipe: write nothing, preserve last-known-good).
-    pkg_data: dict[str, list] = {}
+    # fetch + extract per page so the full CVE set is never held in memory
+    # at once (the API serves large objects; accumulating all 19k+ CVEs for
+    # the linux package exceeds a 2G VPS).  All-or-nothing: every package is
+    # fetched first; a single package outage fails the whole tick (no-wipe).
+    pkg_data: dict[str, dict[str, dict[str, tuple[str, str | None]]]] = {}
     for pkg in packages:
-        cves, reason = _fetch_package(pkg, page_size=page_size)
-        if cves is None:
-            stats["error"] = reason
-            return stats
-        pkg_data[pkg] = cves
+        per_release: dict[str, dict[str, tuple[str, str | None]]] = {
+            r: {} for r in releases}
+        offset = 0
+        while True:
+            data, reason = _fetch_page(pkg, offset, page_size)
+            if data is None:
+                stats["error"] = reason
+                return stats
+            page = data.get("cves") or []
+            for release in releases:
+                per_release[release].update(
+                    extract_release(page, release, pkg))
+            total = data.get("total_results") or 0
+            offset += len(page)
+            if not page or offset >= total:
+                break
+        pkg_data[pkg] = per_release
     stats["fetched"] = True
 
     for pkg in packages:
         for release in releases:
-            sheet = extract_release(pkg_data[pkg], release, pkg)
+            sheet = pkg_data[pkg][release]
             rows = [{"cve_id": cid, "status": st, "fixed_in": fi}
                     for cid, (st, fi) in sheet.items()]
             n = _store.replace_ubuntu_fixes(conn, release, pkg, rows, fetched_at)
