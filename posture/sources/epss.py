@@ -48,7 +48,7 @@ from . import _net
 # The canonical FIRST/Empirical-Security bulk EPSS CSV (gzipped). The URL
 # redirects to the current day's file, so `-L` is required. Override via the
 # ``url`` param if FIRST moves the host. A wrong host fails loudly (no-wipe).
-EPSS_URL = "https://epss.cyentific.com/epss_scores-current.csv.gz"
+EPSS_URL = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
 TIMEOUT = 300  # the snapshot is ~270k rows / a few MB gzipped
 
 # curl routing: every network read goes through ``_net.curl_get_bytes`` (the
