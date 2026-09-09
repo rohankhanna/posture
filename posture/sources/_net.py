@@ -69,4 +69,6 @@ def curl_get_bytes(url: str, headers: list[str] | None = None,
     code = int(status) if status.isdigit() else 0
     if not body:
         return None, code
+    if body.endswith(b"\n"):
+        body = body[:-1]
     return body, code
