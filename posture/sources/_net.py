@@ -21,7 +21,7 @@ def curl_get(url: str, headers: list[str] | None = None, max_time: int = 60,
     body reliably (Forebode's pattern). Auth is HEADER-ONLY — never in the URL
     (putting the NVD key in the query string is the run-#10 fleet-wipe root cause).
     """
-    cmd = ["curl", "-sS", "--max-time", str(max_time),
+    cmd = ["curl", "-sS", "--compressed", "--max-time", str(max_time),
            "-w", "\n__HTTP__%{http_code}"]
     for h in headers or []:
         cmd += ["-H", h]
@@ -52,7 +52,7 @@ def curl_get_bytes(url: str, headers: list[str] | None = None,
     where :func:`curl_get`'s lossy ``utf-8`` ``errors="replace"`` decode would
     corrupt the body — encoding that str back to bytes cannot recover the
     original. Auth stays HEADER-ONLY (same rule as ``curl_get``)."""
-    cmd = ["curl", "-sS", "--max-time", str(max_time),
+    cmd = ["curl", "-sS", "--compressed", "--max-time", str(max_time),
            "-w", "\n__HTTP__%{http_code}"]
     for h in headers or []:
         cmd += ["-H", h]

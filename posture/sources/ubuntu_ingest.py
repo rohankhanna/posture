@@ -74,7 +74,7 @@ from . import ubuntu_tracker as _ut
 # return fewer rows than asked, and the pager advances by the count actually
 # returned so an API clamp never loops or skips.
 UBUNTU_CVE_URL = "https://ubuntu.com/security/cves.json"
-PAGE_SIZE = 500
+PAGE_SIZE = 20
 TIMEOUT = 300  # one package's CVE set can be a few thousand rows over a few pages
 
 
