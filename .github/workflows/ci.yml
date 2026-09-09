@@ -26,6 +26,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install posture
-        run: pip install .
+        run: pip install .[test]
       - name: Run unit tests
         run: python -m pytest -q
