@@ -82,32 +82,36 @@ def git_backfill_slice(
     remaining = paths[len(slice_):]
     done = len(remaining) == 0
 
-    # one round trip: `git archive <tip> -- <paths...>` streams a tar of exactly
-    # the requested blobs (missing blobs are fetched from the promisor on demand).
-    proc = subprocess.Popen(
-        ["git", "-C", str(repo), "archive", tip, "--", *slice_],
-        stdout=subprocess.PIPE,
-    )
+    # `git archive <tip> -- <paths...>` streams a tar of exactly the requested
+    # blobs (missing blobs are fetched from the promisor on demand).  Paths are
+    # batched to stay under the OS argument-list limit when the cap is large.
     records: list = []
-    try:
-        tar = tarfile.open(fileobj=proc.stdout, mode="r|")
-        for member in tar:
-            if not member.isfile():
-                continue
-            f = tar.extractfile(member)
-            if f is None:
-                continue
-            text = f.read().decode("utf-8", "replace")
-            try:
-                rec = parse_fn(text)
-            except Exception:
-                rec = None
-            if rec is not None:
-                records.append(rec)
-        tar.close()
-    finally:
-        proc.stdout.close()
-        proc.wait()
+    batch_size = 2000
+    for start in range(0, len(slice_), batch_size):
+        batch = slice_[start:start + batch_size]
+        proc = subprocess.Popen(
+            ["git", "-C", str(repo), "archive", tip, "--", *batch],
+            stdout=subprocess.PIPE,
+        )
+        try:
+            tar = tarfile.open(fileobj=proc.stdout, mode="r|")
+            for member in tar:
+                if not member.isfile():
+                    continue
+                f = tar.extractfile(member)
+                if f is None:
+                    continue
+                text = f.read().decode("utf-8", "replace")
+                try:
+                    rec = parse_fn(text)
+                except Exception:
+                    rec = None
+                if rec is not None:
+                    records.append(rec)
+            tar.close()
+        finally:
+            proc.stdout.close()
+            proc.wait()
 
     new_cursor = slice_[-1]
     return records, new_cursor, done
