@@ -1603,6 +1603,106 @@ def ubuntu_fixes_for(conn, cve_id: str, release: str, package: str) -> dict | No
 
 
 # ---------------------------------------------------------------------------
+# Bounded-growth purge — remove ancient defects no longer relevant
+# ---------------------------------------------------------------------------
+
+DEFAULT_PURGE_AGE_DAYS = 3650
+DEFAULT_KEEP_EPSS_PERCENTILE = 0.90
+
+
+def purge_defects(
+    conn,
+    max_age_days: int = DEFAULT_PURGE_AGE_DAYS,
+    keep_epss_percentile: float = DEFAULT_KEEP_EPSS_PERCENTILE,
+    now: str | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Remove ancient, no-longer-relevant defects from the catalog and their
+    overlay/crosswalk/seen entries. Returns a stats dict.
+
+    A defect is eligible when ALL hold:
+      1. ``published`` older than ``max_age_days`` (no-date rows kept).
+      2. NOT in ``kev`` (not known-exploited).
+      3. NOT in ``epss`` with ``percentile >= keep_epss_percentile``.
+      4. NOT in ``debian_fixes`` with status open/undetermined.
+      5. NOT in ``ubuntu_fixes`` with status needed/pending/needs-triage.
+      6. NOT in ``apple_fixes`` (keep all Apple fix data — small overlay).
+
+    Orphaned overlay rows (cve_id no longer in defects) are also removed, and
+    crosswalk + seen_defects are cleaned of purged ids. Purged CVEs can re-enter
+    via future GHSA/OSV advisories that reference them — the recovery path.
+    """
+    import datetime as _dt
+    fetched_at = now or _dt.datetime.now(_dt.timezone.utc).replace(
+        microsecond=0).isoformat()
+    cutoff = (_dt.datetime.fromisoformat(fetched_at)
+              - _dt.timedelta(days=max_age_days)).strftime("%Y-%m-%d")
+
+    candidates = [r["id"] for r in conn.execute(
+        """SELECT id FROM defects
+            WHERE published IS NOT NULL
+              AND published < ?
+              AND id NOT IN (SELECT cve_id FROM kev)
+              AND id NOT IN (SELECT cve_id FROM epss
+                             WHERE percentile >= ?)
+              AND id NOT IN (SELECT cve_id FROM debian_fixes
+                             WHERE status IN ('open', 'undetermined'))
+              AND id NOT IN (SELECT cve_id FROM ubuntu_fixes
+                             WHERE status IN ('needed', 'pending',
+                                              'needs-triage'))
+              AND id NOT IN (SELECT cve_id FROM apple_fixes)""",
+        (cutoff, keep_epss_percentile),
+    )]
+    candidate_set = set(candidates)
+
+    stats = {
+        "cutoff_date": cutoff,
+        "max_age_days": max_age_days,
+        "keep_epss_percentile": keep_epss_percentile,
+        "defects_purged": 0,
+        "crosswalk_purged": 0,
+        "seen_defects_purged": 0,
+        "orphan_overlays_purged": {
+            "kev": 0, "epss": 0, "debian_fixes": 0,
+            "ubuntu_fixes": 0, "apple_fixes": 0,
+        },
+        "dry_run": dry_run,
+        "candidate_count": len(candidates),
+    }
+
+    if dry_run:
+        return stats
+
+    if candidates:
+        cur = conn.executemany(
+            "DELETE FROM crosswalk WHERE defect_id=?",
+            [(c,) for c in candidates])
+        stats["crosswalk_purged"] = cur.rowcount
+        cur = conn.executemany(
+            "DELETE FROM crosswalk WHERE alias=?",
+            [(c,) for c in candidates])
+        stats["crosswalk_purged"] += cur.rowcount
+        cur = conn.executemany(
+            "DELETE FROM seen_defects WHERE defect_id=?",
+            [(c,) for c in candidates])
+        stats["seen_defects_purged"] = cur.rowcount
+        cur = conn.executemany(
+            "DELETE FROM defects WHERE id=?",
+            [(c,) for c in candidates])
+        stats["defects_purged"] = cur.rowcount
+
+    for table in ("kev", "epss", "debian_fixes", "ubuntu_fixes",
+                  "apple_fixes"):
+        cur = conn.executemany(
+            f"DELETE FROM {table} WHERE cve_id=?",
+            [(c,) for c in candidate_set])
+        stats["orphan_overlays_purged"][table] = cur.rowcount
+
+    conn.commit()
+    return stats
+
+
+# ---------------------------------------------------------------------------
 # Generic kv state — the stream cursor + tick summaries
 # ---------------------------------------------------------------------------
 

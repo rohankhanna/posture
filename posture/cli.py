@@ -982,6 +982,35 @@ def _cmd_catalog(args) -> int:
     return 2
 
 
+def _cmd_purge(args) -> int:
+    with _open_db(args.db) as conn:
+        stats = _store.purge_defects(
+            conn,
+            max_age_days=args.max_age_days,
+            keep_epss_percentile=args.keep_epss_percentile,
+            dry_run=args.dry_run,
+        )
+    cc = stats["candidate_count"]
+    cd = stats["cutoff_date"]
+    ma = stats["max_age_days"]
+    ke = stats["keep_epss_percentile"]
+    if args.dry_run:
+        print(f"DRY RUN — {cc} defect(s) eligible for purge "
+              f"(cutoff: {cd}, age={ma}d, keep EPSS >= {ke})")
+    else:
+        print(f"purge complete — cutoff {cd} (age={ma}d, keep EPSS >= {ke})")
+        print(f"  defects purged:       {stats['defects_purged']}")
+        print(f"  crosswalk purged:     {stats['crosswalk_purged']}")
+        print(f"  seen_defects purged:  {stats['seen_defects_purged']}")
+        orphans = stats["orphan_overlays_purged"]
+        print(f"  orphan kev purged:          {orphans['kev']}")
+        print(f"  orphan epss purged:         {orphans['epss']}")
+        print(f"  orphan debian_fixes purged: {orphans['debian_fixes']}")
+        print(f"  orphan ubuntu_fixes purged: {orphans['ubuntu_fixes']}")
+        print(f"  orphan apple_fixes purged:  {orphans['apple_fixes']}")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # parser
 # ---------------------------------------------------------------------------
@@ -1139,6 +1168,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=100)
     sp.add_argument("--offset", type=int, default=0)
     db_arg(sp); sp.set_defaults(func=_cmd_catalog)
+
+    sp = sub.add_parser("purge", help="bounded-growth: remove ancient defects no longer relevant (dry-run capable)")
+    sp.add_argument("--max-age-days", type=int, default=_store.DEFAULT_PURGE_AGE_DAYS,
+                    help=f"purge defects older than this many days (default: {_store.DEFAULT_PURGE_AGE_DAYS})")
+    sp.add_argument("--keep-epss-percentile", type=float, default=_store.DEFAULT_KEEP_EPSS_PERCENTILE,
+                    help=f"keep CVEs with EPSS percentile >= this (default: {_store.DEFAULT_KEEP_EPSS_PERCENTILE})")
+    sp.add_argument("--dry-run", action="store_true", help="report what would be purged without deleting")
+    db_arg(sp); sp.set_defaults(func=_cmd_purge)
 
     return p
 

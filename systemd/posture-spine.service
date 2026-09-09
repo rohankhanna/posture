@@ -20,6 +20,11 @@ Environment=POSTURE_DB_PATH=/var/lib/posture/posture.db
 Environment=POSTURE_BACKFILL_CAP=50000
 Environment=POSTURE_OSV_CAP=5000
 Environment=POSTURE_REFRESH_CAP=2000
+Environment=POSTURE_PURGE_AGE_DAYS=3650
+Environment=POSTURE_KEEP_EPSS_PERCENTILE=0.90
+Environment=POSTURE_DISK_WARN_GB=5
+Environment=POSTURE_DISK_CRIT_GB=2
+Environment=POSTURE_GC_INTERVAL_DAYS=7
 EnvironmentFile=-/etc/posture/posture.env
 ExecStart=/usr/bin/env bash /opt/posture/scripts/vps_spine.sh
 TimeoutStartSec=6h
