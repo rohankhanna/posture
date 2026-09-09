@@ -86,16 +86,20 @@ def _fetch_page(package: str, offset: int, limit: int) -> tuple[dict | None, str
     """One paginated Ubuntu bulk CVE pull (JSON), filtered to ``package``.
     Returns ``(data_or_None, reason)``. None means absent/failed — the caller
     treats it as a no-op (no-wipe). Delegates to the observer's curl binding so
-    the read path is identical across observer + ingestion."""
+    the read path is identical across observer + ingestion. Retries up to
+    three times on a transient non-dict 200 (rate-limit blip)."""
     url = (f"{UBUNTU_CVE_URL}?package={quote(package)}"
            f"&limit={limit}&offset={offset}")
-    data, code, _body = _ut.curl_get(
-        url,
-        headers=["User-Agent: posture/1.0", "Accept-Encoding: gzip, deflate"],
-        max_time=TIMEOUT,
-    )
-    if code == 200 and isinstance(data, dict):
-        return data, "live"
+    for attempt in range(3):
+        data, code, _body = _ut.curl_get(
+            url,
+            headers=["User-Agent: posture/1.0", "Accept-Encoding: gzip, deflate"],
+            max_time=TIMEOUT,
+        )
+        if code == 200 and isinstance(data, dict):
+            return data, "live"
+        if attempt < 2:
+            import time; time.sleep(2)
     return None, f"ubuntu cves fetch absent (http {code or 'timeout'})"
 
 
