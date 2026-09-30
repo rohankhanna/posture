@@ -482,6 +482,7 @@ gated) lives in [`docs/sources.md`](docs/sources.md).
 | `posture ingest osv --cap N` | osv.dev hub — the highest-leverage peer (RustSec, PyPA, Go, Red Hat, Debian, Ubuntu, Alpine…). Per-ecosystem backfill + incremental. A CVE-less OSV record still anchors as first-class. |
 | `posture ingest kev` | CISA KEV overlay (annotates existing CVE rows; not a new defect type). Idempotent full refresh, ~1,660 entries. |
 | `posture ingest apple [--product …] [--history]` | Apple advisory fix-version overlay, CVE+product-keyed, per-product full refresh. `--history` recovers pre-index CVEs from Wayback (more fetches). |
+| `posture ingest nvd-cpe --cpe <cpe> [--cap N]` | NVD CPE-head ingestion: query NVD by one or more CPE heads and upsert every matching CVE into the catalog. Use this to seed the exact host-matcher heads a self-hosted spine must cover. |
 | `posture refresh [--devices <yaml> \| --no-devices]` | Incremental NVD enrichment + per-CVE re-decide; upserts verdicts one key at a time, never a bulk swap. |
 | `posture enrich llm [--source …] [--cap N] [--model M] [--dry-run]` | Source-agnostic LLM draft over thin/unscored catalog rows (every peer scheme, not just NVD). LLM-as-map/human-as-trust: the LLM drafts catalog MAP fields only, drafts are labeled `source='llm:<model>'`, and the assess decide path selects `source='nvd'` only, so a draft is structurally barred from ever producing a trust/DEFCON verdict. Off-by-default `POSTURE_LLM` seam (no provider until the operator gates one); `--dry-run` inspects the thin pool with no provider. |
 
@@ -588,7 +589,7 @@ Every subcommand takes `--help` for full options. Common options include
 |---|---|
 | `posture stream` | MITRE cvelistV5 stream tick (skeletons, only-adds) |
 | `posture backfill --cap N` | cvelistV5 back-catalog (self-disables when done) |
-| `posture ingest {kev\|osv\|ghsa\|apple}` | aggregator peers + overlays (`apple`: `--product`, `--history`) |
+| `posture ingest {kev\|osv\|ghsa\|apple\|nvd-cpe}` | aggregator peers + overlays (`apple`: `--product`, `--history`; `nvd-cpe`: repeatable `--cpe`, optional `--cap`) |
 | `posture refresh [--no-devices\|--devices <yaml>] [--cap N]` | incremental NVD enrichment + re-decide |
 | `posture enrich llm [--source …] [--dry-run]` | source-agnostic LLM draft over thin/unscored rows (off-by-default `POSTURE_LLM`; LLM-as-map, never trust) |
 

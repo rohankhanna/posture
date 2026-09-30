@@ -41,7 +41,8 @@ from .axis import Axis
 from . import provenance as _prov
 from .observer import Provenance
 from .sources.nvd_cve import (
-    nvd_query_cve, decide_cve_for_device, _metrics, _desc, _refs, _cwes,
+    nvd_query_cpe, nvd_query_cve, decide_cve_for_device, _metrics, _desc,
+    _refs, _cwes,
     _ref_tags, _cpe_head,
     NVD_URL,
 )
@@ -104,6 +105,66 @@ def _enriched_record(cve: dict, policy_version: str, fetched_at: str) -> dict:
         "policy_version": policy_version,
         "complete": True,
     }
+
+
+def nvd_cpe_ingest_tick(conn, cpes: list[str], policy_version: str = "",
+                        now: str | None = None, cap: int | None = None) -> dict:
+    """Ingest NVD rows for one or more CPE heads into the catalog.
+
+    This is the map-side complement to :func:`refresh_tick`. The per-CVE refresh
+    enriches MITRE skeletons one CVE at a time, which is correct for historical
+    catch-up but cannot guarantee that a device matcher's CPE head is present in
+    the spine. This tick asks NVD directly for every CVE that touches each CPE
+    head, converts each returned CVE through the same
+    :func:`_enriched_record` projection, and upserts it as a
+    ``source='nvd'``/``enrich_state='nvd'`` catalog row.
+
+    The function is additive and no-wipe: a failed or incomplete CPE-head
+    query writes nothing for that head, and a CVE that is already present is
+    re-upserted idempotently. It never touches verdicts.
+    """
+    fetched_at = now or _now()
+    stats: dict = {
+        "heads": list(cpes),
+        "upserted": 0,
+        "skipped": 0,
+        "incomplete": 0,
+        "errors": [],
+        "results": [],
+    }
+    for cpe in cpes:
+        try:
+            vulns, complete, reason = nvd_query_cpe(cpe)
+        except Exception as exc:
+            stats["errors"].append(f"{cpe}: {exc}")
+            stats["incomplete"] += 1
+            continue
+        if not complete:
+            stats["errors"].append(reason or f"{cpe}: incomplete")
+            stats["incomplete"] += 1
+            continue
+        head_result = {"cpe": cpe, "reason": reason, "rows": len(vulns)}
+        stats["results"].append(head_result)
+        for vuln in vulns:
+            if cap is not None and stats["upserted"] >= cap:
+                head_result["reason"] = f"{reason}; cap reached"
+                break
+            cve = vuln.get("cve", vuln)
+            try:
+                row = _enriched_record(cve, policy_version, fetched_at)
+            except Exception as exc:
+                stats["skipped"] += 1
+                stats["errors"].append(f"{cve.get('id', 'unknown')}: {exc}")
+                continue
+            if not row.get("id"):
+                stats["skipped"] += 1
+                continue
+            _store.upsert_defect(conn, row)
+            _store.set_enrich_state(conn, row["id"], "nvd")
+            _store.mark_seen(conn, [row["id"]])
+            conn.commit()
+            stats["upserted"] += 1
+    return stats
 
 
 def _device_cpe_matchers(device: dict) -> list[dict]:

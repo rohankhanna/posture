@@ -151,6 +151,7 @@ These gaps are **declared, not hidden** — posture's honesty rule: a defect_typ
 ## Design implications (the full picture)
 
 1. **Spine enrichment = cvelistV5 (CNA records) + OSV + GHSA as peers**; NVD = overlay for KEV/critical only (NVD stopped enriching most CVEs 2026-04-15).
+   - **CPE-head seeding:** `posture ingest nvd-cpe --cpe …` queries NVD by `virtualMatchString` for the exact device-matcher heads a self-hosted spine must cover, then upserts the returned CVEs through the same NVD catalog projection. This complements the per-CVE refresh rather than replacing it.
 2. **OSV is the practical hub** — many peers emit OSV schema; no rate limit; GCS incremental export. The generic OSV-schema adapter is the highest-leverage implementation.
 3. **Per-source access paths:** Red Hat (CSAF + `changes.csv`), Debian (Salsa git), Ubuntu (OSV tarball / GitHub mirror, NOT flaky live API), Apple (SOFA or scrape), IBM (datalist JSON), Fortinet (RSS), Palo Alto (JSON API), Cisco (RSS/CSAF), CISA (KEV CSV + CSAF repo), GHSA (git clone), NVD (header apiKey, KEV/critical only), MITRE cvelistV5 (git, primary record source).
 4. **Hard-blocked → loud UNKNOWN with a dossier:** SAP, Snyk/Tenable/Qualys APIs. Declared coverage gaps, not hidden.

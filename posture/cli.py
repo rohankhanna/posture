@@ -856,6 +856,30 @@ def _cmd_ingest_osv(args) -> int:
     return 0
 
 
+def _cmd_ingest_nvd_cpe(args) -> int:
+    policy = _load_policy(args.policy)
+    with _open_db(args.db) as conn:
+        _install_policy_if_needed(conn, policy)
+        stats = _refresh.nvd_cpe_ingest_tick(
+            conn, cpes=args.cpe, policy_version=policy.version,
+            now=_engine._now(), cap=args.cap)
+        conn.commit()
+    if stats["errors"]:
+        print(f"ingest nvd-cpe: {stats['upserted']} row(s) upserted · "
+              f"{stats['skipped']} skipped · {stats['incomplete']} incomplete")
+        for e in stats["errors"][:10]:
+            print(f"  {e}")
+        return 1
+    print(f"ingest nvd-cpe: {stats['upserted']} row(s) upserted · "
+          f"{stats['skipped']} skipped across {len(stats['heads'])} CPE head(s)")
+    for r in stats["results"]:
+        print(f"  {r['cpe']}: {r['rows']} row(s) ({r['reason']})")
+    line = _attr.attribution_for("nvd")
+    if line:
+        print(f"  {line}")
+    return 0
+
+
 def _cmd_refresh(args) -> int:
     policy = _load_policy(args.policy)
     if args.no_devices:
@@ -1109,7 +1133,7 @@ def build_parser() -> argparse.ArgumentParser:
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_backfill)
 
     # -- ingestion: aggregator peers (KEV overlay first; OSV/GHSA to follow) ----
-    sp = sub.add_parser("ingest", help="ingest an aggregator peer / fix / exploitability overlay into the catalog (kev | osv | ghsa | apple | debian | ubuntu | epss)")
+    sp = sub.add_parser("ingest", help="ingest an aggregator peer / fix / exploitability overlay into the catalog (kev | osv | ghsa | apple | debian | ubuntu | epss | nvd-cpe)")
     psub = sp.add_subparsers(dest="peer", required=True)
     spk = psub.add_parser("kev", help="CISA KEV overlay refresh (exploitability_signal; CVE-keyed, full refresh)")
     db_arg(spk); pol_arg(spk); spk.set_defaults(func=_cmd_ingest_kev)
@@ -1140,6 +1164,12 @@ def build_parser() -> argparse.ArgumentParser:
     db_arg(spu); pol_arg(spu); spu.set_defaults(func=_cmd_ingest_ubuntu)
     spe = psub.add_parser("epss", help="FIRST.org EPSS exploitability-likelihood overlay (CVE-keyed; daily full refresh; fills the NVD-degradation gap; complementary to kev)")
     db_arg(spe); pol_arg(spe); spe.set_defaults(func=_cmd_ingest_epss)
+    spn = psub.add_parser("nvd-cpe", help="NVD CPE-head ingestion: query NVD by one or more CPE heads and upsert every matching CVE into the catalog")
+    spn.add_argument("--cpe", action="append", required=True,
+                    help="CPE 2.3 head to query (e.g. cpe:2.3:o:linux:linux_kernel); repeatable")
+    spn.add_argument("--cap", type=int, default=None,
+                    help="max total rows to upsert this tick (default: no cap)")
+    db_arg(spn); pol_arg(spn); spn.set_defaults(func=_cmd_ingest_nvd_cpe)
 
     sp = sub.add_parser("refresh", help="incremental NVD enrichment + per-CVE re-decide (wipe-proof; never a bulk re-pull)")
     sp.add_argument("--devices", default=DEFAULT_DEVICES, help="fleet YAML (list of device dicts)")
