@@ -63,6 +63,21 @@ posture backfill --cap "$BACKFILL_CAP" --db "$DB_PATH"
 # 3) Peer overlays. Caps keep the small VPS bounded; each source is
 #    incremental from the persistent database.
 posture ingest ghsa --cap "$OSV_CAP" --db "$DB_PATH"
+
+# 3a) Seed the exact NVD CPE heads the operator's host matchers use. The
+#     per-CVE refresh cannot guarantee that a specific CPE head is present in
+#     the spine; this direct CPE-head query closes that gap before the heavy
+#     OSV backfill runs.
+posture ingest nvd-cpe \
+  --cpe 'cpe:2.3:a:nvidia:gpu_driver' \
+  --cpe 'cpe:2.3:a:nvidia:cuda_toolkit' \
+  --cpe 'cpe:2.3:o:canonical:ubuntu_linux' \
+  --cpe 'cpe:2.3:o:linux:linux_kernel' \
+  --cpe 'cpe:2.3:h:nvidia:gb10' \
+  --cpe 'cpe:2.3:h:mediatek:mt7925' \
+  --cpe 'cpe:2.3:h:realtek:rtl8127' \
+  --db "$DB_PATH"
+
 posture ingest osv --cap "$OSV_CAP" --db "$DB_PATH"
 posture ingest kev --db "$DB_PATH"
 posture ingest apple --db "$DB_PATH"

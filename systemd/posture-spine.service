@@ -31,6 +31,6 @@ TimeoutStartSec=6h
 Nice=10
 CPUSchedulingPolicy=batch
 CPUQuota=50%
-MemoryMax=2G
+MemoryMax=3G
 StandardOutput=journal
 StandardError=journal
