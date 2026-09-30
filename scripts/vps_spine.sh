@@ -76,7 +76,8 @@ posture ingest nvd-cpe \
   --cpe 'cpe:2.3:h:nvidia:gb10' \
   --cpe 'cpe:2.3:h:mediatek:mt7925' \
   --cpe 'cpe:2.3:h:realtek:rtl8127' \
-  --db "$DB_PATH"
+  --db "$DB_PATH" || \
+  echo "posture-spine: warning: nvd-cpe ingest incomplete; last-known-good retained, spine continues"
 
 posture ingest osv --cap "$OSV_CAP" --db "$DB_PATH"
 posture ingest kev --db "$DB_PATH"
