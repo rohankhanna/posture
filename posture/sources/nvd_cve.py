@@ -275,6 +275,65 @@ def nvd_query_cve(cve_id: str, throttle: bool = True) -> tuple[dict | None, bool
     return vulns[0].get("cve", vulns[0]), True, f"{cve_id}: enriched"
 
 
+def nvd_query_cpe(cpe: str, throttle: bool = True) -> tuple[list[dict], bool, str]:
+    """Query NVD by CPE head and return every matching vulnerability.
+
+    This is the reusable map-side counterpart to :func:`nvd_query_cve`: the
+    refresh path enriches one CVE at a time, while the CPE-head path asks NVD
+    ``virtualMatchString`` for every CVE that touches a device matcher's CPE
+    head. The result is the same ``[{"cve": ...}, ...]`` page shape the live
+    observer consumes, so catalog ingestion and live assess share one source
+    contract.
+
+    Returns ``(vulnerabilities, complete, reason)``. A complete result may be
+    an empty list (the CPE head genuinely has no NVD rows). An incomplete result
+    means the caller must treat absence as unknown, never as clean.
+    """
+    api_key = os.environ.get("NVD_API_KEY")
+    headers = ["Accept: application/json"]
+    if api_key:
+        headers.append(f"apiKey: {api_key}")  # HEADER-ONLY (never query string)
+
+    out: list[dict] = []
+    start = 0
+    reached_total = False
+    label = _cpe_head(cpe)
+    while start < MAX_RESULTS:
+        if throttle and start:
+            time.sleep(1.2 if api_key else 8.0)
+        params = {
+            "virtualMatchString": _pad_cpe(cpe),
+            "resultsPerPage": PAGE_SIZE,
+            "startIndex": start,
+        }
+        url = NVD_URL + "?" + urllib.parse.urlencode(params)
+        data, code, _body = curl_get(url, headers=headers)
+        if data is None:
+            if code == 404:
+                # NVD sometimes 404s on a transient rate-limit masquerade; one
+                # retry distinguishes that from a genuinely absent CPE head.
+                time.sleep(10)
+                data, code, _ = curl_get(url, headers=headers)
+                if data is None and code == 404:
+                    return [], True, f"{label}: absent (404 twice)"
+            if data is None:
+                return out, False, f"{label}: incomplete (http {code or 'timeout'})"
+        vulns = data.get("vulnerabilities") or []
+        total = data.get("totalResults", 0)
+        if not vulns and start == 0:
+            return [], True, f"{label}: zero (absent)"
+        if not vulns:
+            return out, False, f"{label}: empty page mid-stream"
+        out.extend(vulns)
+        start += len(vulns)
+        if start >= total:
+            reached_total = True
+            break
+    if not reached_total and start >= MAX_RESULTS:
+        return out, False, f"{label}: hit MAX_RESULTS cap"
+    return out, True, f"{label}: complete ({len(out)})"
+
+
 class NvdCveObserver(Observer):
     """The CVE spine. Queries NVD per device CPE and emits vulnerability
     Verdicts (unpatched/patched/not_affected) with CVSS + fixed_in."""
@@ -420,46 +479,7 @@ class NvdCveObserver(Observer):
 
     def _fetch_live(self, cpe: str) -> tuple[list[dict], bool, str]:
         """Real NVD per-CPE pull, paginated, header-only apiKey."""
-        api_key = os.environ.get("NVD_API_KEY")
-        headers = ["Accept: application/json"]
-        if api_key:
-            headers.append(f"apiKey: {api_key}")   # HEADER-ONLY (never query string)
-        out: list[dict] = []
-        start = 0
-        reached_total = False
-        label = _cpe_head(cpe)
-        while start < MAX_RESULTS:
-            params = {
-                "virtualMatchString": _pad_cpe(cpe),
-                "resultsPerPage": PAGE_SIZE,
-                "startIndex": start,
-            }
-            url = NVD_URL + "?" + urllib.parse.urlencode(params)
-            data, code, _body = curl_get(url, headers=headers)
-            if data is None:
-                if code == 404:
-                    # could be a rate-limit masquerade; one retry, then absent
-                    time.sleep(10)
-                    data, code, _ = curl_get(url, headers=headers)
-                    if data is None and code == 404:
-                        return [], True, f"{label}: absent (404 twice)"  # genuine absent
-                if data is None:
-                    return out, False, f"{label}: incomplete (http {code or 'timeout'})"
-            vulns = data.get("vulnerabilities") or []
-            total = data.get("totalResults", 0)
-            if not vulns and start == 0:
-                return [], True, f"{label}: zero (absent)"  # genuinely zero
-            if not vulns:
-                return out, False, f"{label}: empty page mid-stream"
-            out.extend(vulns)
-            start += len(vulns)
-            if start >= total:
-                reached_total = True
-                break
-            time.sleep(1.2 if api_key else 8.0)   # throttle: 50/30s keyed, 5/30s anon
-        if not reached_total and start >= MAX_RESULTS:
-            return out, False, f"{label}: hit MAX_RESULTS cap"
-        return out, True, f"{label}: complete ({len(out)})"
+        return nvd_query_cpe(cpe)
 
     # -- interpret one NVD vuln into a Verdict (or None) ----------------------
 
