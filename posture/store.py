@@ -11,6 +11,7 @@ empty/incomplete pull deleting ~14000 rows).
 """
 
 from __future__ import annotations
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -37,6 +38,11 @@ CREATE TABLE IF NOT EXISTS verdicts (
     severity      TEXT,
     fixed_in      TEXT,
     detail        TEXT,
+    cvss          REAL,
+    cvss_vector   TEXT,
+    published     TEXT,
+    cwe            TEXT,             -- JSON array of CWE ids (weakness-class signal for attack-graph chaining)
+    ref_tags       TEXT,             -- JSON array of reference tags (exploit/patch-availability signal)
     observer       TEXT,
     policy_version TEXT,
     fetched_at    TEXT,
@@ -204,7 +210,9 @@ CREATE TABLE IF NOT EXISTS defects (
     complete        INTEGER,          -- provenance: was the underlying fetch provably whole
     distrusted      INTEGER DEFAULT 0,
     distrust_reason TEXT,
-    discovered_at   TEXT              -- when the stream first sighted this defect
+    discovered_at   TEXT,             -- when the stream first sighted this defect
+    prompt_hash     TEXT,             -- LLM-draft provenance: sha256 of the prompt sent (sha256:<hex>)
+    raw_text_hash   TEXT              -- LLM-draft provenance: sha256 of the raw source text fed (sha256:<hex>)
 );
 CREATE INDEX IF NOT EXISTS ix_defects_enrich_state ON defects(enrich_state);
 CREATE INDEX IF NOT EXISTS ix_defects_published ON defects(published);
@@ -365,7 +373,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     the additive, introspection-guarded ALTERs that older dbs need, then bumps
     `user_version`. v0->v1 + v1->v2 reshape the catalog/crosswalk; v3 dedups
     candidates; v4 renames the five id columns witness->observer; v5 renames the
-    catalog layer flaw->defect (tables + three columns). Territory rows
+    catalog layer flaw->defect (tables + three columns); v6 adds per-row
+    LLM-draft provenance columns (prompt_hash, raw_text_hash). Territory rows
     (verdicts / device_posture values) are never deleted — v4 changes their
     column NAMES but preserves their DATA. Each step is guarded so it is safe to
     re-run on an already-migrated db (and a no-op on a fresh db created with the
@@ -501,6 +510,56 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA user_version = 5")
         conn.commit()
 
+    if version < 6:
+        # v5 -> v6: per-row LLM-draft provenance. An LLM-drafted row already
+        # carries provider+model in source='llm:<model>'; the two new columns
+        # add the prompt sent and the raw source text fed, each as a sha256
+        # digest, so retroactive distrust of a provider (or of one prompt
+        # template / one advisory text) is one sweep over exactly its rows
+        # (node_680976461c89). NULL on every non-llm row and on llm rows whose
+        # provider did not report provenance — additive, no data rewrite.
+        # Guarded so a fresh db (columns already in SCHEMA) and a re-open of a
+        # v6 db both no-op; territory (verdicts / device_posture) untouched.
+        if "prompt_hash" not in _columns(conn, "defects"):
+            conn.execute("ALTER TABLE defects ADD COLUMN prompt_hash TEXT")
+        if "raw_text_hash" not in _columns(conn, "defects"):
+            conn.execute("ALTER TABLE defects ADD COLUMN raw_text_hash TEXT")
+        conn.execute("PRAGMA user_version = 6")
+        conn.commit()
+
+    if version < 7:
+        # v6 -> v7: carry the real numeric CVSS score, CVSS vector string, and
+        # publish date through the verdict (not just the severity string). The
+        # defects catalog already had these columns; the verdicts table did not.
+        # ALTER TABLE ADD COLUMN is idempotent-guarded (a fresh db created with
+        # the current SCHEMA already has the columns; a re-open of a v7 db
+        # never enters). All three default NULL so existing rows and observers
+        # that don't populate them are unaffected.
+        verdicts_cols = _columns(conn, "verdicts")
+        for col, decl in [("cvss", "REAL"), ("cvss_vector", "TEXT"), ("published", "TEXT")]:
+            if col not in verdicts_cols:
+                conn.execute(f"ALTER TABLE verdicts ADD COLUMN {col} {decl}")
+        conn.execute("PRAGMA user_version = 7")
+        conn.commit()
+
+    if version < 8:
+        # v7 -> v8: carry CWE ids and reference tags through the verdict (not
+        # just the catalog). The defects catalog already had cwe + ref_tags
+        # columns; the verdicts table did not. These enable evidence-based
+        # attack-graph chaining (node_91813484fd27): CWE informs preconditions
+        # (weakness class), ref_tags carry exploit/patch-availability signals
+        # (e.g. "Exploit", "Patch", "Vendor Advisory"). ALTER TABLE ADD
+        # COLUMN is idempotent-guarded (a fresh db created with the current
+        # SCHEMA already has the columns; a re-open of a v8 db never enters).
+        # Both default NULL so existing rows and observers that do not populate
+        # them are unaffected.
+        verdicts_cols = _columns(conn, "verdicts")
+        for col in ("cwe", "ref_tags"):
+            if col not in verdicts_cols:
+                conn.execute(f"ALTER TABLE verdicts ADD COLUMN {col} TEXT")
+        conn.execute("PRAGMA user_version = 8")
+        conn.commit()
+
 
 def connect(path: str, readonly: bool = False) -> sqlite3.Connection:
     """Open (and migrate) the posture DB. Creates the file if missing.
@@ -573,12 +632,16 @@ def commit_device_verdicts(
     conn.executemany(
         """INSERT OR REPLACE INTO verdicts
            (device_id, axis, key, status, severity, fixed_in, detail,
+            cvss, cvss_vector, published, cwe, ref_tags,
             observer, policy_version, fetched_at, complete, raw_ref, computed_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 device_id, v["axis"], v["key"], v["status"], v.get("severity"),
                 v.get("fixed_in"), v.get("detail", ""),
+                v.get("cvss"), v.get("cvss_vector"), v.get("published"),
+                json.dumps(v["cwe"]) if v.get("cwe") else None,
+                json.dumps(v["ref_tags"]) if v.get("ref_tags") else None,
                 v["provenance"]["observer"], v["provenance"]["policy_version"],
                 v["provenance"]["fetched_at"], int(v["provenance"]["complete"]),
                 v["provenance"].get("raw_ref"), ts,
@@ -615,7 +678,19 @@ def verdicts_for_device_axis(conn, device_id: str, axis: str) -> list[dict]:
            ORDER BY key, observer""",
         (device_id, axis),
     ).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["cwe"] = json.loads(d["cwe"]) if d.get("cwe") else None
+        except (ValueError, TypeError):
+            d["cwe"] = None
+        try:
+            d["ref_tags"] = json.loads(d["ref_tags"]) if d.get("ref_tags") else None
+        except (ValueError, TypeError):
+            d["ref_tags"] = None
+        out.append(d)
+    return out
 
 
 def axis_posture(conn, device_id: str, axis: str) -> dict | None:
@@ -1194,6 +1269,35 @@ def mark_defect_distrust(conn, defect_id: str, reason: str) -> bool:
     return cur.rowcount > 0
 
 
+def audit_llm_provider(conn, model: str) -> list[dict]:
+    """All catalog rows drafted by the LLM provider ``model`` (source =
+    ``llm:<model>``), parsed — the audit view for retroactive distrust. Mirrors
+    :func:`audit_observer` for verdicts: ask, later, what a provider ever told
+    the spine and whether it still holds. Rows are kept (never deleted) so the
+    distrust is auditable and re-evaluable."""
+    rows = conn.execute(
+        "SELECT * FROM defects WHERE source=? ORDER BY id",
+        (f"llm:{model}",),
+    ).fetchall()
+    return [_parse_defect_row(r) for r in rows]
+
+
+def mark_llm_provider_distrust(conn, model: str, reason: str) -> int:
+    """Retroactive distrust MARK on EVERY catalog row the LLM provider ``model``
+    drafted (source = ``llm:<model>``) — the one-sweep retraction provenance
+    enables (node_680976461c89): a provider found biased or captured is
+    retractable in a single UPDATE that marks exactly its rows, never a delete.
+    Returns the count of newly-marked rows. Real-source precedence still holds:
+    a row a real source has since enriched has source='nvd' (not 'llm:<model>'),
+    so it is untouched — only rows still owned by the provider are marked."""
+    cur = conn.execute(
+        "UPDATE defects SET distrusted=1, distrust_reason=? "
+        "WHERE source=? AND (distrusted IS NULL OR distrusted=0)",
+        (reason, f"llm:{model}"),
+    )
+    return cur.rowcount
+
+
 # ---------------------------------------------------------------------------
 # seen_defects — first-sighting drives the "new since last tick" signal
 # ---------------------------------------------------------------------------
@@ -1538,17 +1642,21 @@ def upsert_verdict(conn, v: dict, ts: str) -> None:
     conn.execute(
         """INSERT INTO verdicts
              (device_id, axis, key, status, severity, fixed_in, detail,
+              cwe, ref_tags,
               observer, policy_version, fetched_at, complete, raw_ref, computed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(device_id, axis, key, observer) DO UPDATE SET
              status=excluded.status, severity=excluded.severity,
              fixed_in=excluded.fixed_in, detail=excluded.detail,
+             cwe=excluded.cwe, ref_tags=excluded.ref_tags,
              policy_version=excluded.policy_version, fetched_at=excluded.fetched_at,
              complete=excluded.complete, raw_ref=excluded.raw_ref,
              computed_at=excluded.computed_at""",
         (
             v["device_id"], v["axis"], v["key"], v["status"],
             v.get("severity"), v.get("fixed_in"), v.get("detail", ""),
+            json.dumps(v["cwe"]) if v.get("cwe") else None,
+            json.dumps(v["ref_tags"]) if v.get("ref_tags") else None,
             prov.get("observer") or v.get("observer", ""),
             prov.get("policy_version", ""),
             prov.get("fetched_at", ""),

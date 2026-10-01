@@ -85,9 +85,19 @@ def default_registry(fresh: bool = False) -> ObserverRegistry:
     # imports keep top-level import cycles out: each module imports Observer
     # + ObserverResult/Verdict from ..observer, not from this base module).
     from .local_exposure import LocalExposureObserver
+    from .firewall import FirewallObserver
+    from .network_interfaces import NetworkInterfacesObserver
+    from .live_network_interfaces import LiveNetworkInterfacesObserver
+    from .live_firewall import LiveFirewallObserver
+    from .live_local_exposure import LiveLocalExposureObserver
     from .kev_observer import KevThreatObserver
     from .sigverify import SigVerifyObserver
-    reg.register(LocalExposureObserver())     # exposure: local surface reader
+    reg.register(LocalExposureObserver())     # exposure: local surface reader (device snapshot)
+    reg.register(LiveLocalExposureObserver()) # exposure: live socket surface (ss -tulpn, overrides snapshot at order 9)
+    reg.register(FirewallObserver())           # exposure: firewall-state grounding probe (device snapshot)
+    reg.register(LiveFirewallObserver())       # exposure: live firewall state (ufw/iptables, overrides snapshot at order 4)
+    reg.register(NetworkInterfacesObserver())  # exposure: interface grounding (device snapshot)
+    reg.register(LiveNetworkInterfacesObserver())  # exposure: interface grounding (live ip -j addr, overrides snapshot)
     reg.register(KevThreatObserver())         # threat: CISA KEV overlay
     reg.register(SigVerifyObserver())         # trust: signature verification
     return reg

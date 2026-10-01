@@ -1,0 +1,11 @@
+{
+  "default_policy": "deny",
+  "rules": [
+    {"action": "allow", "proto": "tcp", "port": 22, "direction": "inbound", "source": "any"},
+    {"action": "allow", "proto": "tcp", "port": 443, "direction": "inbound", "source": "any"},
+    {"action": "deny", "proto": "tcp", "port": 445, "direction": "inbound", "source": "any"},
+    {"action": "deny", "proto": "tcp", "port": 3306, "direction": "inbound", "source": "192.168.0.0/16"},
+    {"action": "allow", "proto": "udp", "port": 53, "direction": "inbound", "source": "any"},
+    {"action": "deny", "proto": "tcp", "port": 6379, "direction": "inbound"}
+  ]
+}
