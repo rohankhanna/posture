@@ -1,0 +1,101 @@
+[
+  {
+    "ifindex": 1,
+    "ifname": "lo",
+    "flags": [
+      "LOOPBACK",
+      "UP",
+      "LOWER_UP"
+    ],
+    "operstate": "UNKNOWN",
+    "addr_info": [
+      {
+        "family": "inet",
+        "local": "127.0.0.1",
+        "prefixlen": 8,
+        "scope": "host"
+      },
+      {
+        "family": "inet6",
+        "local": "::1",
+        "prefixlen": 128,
+        "scope": "host"
+      }
+    ]
+  },
+  {
+    "ifindex": 2,
+    "ifname": "eth0",
+    "flags": [
+      "BROADCAST",
+      "MULTICAST",
+      "UP",
+      "LOWER_UP"
+    ],
+    "operstate": "UP",
+    "addr_info": [
+      {
+        "family": "inet",
+        "local": "192.168.1.42",
+        "prefixlen": 24,
+        "scope": "global"
+      },
+      {
+        "family": "inet6",
+        "local": "fd00::42",
+        "prefixlen": 64,
+        "scope": "global"
+      }
+    ]
+  },
+  {
+    "ifindex": 3,
+    "ifname": "wlan0",
+    "flags": [
+      "BROADCAST",
+      "MULTICAST",
+      "UP",
+      "LOWER_UP"
+    ],
+    "operstate": "UP",
+    "addr_info": [
+      {
+        "family": "inet",
+        "local": "10.20.30.40",
+        "prefixlen": 16,
+        "scope": "global"
+      }
+    ]
+  },
+  {
+    "ifindex": 4,
+    "ifname": "eth1",
+    "flags": [
+      "NO-CARRIER",
+      "BROADCAST",
+      "MULTICAST",
+      "UP"
+    ],
+    "operstate": "DOWN",
+    "addr_info": []
+  },
+  {
+    "ifindex": 5,
+    "ifname": "docker0",
+    "flags": [
+      "NO-CARRIER",
+      "BROADCAST",
+      "MULTICAST",
+      "UP"
+    ],
+    "operstate": "DOWN",
+    "addr_info": [
+      {
+        "family": "inet",
+        "local": "172.17.0.1",
+        "prefixlen": 16,
+        "scope": "global"
+      }
+    ]
+  }
+]
