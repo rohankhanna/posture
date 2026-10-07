@@ -36,6 +36,28 @@ posture ingest osv --cap "$OSV_CAP" --db "$DB_PATH"
 posture ingest kev --db "$DB_PATH"
 posture ingest apple --db "$DB_PATH"
 
+# 3b) Distro security-tracker status overlays (ubuntu_fixes, debian_fixes).
+#     These carry the per-release status words (released/needed/not-affected/...)
+#     that the OSV mirror drops — they clear NVD's unknown-fix false positives
+#     on a fully-updated host. Best-effort: a transient tracker outage must NOT
+#     block the daily spine build; the no-wipe ingest retains last-known-good.
+#     Scope: active Ubuntu LTS + current (resolute/noble/jammy/focal) x
+#     linux + linux-nvidia; Debian trixie/bookworm x linux. The operator owns
+#     the public-spine editorial choice.
+set +e
+posture ingest ubuntu \
+  --release resolute --release noble --release jammy --release focal \
+  --package linux --package linux-nvidia --db "$DB_PATH"
+if [ $? -ne 0 ]; then
+  echo "::warning::ubuntu ingest failed; last-known-good retained, spine continues"
+fi
+posture ingest debian --release trixie --release bookworm \
+  --package linux --db "$DB_PATH"
+if [ $? -ne 0 ]; then
+  echo "::warning::debian ingest failed; last-known-good retained, spine continues"
+fi
+set -e
+
 # 4) Refresh the catalog with a small per-run cap. The persistent DB means
 #    later runs continue rather than restart.
 posture refresh --no-devices --cap "$REFRESH_CAP" --db "$DB_PATH"
