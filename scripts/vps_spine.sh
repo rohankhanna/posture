@@ -88,8 +88,9 @@ posture ingest apple --db "$DB_PATH"
 posture ingest debian --release trixie --release bookworm \
   --package linux --db "$DB_PATH" || \
   echo "posture-spine: warning: debian ingest failed; last-known-good retained, spine continues"
-posture ingest ubuntu --release noble --release jammy --release focal \
-  --package linux --db "$DB_PATH" || \
+posture ingest ubuntu \
+  --release resolute --release noble --release jammy --release focal \
+  --package linux --package linux-nvidia --db "$DB_PATH" || \
   echo "posture-spine: warning: ubuntu ingest failed; last-known-good retained, spine continues"
 posture ingest epss --db "$DB_PATH" || \
   echo "posture-spine: warning: epss ingest failed; last-known-good retained, spine continues"
