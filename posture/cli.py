@@ -604,14 +604,22 @@ def _cmd_spine(args) -> int:
             manifest = _export.export_spine(conn, out_dir=args.out,
                                              policy_version=policy.version)
         print(f"spine export: {manifest['counts']} -> {args.out}/{_export.SPINE_DIR}/")
-        print(f"  sign it: cosign sign-blob --output-signature "
-              f"{args.out}/{_export.SPINE_DIR}/state.sig "
-              f"{args.out}/{_export.SPINE_DIR}/manifest.json")
+        if getattr(args, "sign_key", None):
+            sig = _export.sign_manifest(args.out, args.sign_key)
+            print(f"  signed manifest -> {args.out}/{_export.SPINE_DIR}/state.sig")
+        else:
+            print(f"  sign it: cosign sign-blob --output-signature "
+                  f"{args.out}/{_export.SPINE_DIR}/state.sig "
+                  f"{args.out}/{_export.SPINE_DIR}/manifest.json")
+            print(f"  or: posture spine export --sign-key <private_key.pem> ...")
         return 0
     # import is the client consumption path: load the signed spine JSONL into a
     # local DB, then run `assess` over private devices. Data-only — never touches
     # verdicts (the territory stays local + client-authored).
     if args.sub == "import":
+        if getattr(args, "verify_sig", False) and getattr(args, "signature_key", None):
+            _export.verify_manifest_signature(args.from_dir, args.signature_key)
+            print(f"  signature verified -> {args.from_dir}/{_export.SPINE_DIR}/state.sig")
         with _open_db(args.db) as conn:
             _glossary.ensure_seeded(conn)
             stats = _export.import_spine(conn, from_dir=args.from_dir,
@@ -1067,6 +1075,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out", default=".", help="export output dir (default: cwd)")
     sp.add_argument("--from", dest="from_dir", default=".", help="import source dir (default: cwd)")
     sp.add_argument("--no-verify", action="store_true", help="import: skip manifest sha256 check")
+    sp.add_argument("--sign-key", dest="sign_key", default=None,
+                    help="export: sign manifest.json with this ed25519 private key (PEM) -> state.sig")
+    sp.add_argument("--verify-sig", dest="verify_sig", action="store_true",
+                    help="import: verify state.sig before importing")
+    sp.add_argument("--signature-key", dest="signature_key", default=None,
+                    help="import: ed25519 public key (PEM) for --verify-sig")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_spine)
 
     # -- ingestion: CVE stream + incremental refresh + catalog ---------------
