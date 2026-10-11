@@ -455,6 +455,29 @@ The CI workflow itself uses cosign **keyless** signing via GitHub OIDC (no key
 material to manage). GPG-signed git *commits* (the history layer) are deferred — the
 sigstore manifest signature (the non-negotiable layer) ships first.
 
+**Self-hosted / VPS alternative (built-in ed25519).** For the VPS spine endpoint
+or any environment where cosign is not installed, posture also ships a built-in
+ed25519 signing path using the `cryptography` library (already a dependency):
+
+```bash
+# Generate a keypair (once):
+posture spine export --sign-key signing_key.pem   # first run: generates key? no —
+# Use the library API:
+python -c "from posture.export import generate_signing_keypair; \
+           generate_signing_keypair('signing_key.pem', 'signing_pub.pem')"
+
+# Export and sign:
+posture spine export --sign-key signing_key.pem --out .
+
+# Import with signature verification:
+posture spine import --verify-sig --signature-key signing_pub.pem --from .
+```
+
+The built-in path produces the same `state.sig` file (hex-encoded ed25519
+signature over `manifest.json`). Distribute the public key to clients; guard the
+private key (chmod 600). The VPS runner signs when `POSTURE_SIGN_KEY` is set in
+its environment.
+
 ## Data sources and ingestion
 
 **How the product is actually used.** There are two audiences for ingestion, and
