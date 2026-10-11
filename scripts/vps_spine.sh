@@ -106,8 +106,10 @@ posture discover --db "$DB_PATH"
 
 # 7) Export the spine to a stable directory. A downstream web server can
 #    publish this directory directly; clients can pull only the shards they
-#    need from the manifest.
-posture spine export --db "$DB_PATH" --out "$EXPORT_DIR"
+#    need from the manifest. If a signing key is configured, sign the manifest
+#    so clients can cryptographically verify the spine before importing.
+SIGN_KEY="${POSTURE_SIGN_KEY:-}"
+posture spine export --db "$DB_PATH" --out "$EXPORT_DIR" ${SIGN_KEY:+--sign-key "$SIGN_KEY"}
 
 # 8) Bounded-growth purge. Remove ancient defects that are no longer relevant:
 #    older than PURGE_AGE_DAYS, not in KEV, not high EPSS, not open on a

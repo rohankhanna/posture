@@ -51,20 +51,14 @@ SPINE_DIR = "spine"
 # spine_bindings, repair_proposals, policy_versions, state.
 FLAT_TABLES = ("crosswalk", "candidates", "distrust_marks", "seen_defects", "kev",
                "apple_fixes", "debian_fixes", "ubuntu_fixes", "epss")
-
-
 def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
-
-
 def _defect_shard_key(row: dict) -> str:
     """YYYY-MM bucket from a defects row's ``published`` (e.g. '2026-07-31' ->
     '2026-07'). Rows with no parseable date land in 'unknown' so nothing is
     dropped — the spine is a complete snapshot."""
     pub = row.get("published") or ""
     return pub[:7] if len(pub) >= 7 else "unknown"
-
-
 def _write_jsonl(path: Path, rows: list[dict]) -> tuple[str, int]:
     """Write rows as one JSON object per line; return (sha256, count). The sha256
     is over the exact bytes written, so a client re-reading the file can detect
@@ -73,20 +67,14 @@ def _write_jsonl(path: Path, rows: list[dict]) -> tuple[str, int]:
     data = "".join(json.dumps(r, sort_keys=True, default=str) + "\n" for r in rows)
     path.write_text(data)
     return hashlib.sha256(data.encode("utf-8")).hexdigest(), len(rows)
-
-
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     h.update(path.read_bytes())
     return h.hexdigest()
-
-
 def _read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-
-
 # ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------
@@ -172,8 +160,6 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
         json.dumps(manifest, sort_keys=True, indent=2) + "\n"
     )
     return manifest
-
-
 # ---------------------------------------------------------------------------
 # verify (manifest-internal consistency — NOT the cosign signature)
 # ---------------------------------------------------------------------------
@@ -202,8 +188,6 @@ def verify_spine(from_dir: os.PathLike | str = ".") -> dict:
                 f"({n} != {entry['count']})"
             )
     return manifest
-
-
 # ---------------------------------------------------------------------------
 # import (client consumption path; idempotent)
 # ---------------------------------------------------------------------------
@@ -385,3 +369,94 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
                     f"!= manifest {manifest['counts'].get(k)}"
                 )
     return stats
+# ---------------------------------------------------------------------------
+# manifest signing (ed25519 over manifest.json -> state.sig)
+# ---------------------------------------------------------------------------
+
+def generate_signing_keypair(private_key_path: os.PathLike | str,
+                             public_key_path: os.PathLike | str) -> None:
+    """Generate a fresh ed25519 keypair and write it to two PEM files.
+
+    The private key file is the spine's signing identity; guard it like a
+    credential (chmod 600 on the VPS, never commit it). The public key file
+    is distributed to clients so they can verify the spine signature.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    priv = ed25519.Ed25519PrivateKey.generate()
+    priv_pem = priv.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    pub_pem = priv.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    Path(private_key_path).write_bytes(priv_pem)
+    Path(public_key_path).write_bytes(pub_pem)
+    try:
+        Path(private_key_path).chmod(0o600)
+    except OSError:
+        pass  # chmod may not be meaningful on all platforms
+def sign_manifest(out_dir: os.PathLike | str,
+                  private_key_path: os.PathLike | str) -> str:
+    """Sign ``<out_dir>/spine/manifest.json`` with an ed25519 private key
+    and write the hex-encoded signature to ``<out_dir>/spine/state.sig``.
+
+    Returns the hex-encoded signature. The signature is over the exact bytes
+    of ``manifest.json`` on disk, so a client re-reading the file can detect
+    tampering via :func:`verify_manifest_signature`.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    root = Path(out_dir) / SPINE_DIR
+    manifest_path = root / "manifest.json"
+    if not manifest_path.exists():
+        raise ValueError(f"manifest not found: {manifest_path}")
+    priv_pem = Path(private_key_path).read_bytes()
+    priv = serialization.load_pem_private_key(priv_pem, password=None)
+    if not isinstance(priv, ed25519.Ed25519PrivateKey):
+        raise ValueError("private key is not ed25519")
+    manifest_bytes = manifest_path.read_bytes()
+    signature = priv.sign(manifest_bytes)
+    sig_hex = signature.hex()
+    (root / "state.sig").write_text(sig_hex + "\n")
+    return sig_hex
+def verify_manifest_signature(out_dir: os.PathLike | str,
+                              public_key_path: os.PathLike | str) -> None:
+    """Verify the ed25519 signature in ``<out_dir>/spine/state.sig`` against
+    ``<out_dir>/spine/manifest.json`` using the supplied public key.
+
+    Raises ``ValueError`` if the signature file is missing, the key is not
+    ed25519, or the signature does not verify. This is the cryptographic trust
+    anchor: a client runs this BEFORE :func:`verify_spine` (sha256 internal
+    consistency) and :func:`import_spine`.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    root = Path(out_dir) / SPINE_DIR
+    sig_path = root / "state.sig"
+    manifest_path = root / "manifest.json"
+    if not sig_path.exists():
+        raise ValueError("spine signature missing: state.sig not found")
+    if not manifest_path.exists():
+        raise ValueError("spine manifest missing: manifest.json not found")
+    pub_pem = Path(public_key_path).read_bytes()
+    pub = serialization.load_pem_public_key(pub_pem)
+    if not isinstance(pub, ed25519.Ed25519PublicKey):
+        raise ValueError("public key is not ed25519")
+    sig_hex = sig_path.read_text().strip()
+    try:
+        signature = bytes.fromhex(sig_hex)
+    except ValueError:
+        raise ValueError("state.sig is not valid hex")
+    manifest_bytes = manifest_path.read_bytes()
+    try:
+        pub.verify(signature, manifest_bytes)
+    except Exception:
+        raise ValueError("spine signature verification FAILED — manifest may "
+                         "be tampered or signed by a different key")
