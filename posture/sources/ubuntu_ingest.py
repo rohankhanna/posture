@@ -89,10 +89,14 @@ def _fetch_page(package: str, offset: int, limit: int) -> tuple[dict | None, str
     the read path is identical across observer + ingestion."""
     url = (f"{UBUNTU_CVE_URL}?package={quote(package)}"
            f"&limit={limit}&offset={offset}")
+    # Force IPv4: ubuntu.com's cves.json endpoint times out over IPv6 from
+    # some VPS networks (HTTP 504 / gateway timeout), while IPv4 responds
+    # reliably.  The -4 flag keeps every other source on its default path.
     data, code, _body = _ut.curl_get(
         url,
         headers=["User-Agent: posture/1.0", "Accept-Encoding: gzip, deflate"],
         max_time=TIMEOUT,
+        extra=["-4"],
     )
     if code == 200 and isinstance(data, dict):
         return data, "live"
