@@ -74,7 +74,7 @@ from . import ubuntu_tracker as _ut
 # return fewer rows than asked, and the pager advances by the count actually
 # returned so an API clamp never loops or skips.
 UBUNTU_CVE_URL = "https://ubuntu.com/security/cves.json"
-PAGE_SIZE = 500
+PAGE_SIZE = 20
 TIMEOUT = 300  # one package's CVE set can be a few thousand rows over a few pages
 
 
@@ -86,20 +86,24 @@ def _fetch_page(package: str, offset: int, limit: int) -> tuple[dict | None, str
     """One paginated Ubuntu bulk CVE pull (JSON), filtered to package.
     Returns (data_or_None, reason). None means absent/failed — the caller
     treats it as a no-op (no-wipe). Delegates to the observer's curl binding so
-    the read path is identical across observer + ingestion."""
+    the read path is identical across observer + ingestion. Retries up to
+    three times on a transient non-dict 200 (rate-limit blip)."""
     url = (f"{UBUNTU_CVE_URL}?package={quote(package)}"
            f"&limit={limit}&offset={offset}")
     # Force IPv4: ubuntu.com's cves.json endpoint times out over IPv6 from
     # some VPS networks (HTTP 504 / gateway timeout), while IPv4 responds
     # reliably.  The -4 flag keeps every other source on its default path.
-    data, code, _body = _ut.curl_get(
-        url,
-        headers=["User-Agent: posture/1.0", "Accept-Encoding: gzip, deflate"],
-        max_time=TIMEOUT,
-        extra=["-4"],
-    )
-    if code == 200 and isinstance(data, dict):
-        return data, "live"
+    for attempt in range(3):
+        data, code, _body = _ut.curl_get(
+            url,
+            headers=["User-Agent: posture/1.0", "Accept-Encoding: gzip, deflate"],
+            max_time=TIMEOUT,
+            extra=["-4"],
+        )
+        if code == 200 and isinstance(data, dict):
+            return data, "live"
+        if attempt < 2:
+            import time; time.sleep(2)
     return None, f"ubuntu cves fetch absent (http {code or 'timeout'})"
 
 
@@ -210,20 +214,49 @@ def ubuntu_ingest_tick(conn, releases: list[str] | None = None,
                           "(no default public-spine scope is wired)")
         return stats
 
-    # fetch every package's full CVE set first; a single package outage fails
-    # the whole tick (no-wipe: write nothing, preserve last-known-good).
-    pkg_data: dict[str, list] = {}
+    # fetch + extract per page so the full CVE set is never held in memory
+    # at once (the API serves large objects; accumulating all 19k+ CVEs for
+    # the linux package exceeds a 2G VPS).  Resilient: a transient page
+    # failure (504) skips that page and continues; the first page must
+    # succeed or the tick aborts (no-wipe for a total outage).
+    pkg_data: dict[str, dict[str, dict[str, tuple[str, str | None]]]] = {}
     for pkg in packages:
-        cves, reason = _fetch_package(pkg, page_size=page_size)
-        if cves is None:
-            stats["error"] = reason
-            return stats
-        pkg_data[pkg] = cves
+        per_release: dict[str, dict[str, tuple[str, str | None]]] = {
+            r: {} for r in releases}
+        offset = 0
+        skipped = 0
+        total = 0
+        while True:
+            data, reason = _fetch_page(pkg, offset, page_size)
+            if data is None:
+                skipped += 1
+                print(f"ingest ubuntu: skipping page offset={offset} for {pkg}: {reason}", flush=True)
+                if offset == 0:
+                    stats["error"] = f"first page failed for {pkg}: {reason}"
+                    return stats
+                if skipped > 50:
+                    stats["error"] = f"too many skipped pages ({skipped}) for {pkg}: {reason}"
+                    return stats
+                offset += page_size
+                if total and offset >= total:
+                    break
+                continue
+            page = data.get("cves") or []
+            for release in releases:
+                per_release[release].update(
+                    extract_release(page, release, pkg))
+            total = data.get("total_results") or 0
+            offset += len(page)
+            if not page or offset >= total:
+                break
+        if skipped > 0:
+            print(f"ingest ubuntu: {skipped} page(s) skipped for {pkg}; partial data written", flush=True)
+        pkg_data[pkg] = per_release
     stats["fetched"] = True
 
     for pkg in packages:
         for release in releases:
-            sheet = extract_release(pkg_data[pkg], release, pkg)
+            sheet = pkg_data[pkg][release]
             rows = [{"cve_id": cid, "status": st, "fixed_in": fi}
                     for cid, (st, fi) in sheet.items()]
             n = _store.replace_ubuntu_fixes(conn, release, pkg, rows, fetched_at)
