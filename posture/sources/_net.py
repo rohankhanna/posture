@@ -21,7 +21,7 @@ def curl_get(url: str, headers: list[str] | None = None, max_time: int = 60,
     body reliably (Forebode's pattern). Auth is HEADER-ONLY — never in the URL
     (putting the NVD key in the query string is the run-#10 fleet-wipe root cause).
     """
-    cmd = ["curl", "-sS", "--max-time", str(max_time),
+    cmd = ["curl", "-sS", "--compressed", "--max-time", str(max_time),
            "-w", "\n__HTTP__%{http_code}"]
     for h in headers or []:
         cmd += ["-H", h]
@@ -69,4 +69,6 @@ def curl_get_bytes(url: str, headers: list[str] | None = None,
     code = int(status) if status.isdigit() else 0
     if not body:
         return None, code
+    if body.endswith(b"\n"):
+        body = body[:-1]
     return body, code
