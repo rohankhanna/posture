@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# verify-all — the canonical verification path for this repository.
+#
+# Gate 1 (tests): the full unit suite must pass.
+# Gate 2 (lint): runs only when the repository declares its own lint
+# configuration (a [tool.ruff] section in pyproject.toml or a ruff.toml).
+# Without a repository-owned lint configuration there is no repository-owned
+# lint baseline to check against, so the gate is reported as skipped rather
+# than silently borrowed from an ambient machine configuration.
+#
+# Exits 0 only when every gate that applies passes.
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${repository_root}"
+
+if [ -f ruff.toml ] || grep -q '^\[tool\.ruff' pyproject.toml 2>/dev/null; then
+  echo "verify-all: lint (ruff)"
+  python -m ruff check posture tests
+else
+  echo "verify-all: no repository-owned lint configuration; lint gate skipped"
+fi
+
+echo "verify-all: tests (pytest)"
+python -m pytest -q
+
+echo "verify-all: OK"
