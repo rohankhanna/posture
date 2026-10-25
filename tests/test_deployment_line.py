@@ -451,3 +451,251 @@ def test_gate_accepts_a_bare_env_runner_prefix(tmp_path):
         "ExecStart=env posture stream\n"))
     result = _run_gate_on([unit])
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Timer scheduling contract (3d): a timer unit decides WHEN the job runs.
+# A timer that is malformed or unscheduled is a job that never fires. These
+# tests pin the gate's timer dimension — schedule directive, Unit= target,
+# Persistent= semantics, WantedBy target, and no-ExecStart-in-timer.
+# ---------------------------------------------------------------------------
+
+def _write_timer(tmp_path, body: str, name: str = "unit.timer") -> Path:
+    timer = tmp_path / name
+    timer.write_text(body)
+    return timer
+
+
+@pytest.mark.parametrize("timer_name", [
+    "posture-reconcile.timer",
+    "posture-spine.timer",
+    "posture-stream.timer",
+])
+def test_each_repository_timer_passes_the_gate(timer_name):
+    timer = UNIT_DIR / timer_name
+    assert timer.exists()
+    result = _run_gate_on([timer])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_timer_with_no_schedule_directive_is_rejected(tmp_path):
+    timer = _write_timer(tmp_path, (
+        "[Timer]\n"
+        "Unit=posture-spine.service\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"))
+    result = _run_gate_on([timer])
+    assert result.returncode == 1
+    assert "no schedule directive" in result.stdout
+
+
+def test_timer_with_on_calendar_passes(tmp_path):
+    timer = _write_timer(tmp_path, (
+        "[Timer]\n"
+        "OnCalendar=*-*-* 03:07:00 UTC\n"
+        "Unit=posture-spine.service\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"))
+    result = _run_gate_on([timer])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_timer_with_monotonic_schedule_passes(tmp_path):
+    timer = _write_timer(tmp_path, (
+        "[Timer]\n"
+        "OnUnitInactiveSec=10min\n"
+        "Unit=posture-stream.service\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"))
+    result = _run_gate_on([timer])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_timer_with_on_boot_sec_passes(tmp_path):
+    timer = _write_timer(tmp_path, (
+        "[Timer]\n"
+        "OnBootSec=5min\n"
+        "Unit=posture-reconcile.service\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"))
+    result = _run_gate_on([timer])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_timer_whose_unit_names_a_nonexistent_service_is_rejected(tmp_path):
+    timer = _write_timer(tmp_path, (
+        "[Timer]\n"
+        "OnCalendar=*-*-* 03:07:00 UTC\n"
+        "Unit=posture-not-a-service.service\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"))
+    result = _run_gate_on([timer])
+    assert result.returncode == 1
+    assert "posture-not-a-service.service" in result.stdout
+    assert "does not ship" in result.stdout
+
+
+def test_timer_with_persistent_true_but_no_on_calendar_is_rejected(tmp_path):
+    timer = _write_timer(tmp_path, (
+        "[Timer]\n"
+        "OnUnitInactiveSec=20h\n"
+        "Persistent=true\n"
+        "Unit=posture-reconcile.service\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"))
+    result = _run_gate_on([timer])
+    assert result.returncode == 1
+    assert "Persistent=true" in result.stdout
+    assert "no OnCalendar" in result.stdout
+
+
+def test_timer_with_persistent_true_and_on_calendar_passes(tmp_path):
+    timer = _write_timer(tmp_path, (
+        "[Timer]\n"
+        "OnCalendar=*-*-* 03:07:00 UTC\n"
+        "Persistent=true\n"
+        "Unit=posture-spine.service\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"))
+    result = _run_gate_on([timer])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_timer_with_non_standard_wantedby_is_rejected(tmp_path):
+    timer = _write_timer(tmp_path, (
+        "[Timer]\n"
+        "OnCalendar=*-*-* 03:07:00 UTC\n"
+        "Unit=posture-spine.service\n"
+        "[Install]\n"
+        "WantedBy=not-a-real-target.target\n"))
+    result = _run_gate_on([timer])
+    assert result.returncode == 1
+    assert "not-a-real-target.target" in result.stdout
+    assert "not a standard systemd target" in result.stdout
+
+
+def test_timer_with_exec_start_is_rejected(tmp_path):
+    timer = _write_timer(tmp_path, (
+        "[Timer]\n"
+        "OnCalendar=*-*-* 03:07:00 UTC\n"
+        "Unit=posture-spine.service\n"
+        "ExecStart=/usr/bin/env posture stream\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"))
+    result = _run_gate_on([timer])
+    assert result.returncode == 1
+    assert "ExecStart" in result.stdout
+    assert "timer unit carries" in result.stdout
+
+
+def test_timer_without_unit_directive_defaults_to_matching_service(tmp_path):
+    # When Unit= is omitted, systemd defaults to <timer-stem>.service.
+    # A timer named posture-spine.timer defaults to posture-spine.service,
+    # which this tree ships.
+    timer = _write_timer(tmp_path, (
+        "[Timer]\n"
+        "OnCalendar=*-*-* 03:07:00 UTC\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"),
+        name="posture-spine.timer")
+    result = _run_gate_on([timer])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_timer_without_unit_directive_and_no_matching_service_is_rejected(
+        tmp_path):
+    timer = _write_timer(tmp_path, (
+        "[Timer]\n"
+        "OnCalendar=*-*-* 03:07:00 UTC\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"),
+        name="posture-unscheduled.timer")
+    result = _run_gate_on([timer])
+    assert result.returncode == 1
+    assert "posture-unscheduled.service" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Service scheduling coverage (3e): every service in a directory that has
+# timers in scope must be scheduled by one of those timers.
+# ---------------------------------------------------------------------------
+
+def test_service_not_scheduled_by_any_timer_is_rejected(tmp_path):
+    # A service with no timer scheduling it is a capability that never runs.
+    # Provide a valid timer for a different service so timers are in scope.
+    service = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=/usr/bin/env posture stream\n"),
+        name="posture-orphan.service")
+    timer = _write_timer(tmp_path, (
+        "[Timer]\n"
+        "OnCalendar=*-*-* 03:07:00 UTC\n"
+        "Unit=posture-spine.service\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"),
+        name="posture-spine.timer")
+    result = _run_gate_on([service, timer])
+    assert result.returncode == 1
+    assert "posture-orphan.service" in result.stdout
+    assert "not scheduled by any timer" in result.stdout
+
+
+def test_service_scheduled_by_a_timer_passes(tmp_path):
+    service = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=/usr/bin/env posture stream\n"),
+        name="posture-spine.service")
+    timer = _write_timer(tmp_path, (
+        "[Timer]\n"
+        "OnCalendar=*-*-* 03:07:00 UTC\n"
+        "Unit=posture-spine.service\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"))
+    result = _run_gate_on([service, timer])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_service_coverage_check_does_not_apply_without_timers(tmp_path):
+    # When no timers are in scope, a service with no scheduler is fine.
+    service = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=/usr/bin/env posture stream\n"),
+        name="posture-orphan.service")
+    result = _run_gate_on([service])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_all_repository_services_are_scheduled():
+    # In default mode (no arguments) every shipped service must be scheduled
+    # by one of the shipped timers.
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "scheduled by a timer" in result.stdout
+
+
+def test_timer_with_an_unparseable_duration_is_rejected(tmp_path):
+    timer = _write_timer(tmp_path, (
+        "[Timer]\n"
+        "OnUnitInactiveSec=20hours\n"
+        "Unit=posture-stream.service\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"))
+    result = _run_gate_on([timer])
+    assert result.returncode == 1
+    assert "OnUnitInactiveSec=20hours" in result.stdout
+    assert "not a valid systemd duration" in result.stdout
+
+
+def test_timer_with_a_compound_duration_passes(tmp_path):
+    timer = _write_timer(tmp_path, (
+        "[Timer]\n"
+        "OnUnitInactiveSec=1h 30min\n"
+        "AccuracySec=500ms\n"
+        "Unit=posture-stream.service\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"))
+    result = _run_gate_on([timer])
+    assert result.returncode == 0, result.stdout + result.stderr

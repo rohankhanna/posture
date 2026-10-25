@@ -12,7 +12,7 @@
 # capability is a loud UNKNOWN, never a silent "clean".
 #
 # This gate closes that window in three dimensions for shell scripts, and
-# three parallel dimensions for systemd units:
+# four parallel dimensions for systemd units:
 #
 #   Shell scripts (scripts/vps_spine.sh and any referenced script):
 #
@@ -28,7 +28,7 @@
 #        best-effort handler swallows the failure. The gate makes that drift
 #        loud at check time, before the job ever runs.
 #
-#   Systemd units (systemd/*.service):
+#   Systemd units (systemd/*.service and systemd/*.timer):
 #
 #     3a. Unit invocations — every `posture <command>` in an ExecStart or
 #         ExecStartPre line must resolve against the CLI, with the same
@@ -50,10 +50,27 @@
 #         that was removed or renamed. Runtime variables (PYTHONUNBUFFERED,
 #         PATH, etc.) are allowlisted and not checked.
 #
+#     3d. Timer scheduling contract — a timer unit decides WHEN the job
+#         runs, and a timer that is malformed or unscheduled is a job that
+#         never fires: a timer with no schedule directive, a timer whose
+#         Unit= names a service this tree does not ship, a timer that sets
+#         Persistent=true without an OnCalendar (systemd ignores Persistent
+#         for a monotonic timer, so a missed run is never caught up), a
+#         timer whose [Install] WantedBy names a target that does not
+#         exist, a timer whose duration directive carries a value systemd
+#         cannot parse, and a timer that carries an ExecStart (which
+#         belongs to the service it schedules). The gate makes each of
+#         those loud.
+#
+#     3e. Service scheduling coverage — every service in a directory that
+#         has timers in scope must be scheduled by one of those timers. A
+#         service nothing triggers is a capability that never runs.
+#
 # Usage: check_deployment_line.sh [FILE ...]
-#   Default: scripts/vps_spine.sh plus every systemd/*.service unit.
-#   Each FILE is classified by extension: .service files are parsed as
-#   systemd units; everything else is parsed as a shell script.
+#   Default: scripts/vps_spine.sh plus every systemd/*.service and
+#   systemd/*.timer unit.
+#   Each FILE is classified by extension: .service and .timer files are
+#   parsed as systemd units; everything else is parsed as a shell script.
 # Exits 0 when every invocation resolves and every contract holds, 1 otherwise.
 set -euo pipefail
 
@@ -63,7 +80,7 @@ cd "${repository_root}"
 FILES=("$@")
 if [ "${#FILES[@]}" -eq 0 ]; then
   FILES=("scripts/vps_spine.sh")
-  for u in systemd/*.service; do
+  for u in systemd/*.service systemd/*.timer; do
     [ -f "$u" ] && FILES+=("$u")
   done
 fi
@@ -95,6 +112,27 @@ _ENV_PAIR_RE = re.compile(
     r'([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"]*)"|\'([^\']*)\'|(\S*))')
 # A posture-specific variable name: POSTURE_FOO_BAR or NVD_API_KEY.
 _VAR_NAME_RE = re.compile(r'\b(POSTURE_[A-Z_]+|NVD_API_KEY)\b')
+# A systemd section header: [Unit], [Service], [Timer], [Install].
+_SECTION_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+# The standard systemd targets a unit may be enabled into. A [Install]
+# WantedBy= naming anything else is drift: the timer is never enabled.
+_STANDARD_TARGETS = frozenset({
+    "basic.target", "default.target", "timers.target", "multi-user.target",
+    "graphical.target", "sysinit.target", "shutdown.target",
+    "sockets.target", "paths.target", "swap.target",
+})
+# The monotonic duration directives a timer may carry. Their values must be
+# systemd durations; OnCalendar is excluded because it is a calendar
+# expression, not a duration.
+_DURATION_DIRECTIVES = (
+    "OnBootSec", "OnUnitActiveSec", "OnUnitInactiveSec",
+    "RandomizedDelaySec", "AccuracySec",
+)
+# A systemd duration: a bare number of seconds, or a sequence of
+# number+unit terms such as "1h30min", "1h 30min", "20h" or "500ms".
+_DURATION_RE = re.compile(
+    r"^(?:\d+(?:\.\d+)?(?:us|\u00b5s|ms|s|min|h|d|w|month|year)\s*)+$"
+    r"|^\d+$")
 # Runtime/system variables that are not posture-specific and need no
 # contract check. These are set for the process environment, not read by
 # posture's own code.
@@ -198,6 +236,10 @@ def _resolve_parser(
 
 def _is_unit_file(path: str) -> bool:
     return path.endswith(".service")
+
+
+def _is_timer_file(path: str) -> bool:
+    return path.endswith(".timer")
 
 
 def _strip_runner_prefix(value: str) -> str:
@@ -322,6 +364,47 @@ def _script_env_vars(path: str) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
+# Unit-file sections
+# ---------------------------------------------------------------------------
+
+def _unit_sections(text: str) -> dict:
+    """Parse a unit file into sections of (key, value) directives.
+
+    Comment and blank lines are skipped, as is any line that is neither a
+    section header nor a key=value pair.
+    """
+    sections: dict[str, list[tuple[str, str]]] = {}
+    current = None
+    for line in text.splitlines():
+        header = _SECTION_RE.match(line)
+        if header:
+            current = header.group(1).strip()
+            sections.setdefault(current, [])
+            continue
+        if current is None:
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith(";"):
+            continue
+        if "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        sections[current].append((key.strip(), value.strip()))
+    return sections
+
+
+def _directive_values(sections: dict, section: str, key: str) -> list[str]:
+    """Every value a directive carries in a section, in file order."""
+    return [v for k, v in sections.get(section, []) if k == key]
+
+
+def _directive_value(sections: dict, section: str, key: str) -> str | None:
+    """The last value a directive carries in a section, or None."""
+    values = _directive_values(sections, section, key)
+    return values[-1] if values else None
+
+
+# ---------------------------------------------------------------------------
 # Validation (shared by shell scripts and unit-file posture calls)
 # ---------------------------------------------------------------------------
 
@@ -366,6 +449,136 @@ def _validate_one_invocation(
 
 
 # ---------------------------------------------------------------------------
+# Timer scheduling contract (3d) and service scheduling coverage (3e)
+# ---------------------------------------------------------------------------
+
+def _shipped_service_names() -> set[str]:
+    """The set of service filenames this tree ships (systemd/*.service)."""
+    names: set[str] = set()
+    systemd = Path("systemd")
+    if systemd.is_dir():
+        for entry in systemd.glob("*.service"):
+            names.add(entry.name)
+    return names
+
+
+def _validate_timer(
+    text: str,
+    path: str,
+    shipped_services: set[str],
+    failures: list[str],
+) -> None:
+    """Validate a timer unit's scheduling contract (dimension 3d).
+
+    A timer decides WHEN the job runs. A timer that is malformed or
+    unscheduled is a job that never fires, so each of these is made loud:
+
+      - no schedule directive at all (neither OnCalendar nor a monotonic
+        timer directive);
+      - Unit= names a service this tree does not ship;
+      - Persistent=true without OnCalendar (systemd ignores Persistent for
+        monotonic timers, so a missed run is never caught up);
+      - [Install] WantedBy names a target that does not exist;
+      - the timer carries an ExecStart (which belongs to the service it
+        schedules, not the timer itself).
+    """
+    sections = _unit_sections(text)
+    timer_dirs = sections.get("Timer", [])
+
+    has_calendar = any(k == "OnCalendar" for k, _ in timer_dirs)
+    has_monotonic = any(
+        k in ("OnBootSec", "OnUnitActiveSec", "OnUnitInactiveSec")
+        for k, _ in timer_dirs
+    )
+
+    # 3d-1. No schedule directive.
+    if not has_calendar and not has_monotonic:
+        failures.append(
+            f"{path}: timer has no schedule directive (neither OnCalendar "
+            f"nor a monotonic timer directive OnBootSec/OnUnitActiveSec/"
+            f"OnUnitInactiveSec)")
+
+    # 3d-2. Unit= names a service this tree does not ship.  When Unit= is
+    #       omitted systemd defaults to <timer-stem>.service.
+    unit_target = _directive_value(sections, "Timer", "Unit")
+    if unit_target is None:
+        unit_target = Path(path).name.replace(".timer", ".service")
+    if unit_target not in shipped_services:
+        failures.append(
+            f"{path}: Unit={unit_target} names a service this tree does "
+            f"not ship (shipped services: "
+            f"{', '.join(sorted(shipped_services)) or 'none'})")
+
+    # 3d-3. Persistent=true without OnCalendar.
+    persistent = _directive_value(sections, "Timer", "Persistent")
+    if (persistent and persistent.strip().lower() == "true"
+            and not has_calendar):
+        failures.append(
+            f"{path}: Persistent=true is set but there is no OnCalendar "
+            f"directive (systemd ignores Persistent for monotonic timers, "
+            f"so a missed run is never caught up)")
+
+    # 3d-4. [Install] WantedBy names a non-standard target.
+    for target in _directive_values(sections, "Install", "WantedBy"):
+        if target not in _STANDARD_TARGETS:
+            failures.append(
+                f"{path}: [Install] WantedBy={target} is not a standard "
+                f"systemd target (the timer would never be enabled)")
+
+    # 3d-5. Timer carries an ExecStart (belongs to the service, not the timer).
+    if _unit_exec_values(text):
+        failures.append(
+            f"{path}: timer unit carries an ExecStart directive "
+            f"(ExecStart belongs to the service the timer schedules, "
+            f"not the timer itself)")
+
+    # 3d-6. Duration directives must carry a valid systemd duration. A
+    #       mistyped value (OnUnitInactiveSec=20hours) is a timer systemd
+    #       refuses to load, so the job never runs.
+    for directive in _DURATION_DIRECTIVES:
+        for value in _directive_values(sections, "Timer", directive):
+            if not _DURATION_RE.match(value):
+                failures.append(
+                    f"{path}: {directive}={value} is not a valid systemd "
+                    f"duration (expected a value such as '20h', '10min' or "
+                    f"'500ms')")
+
+
+def _check_service_coverage(
+    service_paths: list[str],
+    timer_paths: list[str],
+    failures: list[str],
+) -> None:
+    """3e: every service must be scheduled by at least one timer in scope.
+
+    A service nothing triggers is a capability that never runs. When timers
+    are in the checked set, every service in the checked set must be named
+    by some timer's Unit= directive. When no timers are in scope the check
+    does not apply.
+    """
+    if not service_paths or not timer_paths:
+        return
+    scheduled: set[str] = set()
+    for tpath in timer_paths:
+        try:
+            ttext = open(tpath, encoding="utf-8").read()
+        except OSError:
+            continue
+        tsections = _unit_sections(ttext)
+        unit_target = _directive_value(tsections, "Timer", "Unit")
+        if unit_target is None:
+            unit_target = Path(tpath).name.replace(".timer", ".service")
+        scheduled.add(unit_target)
+    for spath in service_paths:
+        sname = Path(spath).name
+        if sname not in scheduled:
+            failures.append(
+                f"{spath}: service is not scheduled by any timer in scope "
+                f"(a service nothing triggers is a capability that never "
+                f"runs)")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -383,11 +596,14 @@ def main(paths: list[str]) -> int:
     failures: list[str] = []
     checked = 0  # posture invocations validated
 
-    # Separate shell scripts from unit files.
+    # Separate shell scripts, service units, and timer units.
     script_paths: list[str] = []
     unit_paths: list[str] = []
+    timer_paths: list[str] = []
     for p in paths:
-        if _is_unit_file(p):
+        if _is_timer_file(p):
+            timer_paths.append(p)
+        elif _is_unit_file(p):
             unit_paths.append(p)
         else:
             script_paths.append(p)
@@ -468,6 +684,24 @@ def main(paths: list[str]) -> int:
                     f"invocation chain reads it (the posture package and "
                     f"any referenced script do not reference `{key}`)")
 
+    # --- Timer units: scheduling contract (3d) ---
+    shipped_services = _shipped_service_names() if timer_paths else set()
+    for path in timer_paths:
+        try:
+            text = open(path, encoding="utf-8").read()
+        except OSError as exc:
+            failures.append(f"{path}: cannot read ({exc})")
+            continue
+        _validate_timer(text, path, shipped_services, failures)
+        # A timer may carry posture invocations too (unusual but possible).
+        for words, invocation_text in _unit_posture_calls(text):
+            checked += 1
+            _validate_one_invocation(words, invocation_text, path, top, failures)
+
+    # 3e. Service scheduling coverage: every service must be scheduled by
+    #     a timer in scope.
+    _check_service_coverage(unit_paths, timer_paths, failures)
+
     for failure in failures:
         print(f"check_deployment_line: FAIL — {failure}")
     if failures:
@@ -480,11 +714,21 @@ def main(paths: list[str]) -> int:
     if script_paths:
         summary_parts.append(f"{len(script_paths)} script(s)")
     if unit_paths:
-        summary_parts.append(f"{len(unit_paths)} unit(s)")
+        summary_parts.append(f"{len(unit_paths)} service unit(s)")
+    if timer_paths:
+        summary_parts.append(f"{len(timer_paths)} timer unit(s)")
     coverage = ", ".join(summary_parts) or "no files"
-    print(f"check_deployment_line: OK — every invocation resolves against "
-          f"this repository's CLI, every unit script path exists, and every "
-          f"unit environment variable is read ({checked} invocation(s) "
+    ok_parts = [
+        "every invocation resolves against this repository's CLI",
+        "every unit script path exists",
+        "every unit environment variable is read",
+    ]
+    if timer_paths:
+        ok_parts.append("every timer scheduling contract holds")
+    if unit_paths and timer_paths:
+        ok_parts.append("every service is scheduled by a timer")
+    ok_text = ", ".join(ok_parts)
+    print(f"check_deployment_line: OK — {ok_text} ({checked} invocation(s) "
           f"checked, {coverage})")
     return 0
 
