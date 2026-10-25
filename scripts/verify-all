@@ -7,6 +7,9 @@
 # Without a repository-owned lint configuration there is no repository-owned
 # lint baseline to check against, so the gate is reported as skipped rather
 # than silently borrowed from an ambient machine configuration.
+# Gate 3 (spine size): the committed spine must not contain a file above the
+# host's hard per-file limit, because a push containing such a file is
+# rejected outright.
 #
 # Exits 0 only when every gate that applies passes.
 set -euo pipefail
@@ -23,5 +26,8 @@ fi
 
 echo "verify-all: tests (pytest)"
 python -m pytest -q
+
+echo "verify-all: spine size guard"
+scripts/check_spine_size.sh
 
 echo "verify-all: OK"

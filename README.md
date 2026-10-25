@@ -500,6 +500,15 @@ serving untouched — the served map is always the last verified snapshot or the
 new one, never a mixture. The deployment line's daily job
 (`scripts/vps_spine.sh`) publishes through this path.
 
+**Shard size caps.** The repository host refuses a push that contains a file
+above its hard per-file limit, so the export caps every shard it writes well
+below it. A defect month that outgrows the cap becomes numbered parts
+(`2026-07-000001.jsonl`, ...), and the flat overlay tables are capped the same
+way (`crosswalk-000001.jsonl`, ...). The export also fails closed if a written
+shard ever reaches the hard limit, so an un-publishable map is never
+published. The committed tree is checked by `scripts/check_spine_size.sh`,
+which runs as the third gate of `scripts/verify-all`.
+
 ## Data sources and ingestion
 
 **How the product is actually used.** There are two audiences for ingestion, and

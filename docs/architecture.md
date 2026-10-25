@@ -125,6 +125,15 @@ cosign sign-blob               (recompute sha256, assert match)
 commit spine/                   posture assess <device.yaml>
 ```
 
+Every shard the export writes is **size-capped**: a defect month that outgrows
+the cap becomes numbered parts (`2026-07-000001.jsonl`, ...), and the flat
+overlay tables are capped the same way (`crosswalk-000001.jsonl`, ...). The cap
+sits well below the repository host's hard per-file limit (a push containing a
+file above it is rejected outright), and the export fails closed if a written
+shard ever reaches that limit — an un-publishable map is never published. The
+committed tree is checked by `scripts/check_spine_size.sh` (a gate of
+`scripts/verify-all`).
+
 On a host that serves the spine directory directly to clients (the single-VPS
 deployment line), publication is **atomic and verified**: `publish_spine()`
 exports into a staging directory, verifies the staged map against its own

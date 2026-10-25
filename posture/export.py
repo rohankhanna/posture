@@ -22,6 +22,14 @@ The manifest pins every shard by sha256 + count exactly as before, so
 :func:`verify_spine` / :func:`import_spine` and downstream consumers are
 unaffected.
 
+**Size-capped shards.** Every shard the export writes is capped well below the
+repository host's hard per-file limit, which refuses a push containing a file
+above it. A defect month that outgrows the cap becomes numbered parts
+(2026-07-000001.jsonl, ...), and the flat overlay tables are capped the
+same way (crosswalk-000001.jsonl, ...). The export also fails closed if
+any written shard ever reaches the hard limit, so an un-publishable map is
+never published.
+
 Layout under --out DIR (default .)::
 
     DIR/spine/manifest.json          # cosign signs THIS -> state.sig
@@ -29,6 +37,7 @@ Layout under --out DIR (default .)::
     DIR/spine/defects/2026-07-000001.jsonl  # months split into numbered parts
     DIR/spine/defects/unknown.jsonl         # rows with no date -> 'unknown')
     DIR/spine/crosswalk.jsonl
+    DIR/spine/crosswalk-000001.jsonl   # a flat table that outgrew the size cap
     DIR/spine/candidates.jsonl
     DIR/spine/distrust_marks.jsonl
     DIR/spine/seen_defects.jsonl
@@ -57,7 +66,17 @@ from . import store as _store
 
 MANIFEST_VERSION = "1"
 SPINE_DIR = "spine"
+# Per-shard size caps. The repository host rejects a push that contains a file
+# above its hard per-file limit, so every shard the export writes is capped
+# well below it. The defect shards are capped per published month; the flat
+# overlay tables are capped per table (a table that outgrows the cap becomes
+# numbered parts, exactly like an oversized month).
 MAX_DEFECT_SHARD_BYTES = 48 * 1024 * 1024
+MAX_FLAT_SHARD_BYTES = 48 * 1024 * 1024
+# The host's hard per-file limit (GitHub refuses a push containing a file above
+# 100MB). The caps above stay well under it; the export fails closed if a
+# written shard ever reaches it, so an un-pushable map is never published.
+HARD_FILE_SIZE_LIMIT_BYTES = 100 * 1024 * 1024
 # Staging/previous directory names used by :func:`publish_spine`. Both are
 # hidden siblings of the served spine directory, so a web server that serves
 # the parent directory does not advertise them.
@@ -91,44 +110,44 @@ def _serialize_line(row: dict) -> bytes:
     return (json.dumps(row, sort_keys=True, default=str) + "\n").encode("utf-8")
 
 
-def _write_jsonl(path: Path, rows) -> tuple[str, int]:
-    """Stream rows as one JSON object per line; return (sha256, count). The
-    sha256 is computed incrementally over the exact bytes written, so a client
-    re-reading the file can detect any tampering via the manifest — and the
-    whole shard never exists in memory (the flat overlays run to tens of MB)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha256()
-    count = 0
-    with open(path, "wb") as handle:
-        for row in rows:
-            line = _serialize_line(row)
-            handle.write(line)
-            digest.update(line)
-            count += 1
-    return digest.hexdigest(), count
+def _clean_stale_parts(directory: Path) -> None:
+    """Remove the hidden .<name>.jsonl.part-NNNNNN staging files a crashed
+    run left behind. The parts are renamed into place when a shard finishes, so
+    a leftover part file is always garbage from an interrupted run (and would
+    otherwise sit in the published directory forever)."""
+    if not directory.exists():
+        return
+    for path in directory.iterdir():
+        if path.name.startswith(".") and ".part-" in path.name:
+            path.unlink()
 
 
-class _MonthSharder:
-    """Streaming per-month shard writer for defects.
+class _ShardWriter:
+    """Streaming writer for one logical shard, split into size-capped parts.
 
-    Consumes (shard_key, row) pairs ordered by shard key (see
-    :func:`posture.store.catalog_iter_shard_keys`) and writes each month's rows
-    to YYYY-MM.jsonl, splitting oversized months into numbered
-    YYYY-MM-NNNNNN.jsonl parts no larger than max_bytes (a single row
-    is always kept intact; the ceiling leaves headroom below the repository
-    host's hard file-size limit and its lower warning threshold). Because the
-    final filename depends on the part count — unknown until the bucket
-    closes — parts stream to hidden .part-NNNNNN files and are renamed
-    into place when the bucket finishes. Memory stays at one serialized row
-    plus per-part bookkeeping, no matter how large the month grows."""
+    Rows are written as one JSON object per line; the sha256 is computed
+    incrementally over the exact bytes written, so a client re-reading the file
+    can detect any tampering via the manifest. When the next row would push the
+    current part past max_bytes, a new part starts (a single row is never
+    split — it is always kept intact). Because the final file name depends on
+    the part count, which is only known when the shard finishes, parts stream
+    to hidden .<prefix>.jsonl.part-NNNNNN files and are renamed into place
+    at the end. Memory stays at one serialized row plus per-part bookkeeping,
+    no matter how large the table grows.
 
-    def __init__(self, defects_dir: Path, max_bytes: int) -> None:
-        self._dir = defects_dir
+    A shard that fits in one part keeps the plain name (<prefix>.jsonl); a
+    shard that outgrows the cap becomes numbered parts
+    (<prefix>-000001.jsonl, <prefix>-000002.jsonl, ...)."""
+
+    def __init__(self, directory: Path, prefix: str, max_bytes: int,
+                 rel_prefix: str = "") -> None:
+        self._dir = directory
+        self._prefix = prefix
         self._max = max_bytes
+        self._rel = rel_prefix
         self._dir.mkdir(parents=True, exist_ok=True)
         self.entries: list[dict] = []
         self.total = 0
-        self._bucket: str | None = None
         self._parts: list[tuple[Path, str, int]] = []
         self._handle = None
         self._digest = None
@@ -137,7 +156,7 @@ class _MonthSharder:
         self._bytes = 0
 
     def _open_part(self) -> None:
-        self._tmp = self._dir / f".{self._bucket}.jsonl.part-{len(self._parts) + 1:06d}"
+        self._tmp = self._dir / f".{self._prefix}.jsonl.part-{len(self._parts) + 1:06d}"
         self._handle = open(self._tmp, "wb")
         self._digest = hashlib.sha256()
         self._count = 0
@@ -148,25 +167,7 @@ class _MonthSharder:
         self._parts.append((self._tmp, self._digest.hexdigest(), self._count))
         self._handle = None
 
-    def _finish_bucket(self) -> None:
-        if self._handle is not None:
-            self._close_part()
-        if not self._parts:
-            return
-        single = len(self._parts) == 1
-        for index, (tmp, sha, count) in enumerate(self._parts, start=1):
-            filename = (f"{self._bucket}.jsonl" if single
-                        else f"{self._bucket}-{index:06d}.jsonl")
-            # atomically replace the same-named shard from a previous run
-            os.replace(tmp, self._dir / filename)
-            self.entries.append({"path": f"defects/{filename}", "sha256": sha,
-                                 "count": count})
-        self._parts = []
-
-    def write(self, shard_key: str, row: dict) -> None:
-        if shard_key != self._bucket:
-            self._finish_bucket()
-            self._bucket = shard_key
+    def write(self, row: dict) -> None:
         line = _serialize_line(row)
         if self._handle is None:
             self._open_part()
@@ -180,6 +181,56 @@ class _MonthSharder:
         self.total += 1
 
     def finish(self) -> list[dict]:
+        if self._handle is not None:
+            self._close_part()
+        single = len(self._parts) == 1
+        for index, (tmp, sha, count) in enumerate(self._parts, start=1):
+            filename = (f"{self._prefix}.jsonl" if single
+                        else f"{self._prefix}-{index:06d}.jsonl")
+            # atomically replace the same-named shard from a previous run
+            os.replace(tmp, self._dir / filename)
+            self.entries.append({"path": f"{self._rel}{filename}", "sha256": sha,
+                                 "count": count})
+        self._parts = []
+        return self.entries
+
+
+class _MonthSharder:
+    """Streaming per-month shard writer for defects.
+
+    Consumes (shard_key, row) pairs ordered by shard key (see
+    :func:`posture.store.catalog_iter_shard_keys`) and writes each month's rows
+    to YYYY-MM.jsonl, splitting oversized months into numbered
+    YYYY-MM-NNNNNN.jsonl parts no larger than max_bytes (a single row
+    is always kept intact; the ceiling leaves headroom below the repository
+    host's hard file-size limit and its lower warning threshold). Memory stays
+    at one serialized row plus per-part bookkeeping, no matter how large the
+    month grows."""
+
+    def __init__(self, defects_dir: Path, max_bytes: int) -> None:
+        self._dir = defects_dir
+        self._max = max_bytes
+        self._dir.mkdir(parents=True, exist_ok=True)
+        self.entries: list[dict] = []
+        self.total = 0
+        self._bucket: str | None = None
+        self._writer: _ShardWriter | None = None
+
+    def _finish_bucket(self) -> None:
+        if self._writer is not None:
+            self.entries.extend(self._writer.finish())
+            self._writer = None
+
+    def write(self, shard_key: str, row: dict) -> None:
+        if shard_key != self._bucket:
+            self._finish_bucket()
+            self._bucket = shard_key
+            self._writer = _ShardWriter(self._dir, shard_key, self._max,
+                                        rel_prefix="defects/")
+        self._writer.write(row)
+        self.total += 1
+
+    def finish(self) -> list[dict]:
         self._finish_bucket()
         return self.entries
 
@@ -190,6 +241,27 @@ def _sha256_file(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def assert_shard_sizes_within_limit(root: Path, files: list[dict],
+                                    limit: int | None = None) -> None:
+    """Fail closed when a written shard exceeds the host's hard per-file limit.
+
+    The repository host rejects a push that contains a file above its limit, so
+    an oversize shard is a map that cannot be published. The check is on the
+    bytes actually on disk (not on the byte counters used for the cap), and it
+    runs before the manifest is written: a failed export therefore leaves no
+    manifest claiming the oversize shards.
+    """
+    limit = HARD_FILE_SIZE_LIMIT_BYTES if limit is None else limit
+    for entry in files:
+        path = root / entry["path"]
+        size = path.stat().st_size
+        if size > limit:
+            raise ValueError(
+                f"spine shard exceeds the {limit}-byte hard file limit: "
+                f"{entry['path']} ({size} bytes)"
+            )
 
 
 def _read_jsonl(path: Path):
@@ -234,11 +306,10 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
     # --- defects: streamed shard-by-shard, rows already ordered by published
     #     month (server-side cursor; the whole catalog never lands in RAM) ---
     defects_dir = root / "defects"
-    if defects_dir.exists():
-        # drop provisional parts from any crashed prior run — the self-clean
-        # below only matches final *.jsonl names
-        for stale in defects_dir.glob("*.jsonl.part-*"):
-            stale.unlink()
+    # drop provisional parts from any crashed prior run — the self-clean
+    # below only matches final *.jsonl names
+    _clean_stale_parts(defects_dir)
+    _clean_stale_parts(root)
     sharder = _MonthSharder(defects_dir, MAX_DEFECT_SHARD_BYTES)
     for shard_key, row in _store.catalog_iter_shard_keys(conn):
         sharder.write(shard_key, row)
@@ -258,9 +329,14 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
         "epss": _store.epss_iter,
     }
     for name in FLAT_TABLES:
-        sha, n = _write_jsonl(root / f"{name}.jsonl", loaders[name](conn))
-        counts[name] = n
-        files.append({"path": f"{name}.jsonl", "sha256": sha, "count": n})
+        # Same size cap as the defect shards: a flat table that outgrows the
+        # cap becomes numbered parts instead of one unbounded file, so no
+        # single published file can cross the host's hard per-file limit.
+        writer = _ShardWriter(root, name, MAX_FLAT_SHARD_BYTES)
+        for row in loaders[name](conn):
+            writer.write(row)
+        files.extend(writer.finish())
+        counts[name] = writer.total
 
     # --- self-clean: drop any *.jsonl shard under root that this export did NOT
     #     write. Makes export idempotent w.r.t. format renames (a prior run's
@@ -278,6 +354,11 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
             d = path.parent
             if d != root and d.exists() and not any(d.iterdir()):
                 shutil.rmtree(d)
+
+    # Fail closed on an oversize shard: the host refuses a push that contains
+    # a file above its hard per-file limit, so an oversize shard is a map that
+    # cannot be published. The check reads the bytes actually on disk.
+    assert_shard_sizes_within_limit(root, files)
 
     manifest = {
         "manifest_version": MANIFEST_VERSION,
@@ -400,10 +481,33 @@ def verify_spine(from_dir: os.PathLike | str = ".") -> dict:
 # import (client consumption path; idempotent)
 # ---------------------------------------------------------------------------
 
+def _read_jsonl_shards(root: Path, name: str):
+    """Yield the parsed rows of every part of one flat table."""
+    for path in _table_shards(root, name):
+        yield from _read_jsonl(path)
+
+
+def _table_shards(root: Path, name: str) -> list[Path]:
+    """Every part of one flat table, in write order.
+
+    A table that fits in one part is the single file <name>.jsonl; a table
+    that outgrew the size cap is the numbered parts <name>-000001.jsonl,
+    <name>-000002.jsonl, ... The parts win when both are present: the
+    unsplit file is the stale shape from an earlier export.
+    """
+    parts = sorted(root.glob(f"{name}-*.jsonl"))
+    if parts:
+        return parts
+    single = root / f"{name}.jsonl"
+    return [single] if single.exists() else []
+
+
 def import_spine(conn, from_dir: os.PathLike | str = ".",
                  verify_manifest: bool = True) -> dict:
     """Load <from_dir>/spine/*.jsonl into the SQLite DB (the client
-    consumption path; also enables the round-trip test). Idempotent: defects use
+    consumption path; also enables the round-trip test). A flat table that was
+    exported as numbered parts (because it outgrew the shard size cap) is read
+    back from every part. Idempotent: defects use
     INSERT OR REPLACE (the client's catalog mirrors the signed spine — the
     client does not enrich independently), the flat tables use INSERT OR
     REPLACE/IGNORE on their primary keys. If verify_manifest, recompute
@@ -453,7 +557,7 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
             stats["defects"] += 1
 
     # --- crosswalk: INSERT OR IGNORE (PK defect_id,alias,kind — idempotent) ---
-    for row in _read_jsonl(root / "crosswalk.jsonl"):
+    for row in _read_jsonl_shards(root, "crosswalk"):
         conn.execute(
             "INSERT OR IGNORE INTO crosswalk (defect_id, alias, kind) VALUES (?,?,?)",
             (row["defect_id"], row["alias"], row["kind"]),
@@ -461,7 +565,7 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
         stats["crosswalk"] += 1
 
     # --- candidates: INSERT OR REPLACE (id PK) ---
-    for row in _read_jsonl(root / "candidates.jsonl"):
+    for row in _read_jsonl_shards(root, "candidates"):
         conn.execute(
             """INSERT OR REPLACE INTO candidates
                  (id, url, fmt, axis, status, note, added_at)
@@ -472,7 +576,7 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
         stats["candidates"] += 1
 
     # --- distrust_marks: INSERT OR REPLACE (observer PK) ---
-    for row in _read_jsonl(root / "distrust_marks.jsonl"):
+    for row in _read_jsonl_shards(root, "distrust_marks"):
         conn.execute(
             "INSERT OR REPLACE INTO distrust_marks (observer, marked_at, reason) "
             "VALUES (?,?,?)",
@@ -481,7 +585,7 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
         stats["distrust_marks"] += 1
 
     # --- seen_defects: INSERT OR REPLACE (defect_id PK) ---
-    for row in _read_jsonl(root / "seen_defects.jsonl"):
+    for row in _read_jsonl_shards(root, "seen_defects"):
         conn.execute(
             "INSERT OR REPLACE INTO seen_defects (defect_id, first_seen) VALUES (?,?)",
             (row["defect_id"], row.get("first_seen")),
@@ -489,7 +593,7 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
         stats["seen_defects"] += 1
 
     # --- kev: INSERT OR REPLACE (cve_id PK) — the exploitability_signal overlay
-    for row in _read_jsonl(root / "kev.jsonl"):
+    for row in _read_jsonl_shards(root, "kev"):
         conn.execute(
             """INSERT OR REPLACE INTO kev
                  (cve_id, date_added, vendor_project, product, name,
@@ -510,7 +614,7 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
     #     fix-version overlay. Per-product idempotent refresh on the ingest side
     #     (DELETE WHERE product + INSERT); on import we INSERT OR REPLACE so a
     #     re-import replaces, never duplicates.
-    for row in _read_jsonl(root / "apple_fixes.jsonl"):
+    for row in _read_jsonl_shards(root, "apple_fixes"):
         conn.execute(
             """INSERT OR REPLACE INTO apple_fixes
                  (cve_id, product, fixed_in, advisory_id, fetched_at)
@@ -525,7 +629,7 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
     #     idempotent refresh on the ingest side (DELETE WHERE release+package +
     #     INSERT); on import we INSERT OR REPLACE so a re-import replaces, never
     #     duplicates.
-    for row in _read_jsonl(root / "debian_fixes.jsonl"):
+    for row in _read_jsonl_shards(root, "debian_fixes"):
         conn.execute(
             """INSERT OR REPLACE INTO debian_fixes
                  (cve_id, release, package, status, fixed_in, fetched_at)
@@ -540,7 +644,7 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
     #     idempotent refresh on the ingest side (DELETE WHERE release+package +
     #     INSERT); on import we INSERT OR REPLACE so a re-import replaces, never
     #     duplicates.
-    for row in _read_jsonl(root / "ubuntu_fixes.jsonl"):
+    for row in _read_jsonl_shards(root, "ubuntu_fixes"):
         conn.execute(
             """INSERT OR REPLACE INTO ubuntu_fixes
                  (cve_id, release, package, status, fixed_in, fetched_at)
@@ -555,7 +659,7 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
     #     gap). Idempotent full refresh on the ingest side (DELETE all + INSERT);
     #     on import we INSERT OR REPLACE so a re-import replaces, never
     #     duplicates.
-    for row in _read_jsonl(root / "epss.jsonl"):
+    for row in _read_jsonl_shards(root, "epss"):
         conn.execute(
             """INSERT OR REPLACE INTO epss
                  (cve_id, epss, percentile, fetched_at)
