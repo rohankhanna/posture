@@ -90,6 +90,7 @@ The library API surface:
 | `posture.export` | `export_spine(conn, out_dir, ...)` | Serialize catalog to signed JSONL shards |
 | `posture.export` | `verify_spine(from_dir)` | Verify shard hashes against manifest |
 | `posture.export` | `import_spine(conn, from_dir)` | Import verified JSONL into local SQLite |
+| `posture.export` | `publish_spine(conn, out_dir, ...)` | Export, verify, and swap the served map in one atomic step |
 
 The engine never imports a source by name. Sources register themselves in the
 default registry; the policy decides which run and in what order. Adding a
@@ -123,6 +124,14 @@ cosign sign-blob               (recompute sha256, assert match)
 ↓                              ↓
 commit spine/                   posture assess <device.yaml>
 ```
+
+On a host that serves the spine directory directly to clients (the single-VPS
+deployment line), publication is **atomic and verified**: `publish_spine()`
+exports into a staging directory, verifies the staged map against its own
+manifest (every shard's sha256 + row count), and only then moves it into the
+served directory with a single rename. A failed export or a failed verification
+leaves the previously published map serving untouched, so the served map is
+always either the last verified snapshot or the new one — never a mixture.
 
 The spine is **data-only**. It serializes these MAP tables:
 

@@ -67,11 +67,19 @@ posture monitor run --db "$DB_PATH"
 posture repair reconcile --db "$DB_PATH"
 posture discover --db "$DB_PATH"
 
-# 6) Export the spine to a stable directory. A downstream web server can
-#    publish this directory directly; clients can pull only the shards they
-#    need from the manifest. If a signing key is configured, sign the manifest
-#    so clients can cryptographically verify the spine before importing.
+# 6) Publish the spine to a stable directory. A downstream web server can
+#    serve this directory directly; clients can pull only the shards they need
+#    from the manifest. If a signing key is configured, sign the manifest so
+#    clients can cryptographically verify the spine before importing.
+#
+#    'publish' is export + verify + one atomic swap: the new map is written to
+#    a staging directory, checked against its own manifest (every shard's
+#    sha256 and row count), and only then moved into the served directory. A
+#    failed build therefore leaves the previously published map serving, instead
+#    of a half-written map that clients cannot import. The staging directory is
+#    a hidden sibling of the served directory (same filesystem, so the swap is a
+#    rename, not a copy) and is removed once the map is published.
 SIGN_KEY="${POSTURE_SIGN_KEY:-}"
-posture spine export --db "$DB_PATH" --out "$EXPORT_DIR" ${SIGN_KEY:+--sign-key "$SIGN_KEY"}
+posture spine publish --db "$DB_PATH" --out "$EXPORT_DIR" ${SIGN_KEY:+--sign-key "$SIGN_KEY"}
 
 echo "posture-spine: update complete"

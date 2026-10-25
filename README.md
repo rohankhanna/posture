@@ -478,6 +478,28 @@ signature over `manifest.json`). Distribute the public key to clients; guard the
 private key (chmod 600). The VPS runner signs when `POSTURE_SIGN_KEY` is set in
 its environment.
 
+**Publishing a self-hosted map (atomic, verified).** When a host serves the
+spine directory directly to clients, the directory must never be observed
+half-written: an export that dies halfway would leave shards that no longer
+match the manifest, and the export's own cleanup can delete shards the previous
+manifest still references. `posture spine publish` removes that window — it
+exports into a staging directory, checks the staged map against its own
+manifest (every shard's sha256 and row count), and only then moves it into the
+served directory with a single rename:
+
+```bash
+# Build, verify, and publish the served map (sign it in the same step):
+posture spine publish --db posture.db --out /var/lib/posture --sign-key signing_key.pem
+
+# Check a map that is already on disk (what a client can run on a pulled map):
+posture spine verify --from /var/lib/posture
+```
+
+A failed export or a failed verification leaves the previously published map
+serving untouched — the served map is always the last verified snapshot or the
+new one, never a mixture. The deployment line's daily job
+(`scripts/vps_spine.sh`) publishes through this path.
+
 ## Data sources and ingestion
 
 **How the product is actually used.** There are two audiences for ingestion, and

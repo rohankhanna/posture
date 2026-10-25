@@ -50,6 +50,7 @@ import datetime as _dt
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 
 from . import store as _store
@@ -57,6 +58,11 @@ from . import store as _store
 MANIFEST_VERSION = "1"
 SPINE_DIR = "spine"
 MAX_DEFECT_SHARD_BYTES = 48 * 1024 * 1024
+# Staging/previous directory names used by :func:`publish_spine`. Both are
+# hidden siblings of the served spine directory, so a web server that serves
+# the parent directory does not advertise them.
+STAGING_DIR_NAME = ".spine-staging"
+PREVIOUS_DIR_NAME = ".spine-previous"
 # The MAP tables — the spine. Territory/engine-internal tables are deliberately
 # absent: verdicts, device_posture, health_*, glossary, term_signals,
 # spine_bindings, repair_proposals, policy_versions, state.
@@ -264,7 +270,6 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
     #     shards mid-iteration removes a directory rglob still intends to descend
     #     into -> FileNotFoundError on the old shard dir (e.g. 'spine/flaws').
     written = {entry["path"] for entry in files}
-    import shutil as _shutil
     for path in list(root.rglob("*.jsonl")):
         rel = path.relative_to(root).as_posix()
         if rel not in written:
@@ -272,7 +277,7 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
             # remove the shard dir if it is now empty (e.g. the old cves/ dir)
             d = path.parent
             if d != root and d.exists() and not any(d.iterdir()):
-                _shutil.rmtree(d)
+                shutil.rmtree(d)
 
     manifest = {
         "manifest_version": MANIFEST_VERSION,
@@ -285,6 +290,78 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
     (root / "manifest.json").write_text(
         json.dumps(manifest, sort_keys=True, indent=2) + "\n"
     )
+    return manifest
+
+
+# ---------------------------------------------------------------------------
+# publish (export -> verify -> atomic swap of the served spine directory)
+# ---------------------------------------------------------------------------
+
+def publish_spine(conn, out_dir: os.PathLike | str = ".",
+                  policy_version: str = "",
+                  source_version: dict | None = None,
+                  now: str | None = None,
+                  sign_key: os.PathLike | str | None = None) -> dict:
+    """Export the spine, verify it, and publish it in one atomic step.
+
+    The deployment line serves the spine directory directly to clients, so the
+    directory must never be observed half-written. :func:`export_spine` writes
+    shards first and the manifest last, and it self-cleans shards the current
+    run did not write — an interrupted export therefore leaves the previously
+    published map in a broken state (the old manifest can reference shards the
+    self-clean already deleted, or a shard can be half-overwritten under an old
+    digest).
+
+    This function removes that window:
+
+    1. the export lands in a staging directory beside the served directory;
+    2. the staged map is verified (manifest digest + row count for every
+       shard; the optional manifest signature is produced here too, so the
+       published map carries its signature);
+    3. only a verified map replaces the served directory, and it does so with
+       a single rename.
+
+    Any failure before the swap leaves the previously published map exactly as
+    it was and removes the staging directory. The served map is therefore
+    always either the last verified snapshot or the new one — never a
+    mixture.
+
+    Returns the published manifest (the same dict :func:`export_spine`
+    returns). Raises on any failure; the caller decides how loudly to fail.
+    """
+    root = Path(out_dir)
+    staging = root / STAGING_DIR_NAME
+    previous = root / PREVIOUS_DIR_NAME
+    published = root / SPINE_DIR
+
+    if staging.exists():
+        shutil.rmtree(staging)
+    try:
+        manifest = export_spine(conn, out_dir=staging,
+                                policy_version=policy_version,
+                                source_version=source_version, now=now)
+        if sign_key:
+            sign_manifest(staging, sign_key)
+        verify_spine(staging)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+    # --- the swap: two renames on the same filesystem, no copy -------------
+    if previous.exists():
+        shutil.rmtree(previous)
+    if published.exists():
+        os.replace(published, previous)
+    try:
+        os.replace(staging / SPINE_DIR, published)
+    except BaseException:
+        # the new map never landed — put the previous one back
+        if previous.exists() and not published.exists():
+            os.replace(previous, published)
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    shutil.rmtree(previous, ignore_errors=True)
+    shutil.rmtree(staging, ignore_errors=True)
     return manifest
 
 

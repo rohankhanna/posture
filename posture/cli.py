@@ -625,6 +625,37 @@ def _cmd_spine(args) -> int:
                   f"{args.out}/{_export.SPINE_DIR}/state.sig "
                   f"{args.out}/{_export.SPINE_DIR}/manifest.json")
             print(f"  or: posture spine export --sign-key <private_key.pem> ...")
+        print("  serving this directory directly? use `posture spine publish` "
+              "(verify + atomic swap)")
+        return 0
+    # verify re-checks a spine directory against its own manifest (every shard's
+    # sha256 + row count). It is the gate the deployment line runs before it
+    # publishes a new map, and the same check a client can run on a pulled map.
+    if args.sub == "verify":
+        try:
+            manifest = _export.verify_spine(args.from_dir)
+        except (ValueError, OSError) as exc:
+            print(f"spine verify: FAILED — {exc}")
+            return 1
+        print(f"spine verify: OK — {len(manifest['files'])} shard(s), "
+              f"{manifest['counts']}")
+        return 0
+    # publish is the deployment line's serving path: export into a staging
+    # directory, verify it, and swap it into the served directory in one step.
+    # A failed export or a failed verification leaves the previously published
+    # map untouched — the served map is never half-written.
+    if args.sub == "publish":
+        policy = _load_policy(args.policy)
+        with _open_db(args.db, readonly=True) as conn:
+            manifest = _export.publish_spine(
+                conn, out_dir=args.out, policy_version=policy.version,
+                sign_key=getattr(args, "sign_key", None))
+        print(f"spine publish: {manifest['counts']} -> {args.out}/{_export.SPINE_DIR}/ "
+              f"(verified, published atomically)")
+        if not getattr(args, "sign_key", None):
+            print(f"  sign it: cosign sign-blob --output-signature "
+                  f"{args.out}/{_export.SPINE_DIR}/state.sig "
+                  f"{args.out}/{_export.SPINE_DIR}/manifest.json")
         return 0
     # import is the client consumption path: load the signed spine JSONL into a
     # local DB, then run `assess` over private devices. Data-only — never touches
@@ -1125,8 +1156,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("proposal_id", nargs="?", default=None)
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_repair)
 
-    sp = sub.add_parser("spine", help="spine: show | export | import")
-    sp.add_argument("sub", choices=["show", "export", "import"])
+    sp = sub.add_parser("spine", help="spine: show | export | import | verify | publish")
+    sp.add_argument("sub", choices=["show", "export", "import", "verify", "publish"])
     sp.add_argument("--out", default=".", help="export output dir (default: cwd)")
     sp.add_argument("--from", dest="from_dir", default=".", help="import source dir (default: cwd)")
     sp.add_argument("--no-verify", action="store_true", help="import: skip manifest sha256 check")
