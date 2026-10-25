@@ -83,17 +83,34 @@ def dossier(conn, observer: str) -> list[dict]:
     return _store.dossier(conn, observer)
 
 
-def degradation_action(conn, observer: str, policy, now_iso: str) -> str:
+def degradation_action(conn, observer: str, policy, now_iso: str,
+                          ledger=None) -> str:
     """Decide the observer's state from the policy's pre-declared degradation
-    rule + measured freshness. Returns 'ok' | 'fallback' | 'offline'.
+    rule + measured freshness + the source-history ledger signal. Returns
+    'ok' | 'fallback' | 'offline'.
 
     Decided from policy (the rule was written BEFORE a crisis), not ad-hoc:
-      - 'ok'        — fetched completely within the silence window.
-      - 'fallback'  — silent longer than if_silent_for_days; policy.fallback
-                       lists alternates to consult.
-      - 'offline'   — silent with no declared fallback.
+      - 'ok'        — fetched completely within the silence window AND no
+                       active upstream degradation/outage event is recorded
+                       for the source in the ledger.
+      - 'fallback'  — silent longer than if_silent_for_days; OR the ledger
+                       records an active degrading event for the source (the
+                       source's output is degraded even when freshly fetched).
+                       policy.fallback lists alternates to consult.
+      - 'offline'   — silent (or ledger-degraded) with no declared fallback.
+
+    The ledger argument is optional: when omitted (or None), the decision rests
+    solely on measured freshness, preserving the pre-slice-(c) contract.
     """
     rule = policy.degradation_for(observer)
+    signal = policy.degradation_signal(observer, ledger)
+    ledger_degraded = signal.degraded
+    has_fallback = bool(rule is not None and rule.fallback)
+    # An active upstream degradation/outage event means the source's output is
+    # degraded even when freshly fetched -> engage the fallback path regardless
+    # of measured freshness.
+    if ledger_degraded:
+        return "fallback" if has_fallback else "offline"
     if rule is None or rule.if_silent_for_days <= 0:
         return "ok"
     from . import store as _store
@@ -114,8 +131,10 @@ def degradation_action(conn, observer: str, policy, now_iso: str) -> str:
     return "fallback" if rule.fallback else "offline"
 
 
-def health_report(conn, observer: str, policy, now_iso: str) -> dict:
+def health_report(conn, observer: str, policy, now_iso: str,
+                      ledger=None) -> dict:
     op = operational_health(conn, observer)
+    signal = policy.degradation_signal(observer, ledger)
     return {
         "observer": observer,
         "operational": {
@@ -126,8 +145,14 @@ def health_report(conn, observer: str, policy, now_iso: str) -> dict:
             "last_reason": op.last_reason,
         },
         "dossier": dossier(conn, observer),
-        "degradation": degradation_action(conn, observer, policy, now_iso),
+        "degradation": degradation_action(conn, observer, policy, now_iso,
+                                            ledger=ledger),
         "policy_degradation": _rule_view(policy, observer),
+        # Source-reliability signal read from the public-infrastructure event
+        # ledger. The interpretation field is the seam: posture's read of what
+        # each active upstream event means for this source. Empty/degraded=False
+        # when no ledger is supplied or no active events are recorded.
+        "source_history": signal.to_dict(),
     }
 
 

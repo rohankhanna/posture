@@ -24,6 +24,45 @@ import yaml
 
 from .axis import Axis, is_axis
 
+# Source-history ledger is trust-policy-adjacent: source reliability is an
+# engine-level concern, so the policy consumes the public-infrastructure event
+# ledger (see posture/source_history.py). The ledger is data; the policy is
+# the consumer. The seam is the ledger event's interpretation field — it
+# carries posture's read of what an upstream event means, and the degradation
+# signal below surfaces it next to the pre-declared fallback rule.
+from .source_history import (
+    EventLedger,
+    EVENT_DEGRADATION,
+    EVENT_OUTAGE,
+)
+
+# Observer ids in the policy need not equal the ledger's source ids. This
+# alias map is the canonical bridge: where they differ, the policy observer id
+# maps to the ledger source id. Unlisted observers use their own id as the
+# source id (so nvd -> nvd; only mitre_cve -> mitre differs
+# today). Append-only: add an alias when a new observer/ledger-source mismatch
+# is introduced, never rewrite an existing one.
+OBSERVER_SOURCE_ALIASES: dict[str, str] = {
+    "mitre_cve": "mitre",
+}
+
+
+def observer_source_id(observer_id: str) -> str:
+    """Map a policy observer id to the ledger's canonical source id."""
+    return OBSERVER_SOURCE_ALIASES.get(observer_id, observer_id)
+
+
+# Ledger event types that mean the source's *output* is currently degraded —
+# not merely an operational condition posture has engineered around. A
+# degradation event (coverage/quality lost) or an outage (source
+# unreachable) means a freshly-fetched verdict still comes from a degraded
+# source, so the pre-declared fallback rule should engage regardless of
+# measured freshness. Other event types (rate-limit, feed-relocated,
+# format-change, data-correction, policy-change) are surfaced in the signal as
+# context — posture has adapted to them per their interpretation — but they
+# do not by themselves force the fallback action.
+DEGRADING_EVENT_TYPES = frozenset({EVENT_DEGRADATION, EVENT_OUTAGE})
+
 
 def _to_str(v: Any) -> str | None:
     """YAML parses bare dates (2026-08-01) as datetime.date; coerce to a string
@@ -58,6 +97,34 @@ class DegradationRule:
     observer: str
     if_silent_for_days: int
     fallback: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DegradationSignal:
+    """The source-reliability signal for one observer, read from the ledger.
+
+    The ledger's interpretation field is the seam: it carries posture's
+    read of what each active upstream event means for this source. This
+    dataclass surfaces that read next to the pre-declared degradation rule so
+    the fallback decision and the health report can consume it. degraded
+    is True iff at least one *active* event of a degrading type
+    (degradation/outage) is recorded for the observer's source — i.e. the
+    source's output is currently degraded even when freshly fetched.
+    """
+    observer: str
+    source: str
+    degraded: bool
+    active_events: list[dict] = field(default_factory=list)
+    interpretation: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "observer": self.observer,
+            "source": self.source,
+            "degraded": self.degraded,
+            "active_events": list(self.active_events),
+            "interpretation": self.interpretation,
+        }
 
 
 @dataclass
@@ -104,6 +171,41 @@ class Policy:
 
     def degradation_for(self, wid: str) -> DegradationRule | None:
         return self.degradation.get(wid)
+
+    def degradation_signal(self, observer: str, ledger: EventLedger | None) -> DegradationSignal:
+        """Read the source-reliability signal for observer from ledger.
+
+        Returns a :class:`DegradationSignal` carrying the active source-history
+        events for the observer's source and the combined interpretation
+        text (the seam). When ledger is None or carries no active events
+        for the source, the signal is empty and degraded is False — the
+        fallback decision then rests solely on measured freshness, as before.
+        Only *active* events of a degrading type (degradation/outage) set
+        degraded; other active events are surfaced as context.
+        """
+        obs = observer
+        src = observer_source_id(obs)
+        if ledger is None:
+            return DegradationSignal(observer=obs, source=src, degraded=False)
+        active = [
+            {
+                "id": e.id,
+                "date": e.date,
+                "event_type": e.event_type,
+                "summary": e.summary,
+                "status": e.status,
+                "interpretation": e.interpretation,
+            }
+            for e in ledger.active() if e.source == src
+        ]
+        degraded = any(e["event_type"] in DEGRADING_EVENT_TYPES for e in active)
+        interpretation = " | ".join(
+            e["interpretation"] for e in active if e["interpretation"]
+        )
+        return DegradationSignal(
+            observer=obs, source=src, degraded=degraded,
+            active_events=active, interpretation=interpretation,
+        )
 
     # -- loading ------------------------------------------------------------
 

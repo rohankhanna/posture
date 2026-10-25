@@ -32,6 +32,7 @@ from . import store as _store
 from . import engine as _engine
 from . import provenance as _prov
 from . import health as _health
+from . import source_history as _source_history
 from . import discovery as _discovery
 from . import spine as _spine
 from . import glossary as _glossary
@@ -384,8 +385,9 @@ def _cmd_health(args) -> int:
         else:
             observers = [observer]
         now = _engine._now()
+        ledger = None if args.no_source_history else _source_history.default_ledger()
         for wid in observers:
-            rep = _health.health_report(conn, wid, policy, now)
+            rep = _health.health_report(conn, wid, policy, now, ledger=ledger)
             op = rep["operational"]
             print(f"== {wid} ==")
             print(f"  operational: samples={op['samples']} "
@@ -403,6 +405,15 @@ def _cmd_health(args) -> int:
             else:
                 print("  dossier: (empty — add with `posture health --add-dossier`)")
             print(f"  drift: {_health.drift_flag(conn, wid)}")
+            sh = rep.get("source_history")
+            if sh and sh["active_events"]:
+                tag = "DEGRADED" if sh["degraded"] else "context"
+                print(f"  source_history ({tag}, {len(sh['active_events'])} active):")
+                for e in sh["active_events"]:
+                    print(f"    {e['date']} [{e['event_type']}/{e['status']}] "
+                          f"{e['summary'][:70]}")
+                    if e["interpretation"]:
+                        print(f"      -> {e['interpretation'][:100]}")
     return 0
 
 
@@ -1069,6 +1080,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--axis", default="vulnerability")
     sp.add_argument("--date"); sp.add_argument("--claim"); sp.add_argument("--citation")
     sp.add_argument("--direction", default="other")
+    sp.add_argument("--no-source-history", action="store_true",
+                    help="do not consult the public-infrastructure event ledger "
+                         "for the source-reliability signal")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_health)
 
     sp = sub.add_parser("distrust", help="mark a observer's verdicts distrusted (retroactive)")

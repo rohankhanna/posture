@@ -538,6 +538,17 @@ one instead. The vocabulary of event kinds, map layers and statuses is
 deliberately **open**: a new kind of upstream event records without a code
 change.
 
+The ledger is wired into the trust-policy **degradation fallback**. Each
+event's `interpretation` field is the seam: it carries posture's read of what
+the upstream event means. `posture health <observer>` now surfaces the active
+source-history events for that observer's source alongside the measured
+operational health, and an *active* degradation/outage event forces the
+pre-declared fallback rule to engage even when the source is freshly fetched —
+a freshly-fetched verdict from a degraded source is still a degraded verdict.
+Other event kinds (rate-limit, feed-relocated, format-change, …) are surfaced
+as context (posture has adapted to them per their `interpretation`) but do not
+by themselves force the fallback. `--no-source-history` opts out of the signal.
+
 ### CI ingestion (the recommended publication path)
 
 `.github/workflows/spine.yml` runs on ephemeral GitHub-hosted runners every 6 h
