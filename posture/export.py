@@ -13,6 +13,15 @@ distrust_marks, seen_defects. It NEVER serializes verdicts /
 device_posture / health_* / glossary / repair_proposals — those
 are territory (device-specific) or engine-internal. No device data ever leaves CI.
 
+**Streaming.** Export walks every table with a server-side cursor and writes
+each shard incrementally, hashing bytes as they land: peak memory stays one
+row plus per-part bookkeeping no matter how large the catalog grows. (The
+catalog outgrew the VPS unit's memory cap when the export assembled the whole
+catalog in RAM — the daily build was OOM-killed; this is the durable fix.)
+The manifest pins every shard by sha256 + count exactly as before, so
+:func:`verify_spine` / :func:`import_spine` and downstream consumers are
+unaffected.
+
 Layout under --out DIR (default .)::
 
     DIR/spine/manifest.json          # cosign signs THIS -> state.sig
@@ -62,54 +71,131 @@ def _now() -> str:
 def _defect_shard_key(row: dict) -> str:
     """YYYY-MM bucket from a defects row's published (e.g. '2026-07-31' ->
     '2026-07'). Rows with no parseable date land in 'unknown' so nothing is
-    dropped — the spine is a complete snapshot."""
+    dropped — the spine is a complete snapshot. This is the reference rule that
+    :data:`posture.store._DEFECT_SHARD_KEY_SQL` mirrors in SQL so the export
+    streams rows already ordered by bucket."""
     pub = row.get("published") or ""
     return pub[:7] if len(pub) >= 7 else "unknown"
 
 
-def _split_rows(rows: list[dict], max_bytes: int) -> list[list[dict]]:
-    """Split a row bucket into serialized parts no larger than max_bytes.
-
-    A single row is always kept intact. The ceiling leaves headroom below the
-    repository host's hard file-size limit and its lower warning threshold.
-    """
-    parts: list[list[dict]] = []
-    current: list[dict] = []
-    current_bytes = 0
-    for row in rows:
-        serialized = json.dumps(row, sort_keys=True, default=str) + "\n"
-        row_bytes = len(serialized.encode("utf-8"))
-        if current and current_bytes + row_bytes > max_bytes:
-            parts.append(current)
-            current = []
-            current_bytes = 0
-        current.append(row)
-        current_bytes += row_bytes
-    if current:
-        parts.append(current)
-    return parts
+def _serialize_line(row: dict) -> bytes:
+    """One row as its exact on-disk bytes (UTF-8 JSON line) — the same bytes the
+    sha256 covers, so the digest always matches what was written, on any
+    locale."""
+    return (json.dumps(row, sort_keys=True, default=str) + "\n").encode("utf-8")
 
 
-def _write_jsonl(path: Path, rows: list[dict]) -> tuple[str, int]:
-    """Write rows as one JSON object per line; return (sha256, count). The sha256
-    is over the exact bytes written, so a client re-reading the file can detect
-    any tampering via the manifest."""
+def _write_jsonl(path: Path, rows) -> tuple[str, int]:
+    """Stream rows as one JSON object per line; return (sha256, count). The
+    sha256 is computed incrementally over the exact bytes written, so a client
+    re-reading the file can detect any tampering via the manifest — and the
+    whole shard never exists in memory (the flat overlays run to tens of MB)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = "".join(json.dumps(r, sort_keys=True, default=str) + "\n" for r in rows)
-    path.write_text(data)
-    return hashlib.sha256(data.encode("utf-8")).hexdigest(), len(rows)
+    digest = hashlib.sha256()
+    count = 0
+    with open(path, "wb") as handle:
+        for row in rows:
+            line = _serialize_line(row)
+            handle.write(line)
+            digest.update(line)
+            count += 1
+    return digest.hexdigest(), count
+
+
+class _MonthSharder:
+    """Streaming per-month shard writer for defects.
+
+    Consumes (shard_key, row) pairs ordered by shard key (see
+    :func:`posture.store.catalog_iter_shard_keys`) and writes each month's rows
+    to YYYY-MM.jsonl, splitting oversized months into numbered
+    YYYY-MM-NNNNNN.jsonl parts no larger than max_bytes (a single row
+    is always kept intact; the ceiling leaves headroom below the repository
+    host's hard file-size limit and its lower warning threshold). Because the
+    final filename depends on the part count — unknown until the bucket
+    closes — parts stream to hidden .part-NNNNNN files and are renamed
+    into place when the bucket finishes. Memory stays at one serialized row
+    plus per-part bookkeeping, no matter how large the month grows."""
+
+    def __init__(self, defects_dir: Path, max_bytes: int) -> None:
+        self._dir = defects_dir
+        self._max = max_bytes
+        self._dir.mkdir(parents=True, exist_ok=True)
+        self.entries: list[dict] = []
+        self.total = 0
+        self._bucket: str | None = None
+        self._parts: list[tuple[Path, str, int]] = []
+        self._handle = None
+        self._digest = None
+        self._tmp: Path | None = None
+        self._count = 0
+        self._bytes = 0
+
+    def _open_part(self) -> None:
+        self._tmp = self._dir / f".{self._bucket}.jsonl.part-{len(self._parts) + 1:06d}"
+        self._handle = open(self._tmp, "wb")
+        self._digest = hashlib.sha256()
+        self._count = 0
+        self._bytes = 0
+
+    def _close_part(self) -> None:
+        self._handle.close()
+        self._parts.append((self._tmp, self._digest.hexdigest(), self._count))
+        self._handle = None
+
+    def _finish_bucket(self) -> None:
+        if self._handle is not None:
+            self._close_part()
+        if not self._parts:
+            return
+        single = len(self._parts) == 1
+        for index, (tmp, sha, count) in enumerate(self._parts, start=1):
+            filename = (f"{self._bucket}.jsonl" if single
+                        else f"{self._bucket}-{index:06d}.jsonl")
+            # atomically replace the same-named shard from a previous run
+            os.replace(tmp, self._dir / filename)
+            self.entries.append({"path": f"defects/{filename}", "sha256": sha,
+                                 "count": count})
+        self._parts = []
+
+    def write(self, shard_key: str, row: dict) -> None:
+        if shard_key != self._bucket:
+            self._finish_bucket()
+            self._bucket = shard_key
+        line = _serialize_line(row)
+        if self._handle is None:
+            self._open_part()
+        elif self._count and self._bytes + len(line) > self._max:
+            self._close_part()
+            self._open_part()
+        self._handle.write(line)
+        self._digest.update(line)
+        self._count += 1
+        self._bytes += len(line)
+        self.total += 1
+
+    def finish(self) -> list[dict]:
+        self._finish_bucket()
+        return self.entries
 
 
 def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    h.update(path.read_bytes())
-    return h.hexdigest()
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
-def _read_jsonl(path: Path) -> list[dict]:
+def _read_jsonl(path: Path):
+    """Yield parsed JSON objects one line at a time (empty file yields
+    nothing) — the import path streams shards instead of holding whole files
+    in memory."""
     if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        return
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                yield json.loads(line)
 
 
 # ---------------------------------------------------------------------------
@@ -139,37 +225,35 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
     files: list[dict] = []
     counts: dict[str, int] = {}
 
-    # --- defects: sharded by published month ---
-    defects = _store.catalog_all(conn)
-    counts["defects"] = len(defects)
-    buckets: dict[str, list[dict]] = {}
-    for row in defects:
-        buckets.setdefault(_defect_shard_key(row), []).append(row)
-    for shard, rows in sorted(buckets.items()):
-        parts = _split_rows(rows, MAX_DEFECT_SHARD_BYTES)
-        for index, part in enumerate(parts, start=1):
-            filename = (f"{shard}.jsonl" if len(parts) == 1
-                        else f"{shard}-{index:06d}.jsonl")
-            sha, count = _write_jsonl(root / "defects" / filename, part)
-            files.append({"path": f"defects/{filename}", "sha256": sha,
-                          "count": count})
+    # --- defects: streamed shard-by-shard, rows already ordered by published
+    #     month (server-side cursor; the whole catalog never lands in RAM) ---
+    defects_dir = root / "defects"
+    if defects_dir.exists():
+        # drop provisional parts from any crashed prior run — the self-clean
+        # below only matches final *.jsonl names
+        for stale in defects_dir.glob("*.jsonl.part-*"):
+            stale.unlink()
+    sharder = _MonthSharder(defects_dir, MAX_DEFECT_SHARD_BYTES)
+    for shard_key, row in _store.catalog_iter_shard_keys(conn):
+        sharder.write(shard_key, row)
+    files.extend(sharder.finish())
+    counts["defects"] = sharder.total
 
-    # --- flat tables ---
+    # --- flat tables (streamed one row at a time) ---
     loaders = {
-        "crosswalk": _store.crosswalk_all,
-        "candidates": _store.candidates,
-        "distrust_marks": _store.distrust_marks,
-        "seen_defects": _store.seen_defects,
-        "kev": _store.kev_all,
-        "apple_fixes": _store.apple_fixes_all,
-        "debian_fixes": _store.debian_fixes_all,
-        "ubuntu_fixes": _store.ubuntu_fixes_all,
-        "epss": _store.epss_all,
+        "crosswalk": _store.crosswalk_iter,
+        "candidates": _store.candidates_iter,
+        "distrust_marks": _store.distrust_marks_iter,
+        "seen_defects": _store.seen_defects_iter,
+        "kev": _store.kev_iter,
+        "apple_fixes": _store.apple_fixes_iter,
+        "debian_fixes": _store.debian_fixes_iter,
+        "ubuntu_fixes": _store.ubuntu_fixes_iter,
+        "epss": _store.epss_iter,
     }
     for name in FLAT_TABLES:
-        rows = loaders[name](conn)
-        counts[name] = len(rows)
-        sha, n = _write_jsonl(root / f"{name}.jsonl", rows)
+        sha, n = _write_jsonl(root / f"{name}.jsonl", loaders[name](conn))
+        counts[name] = n
         files.append({"path": f"{name}.jsonl", "sha256": sha, "count": n})
 
     # --- self-clean: drop any *.jsonl shard under root that this export did NOT
@@ -225,7 +309,8 @@ def verify_spine(from_dir: os.PathLike | str = ".") -> dict:
         if _sha256_file(path) != entry["sha256"]:
             raise ValueError(f"spine shard tampered (sha256 mismatch): {entry['path']}")
         # cross-check count cheaply (line count == declared count)
-        n = sum(1 for line in path.read_text().splitlines() if line.strip())
+        with open(path, encoding="utf-8") as handle:
+            n = sum(1 for line in handle if line.strip())
         if n != entry["count"]:
             raise ValueError(
                 f"spine shard row-count mismatch: {entry['path']} "

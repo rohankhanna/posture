@@ -280,3 +280,91 @@ def test_export_readonly_db(conn, tmp_path):
     assert manifest["counts"]["defects"] == 4
     # the source DB's row count is unchanged (export wrote nothing to it)
     assert len(store.catalog_all(conn)) == 4
+
+
+# --- streaming export: shard key, determinism, cleanup, bounded memory ------
+# (the VPS daily build was memcg-OOM-killed because the export assembled the
+# whole catalog in RAM; these tests pin the durable fix — stream rows from
+# SQLite to each shard and never materialize the catalog)
+
+def test_shard_key_sql_matches_python_rule(conn):
+    """catalog_iter_shard_keys must bucket EXACTLY like export._defect_shard_key
+    over the raw row — the SQL ordering replicates the Python rule so each
+    month's rows stream contiguously."""
+    published_values = [None, "", "2026", "2026-0", "2026-07-04", "2026-07",
+                        "2026-13-99", "zzz", "n/a", "1999-01-01"]
+    for i, published in enumerate(published_values):
+        store.upsert_defect(conn, {
+            "id": f"CVE-2000-{i:04d}", "published": published,
+            "description": "", "fixed_raw": None, "refs": [], "cwe": [],
+            "ref_tags": [], "source": "mitre", "fetched_at": "t",
+            "policy_version": "v", "complete": 1,
+        })
+    conn.commit()
+    expected = sorted((export._defect_shard_key(r), r["id"])
+                      for r in store.catalog_all(conn))
+    streamed = [(key, row["id"])
+                for key, row in store.catalog_iter_shard_keys(conn)]
+    assert streamed == expected  # same buckets, ordered by (bucket, id)
+
+
+def test_export_is_deterministic_across_runs(conn, tmp_path):
+    """Same DB + same timestamp -> byte-identical shards and manifest, so the
+    sharding/splitting is stable (the manifest pins exact sha256 digests)."""
+    _seed(conn)
+    out_a, out_b = tmp_path / "a", tmp_path / "b"
+    now = "2026-10-25T00:00:00+00:00"
+    manifest_a = export.export_spine(conn, out_dir=out_a, policy_version="v",
+                                     now=now)
+    manifest_b = export.export_spine(conn, out_dir=out_b, policy_version="v",
+                                     now=now)
+    assert manifest_a == manifest_b
+    shards_a = {p.relative_to(out_a / "spine").as_posix(): p.read_bytes()
+                for p in (out_a / "spine").rglob("*.jsonl")}
+    shards_b = {p.relative_to(out_b / "spine").as_posix(): p.read_bytes()
+                for p in (out_b / "spine").rglob("*.jsonl")}
+    assert shards_a == shards_b
+
+
+def test_export_cleans_stale_part_files(conn, tmp_path):
+    """A crashed prior run may leave hidden .part-* files behind; the next
+    export must remove them so the signed directory stays tidy."""
+    _seed(conn)
+    out = tmp_path / "out"
+    defects_dir = out / "spine" / "defects"
+    defects_dir.mkdir(parents=True)
+    stale = defects_dir / ".2026-07.jsonl.part-000001"
+    stale.write_text('{"id":"ORPHAN"}\n')
+    export.export_spine(conn, out_dir=out, policy_version="v")
+    assert not stale.exists()
+    assert not list(defects_dir.glob("*.jsonl.part-*"))
+
+
+def test_export_peak_memory_stays_far_below_catalog_size(conn, tmp_path):
+    """The VPS OOM regression bound: exporting a catalog tens of MB on disk
+    must peak at a small fraction of that in Python allocations — the export
+    streams rows and hashes shards incrementally, never materializing the
+    catalog or a whole shard in memory."""
+    import tracemalloc
+
+    payload = "x" * 3000  # ~3KB description per row
+    for i in range(12000):
+        store.upsert_defect(conn, {
+            "id": f"CVE-2026-{i:05d}", "published": f"2026-{(i % 6) + 1:02d}-15",
+            "description": payload, "fixed_raw": None, "refs": [], "cwe": [],
+            "ref_tags": [], "source": "mitre", "fetched_at": "t",
+            "policy_version": "v", "complete": 1,
+        })
+    conn.commit()
+
+    tracemalloc.start()
+    export.export_spine(conn, out_dir=tmp_path / "out", policy_version="v")
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    catalog_bytes = sum(p.stat().st_size
+                        for p in (tmp_path / "out" / "spine").rglob("*.jsonl"))
+    # the fixture must be heavy enough that the old in-RAM assembly (whole
+    # catalog as dicts + whole-shard strings) could not pass this bound
+    assert catalog_bytes > 30 * 1024 * 1024
+    assert peak < catalog_bytes // 4

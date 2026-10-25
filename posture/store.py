@@ -15,7 +15,7 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
-from typing import Iterable
+from typing import Iterable, Iterator
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS device_posture (
@@ -823,13 +823,20 @@ def resolve_crosswalk(conn, defect_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def crosswalk_iter(conn) -> Iterator[dict]:
+    """Streaming variant of :func:`crosswalk_all`: yields rows one at a time
+    from a server-side cursor (no fetchall), so the spine export's peak
+    memory is one row instead of the whole table."""
+    for r in conn.execute(
+        "SELECT defect_id, alias, kind FROM crosswalk ORDER BY defect_id, kind, alias"
+    ):
+        yield dict(r)
+
+
 def crosswalk_all(conn) -> list[dict]:
     """All crosswalk rows, ordered by (defect_id, kind, alias) — the stable shape
     the spine export serializes and the round-trip test compares against."""
-    rows = conn.execute(
-        "SELECT defect_id, alias, kind FROM crosswalk ORDER BY defect_id, kind, alias"
-    ).fetchall()
-    return [dict(r) for r in rows]
+    return list(crosswalk_iter(conn))
 
 
 def reverse_crosswalk(conn, alias: str) -> list[dict]:
@@ -871,14 +878,20 @@ def add_candidate(conn, url: str, fmt: str, axis: str, note: str = "") -> None:
     )
 
 
-def candidates(conn, status: str | None = None) -> list[dict]:
+def candidates_iter(conn, status: str | None = None) -> Iterator[dict]:
+    """Streaming variant of :func:`candidates` (no fetchall)."""
     if status:
-        rows = conn.execute(
+        cur = conn.execute(
             "SELECT * FROM candidates WHERE status=? ORDER BY id DESC", (status,)
-        ).fetchall()
+        )
     else:
-        rows = conn.execute("SELECT * FROM candidates ORDER BY id DESC").fetchall()
-    return [dict(r) for r in rows]
+        cur = conn.execute("SELECT * FROM candidates ORDER BY id DESC")
+    for r in cur:
+        yield dict(r)
+
+
+def candidates(conn, status: str | None = None) -> list[dict]:
+    return list(candidates_iter(conn, status))
 
 
 def set_candidate_status(conn, url: str, status: str) -> None:
@@ -917,9 +930,14 @@ def mark_distrust(conn, observer: str, reason: str) -> int:
     return n
 
 
+def distrust_marks_iter(conn) -> Iterator[dict]:
+    """Streaming variant of :func:`distrust_marks` (no fetchall)."""
+    for r in conn.execute("SELECT * FROM distrust_marks ORDER BY marked_at DESC"):
+        yield dict(r)
+
+
 def distrust_marks(conn) -> list[dict]:
-    rows = conn.execute("SELECT * FROM distrust_marks ORDER BY marked_at DESC").fetchall()
-    return [dict(r) for r in rows]
+    return list(distrust_marks_iter(conn))
 
 
 # ---------------------------------------------------------------------------
@@ -1209,19 +1227,56 @@ def catalog_list(conn, enrich_state: str | None = None, limit: int = 100,
     return [dict(r) for r in rows]
 
 
+# SQL rendering of the spine export's month-shard key — the
+# :func:`posture.export._defect_shard_key` rule (published[:7] when the row
+# carries a date prefix of at least 7 chars, else unknown). Kept beside the
+# streaming query so the SQL ordering matches the Python rule exactly; the
+# spine export tests pin their equivalence.
+_DEFECT_SHARD_KEY_SQL = (
+    "CASE WHEN published IS NOT NULL AND length(published) >= 7 "
+    "THEN substr(published, 1, 7) ELSE 'unknown' END"
+)
+
+
+def catalog_iter(conn, enrich_state: str | None = None) -> Iterator[dict]:
+    """Streaming variant of :func:`catalog_all`: yields parsed rows one at a
+    time from a server-side cursor (no fetchall), so a full-catalog walk
+    (the spine export) peaks at one row of memory instead of the whole table."""
+    if enrich_state:
+        cur = conn.execute(
+            "SELECT * FROM defects WHERE enrich_state=? ORDER BY id", (enrich_state,)
+        )
+    else:
+        cur = conn.execute("SELECT * FROM defects ORDER BY id")
+    for r in cur:
+        yield _parse_defect_row(r)
+
+
 def catalog_all(conn, enrich_state: str | None = None) -> list[dict]:
     """All catalog rows, parsed, ordered by id — the stable full snapshot the
     spine export serializes and the round-trip test compares against. No
     LIMIT (caller owns memory; the spine is a point-in-time full snapshot,
     not a paginated browse). enrich_state filters to 'mitre'/'nvd' when
     given, mirroring :func:`catalog_list`."""
-    if enrich_state:
-        rows = conn.execute(
-            "SELECT * FROM defects WHERE enrich_state=? ORDER BY id", (enrich_state,)
-        ).fetchall()
-    else:
-        rows = conn.execute("SELECT * FROM defects ORDER BY id").fetchall()
-    return [_parse_defect_row(r) for r in rows]
+    return list(catalog_iter(conn, enrich_state))
+
+
+def catalog_iter_shard_keys(conn) -> Iterator[tuple[str, dict]]:
+    """Stream every catalog row as (shard_key, parsed_row), ordered by
+    (shard_key, id) — the exact bucketing the spine export performs
+    (shard key = :data:`_DEFECT_SHARD_KEY_SQL`, the SQL rendering of
+    :func:`posture.export._defect_shard_key`). Rows of one published month
+    stream contiguously, so the export writes each month shard without ever
+    materializing the whole catalog; rows with no parseable date land in
+    unknown so nothing is dropped (the spine is a complete snapshot)."""
+    cur = conn.execute(
+        f"SELECT {_DEFECT_SHARD_KEY_SQL} AS shard_key, defects.* "
+        "FROM defects ORDER BY shard_key, id"
+    )
+    for r in cur:
+        d = dict(r)
+        shard_key = d.pop("shard_key")
+        yield shard_key, _parse_defect_row(d)
 
 
 def defects_for_cpe_head(conn, head: str) -> list[dict]:
@@ -1323,11 +1378,18 @@ def seen_first_seen(conn, defect_id: str) -> str | None:
     return row["first_seen"] if row else None
 
 
+def seen_defects_iter(conn) -> Iterator[dict]:
+    """Streaming variant of :func:`seen_defects` (no fetchall)."""
+    for r in conn.execute(
+        "SELECT defect_id, first_seen FROM seen_defects ORDER BY defect_id"
+    ):
+        yield dict(r)
+
+
 def seen_defects(conn) -> list[dict]:
     """All first-sighting rows, ordered by defect_id — the spine export serializes
     these so a client can restore the 'new since last tick' timeline."""
-    rows = conn.execute("SELECT defect_id, first_seen FROM seen_defects ORDER BY defect_id").fetchall()
-    return [dict(r) for r in rows]
+    return list(seen_defects_iter(conn))
 
 
 # ---------------------------------------------------------------------------
@@ -1355,20 +1417,23 @@ def upsert_kev(conn, row: dict) -> None:
     )
 
 
-def kev_all(conn) -> list[dict]:
-    """All KEV overlay rows, ordered by cve_id — the stable shape the spine
-    export serializes and the round-trip test compares against."""
-    rows = conn.execute("SELECT * FROM kev ORDER BY cve_id").fetchall()
-    out = []
+def kev_iter(conn) -> Iterator[dict]:
+    """Streaming variant of :func:`kev_all` (no fetchall): parses the JSON
+    cwes column back to a list per row, just like the list form."""
     import json as _json
-    for r in rows:
+    for r in conn.execute("SELECT * FROM kev ORDER BY cve_id"):
         d = dict(r)
         try:
             d["cwes"] = _json.loads(d["cwes"]) if d.get("cwes") else []
         except (ValueError, TypeError):
             d["cwes"] = []
-        out.append(d)
-    return out
+        yield d
+
+
+def kev_all(conn) -> list[dict]:
+    """All KEV overlay rows, ordered by cve_id — the stable shape the spine
+    export serializes and the round-trip test compares against."""
+    return list(kev_iter(conn))
 
 
 def kev_for_cve(conn, cve_id: str) -> dict | None:
@@ -1412,11 +1477,16 @@ def replace_epss(conn, rows: list[dict], fetched_at: str) -> int:
     return n
 
 
+def epss_iter(conn) -> Iterator[dict]:
+    """Streaming variant of :func:`epss_all` (no fetchall)."""
+    for r in conn.execute("SELECT * FROM epss ORDER BY cve_id"):
+        yield dict(r)
+
+
 def epss_all(conn) -> list[dict]:
     """All epss overlay rows, ordered by cve_id — the stable shape the spine
     export serializes and the round-trip test compares against."""
-    rows = conn.execute("SELECT * FROM epss ORDER BY cve_id").fetchall()
-    return [dict(r) for r in rows]
+    return list(epss_iter(conn))
 
 
 def epss_for_cve(conn, cve_id: str) -> dict | None:
@@ -1454,12 +1524,18 @@ def replace_apple_fixes(conn, product: str, rows: list[dict],
     return n
 
 
+def apple_fixes_iter(conn) -> Iterator[dict]:
+    """Streaming variant of :func:`apple_fixes_all` (no fetchall)."""
+    for r in conn.execute(
+        "SELECT * FROM apple_fixes ORDER BY product, cve_id"
+    ):
+        yield dict(r)
+
+
 def apple_fixes_all(conn) -> list[dict]:
     """All apple_fixes overlay rows, ordered by (product, cve_id) — the stable
     shape the spine export serializes and the round-trip test compares against."""
-    rows = conn.execute(
-        "SELECT * FROM apple_fixes ORDER BY product, cve_id").fetchall()
-    return [dict(r) for r in rows]
+    return list(apple_fixes_iter(conn))
 
 
 def apple_fixes_for_product(conn, product: str) -> list[dict]:
@@ -1512,14 +1588,19 @@ def replace_debian_fixes(conn, release: str, package: str, rows: list[dict],
     return n
 
 
+def debian_fixes_iter(conn) -> Iterator[dict]:
+    """Streaming variant of :func:`debian_fixes_all` (no fetchall)."""
+    for r in conn.execute(
+        "SELECT * FROM debian_fixes ORDER BY release, package, cve_id"
+    ):
+        yield dict(r)
+
+
 def debian_fixes_all(conn) -> list[dict]:
     """All debian_fixes overlay rows, ordered by (release, package, cve_id) — the
     stable shape the spine export serializes and the round-trip test compares
     against."""
-    rows = conn.execute(
-        "SELECT * FROM debian_fixes ORDER BY release, package, cve_id"
-    ).fetchall()
-    return [dict(r) for r in rows]
+    return list(debian_fixes_iter(conn))
 
 
 def debian_fixes_for_release_package(conn, release: str, package: str) -> list[dict]:
@@ -1572,14 +1653,19 @@ def replace_ubuntu_fixes(conn, release: str, package: str, rows: list[dict],
     return n
 
 
+def ubuntu_fixes_iter(conn) -> Iterator[dict]:
+    """Streaming variant of :func:`ubuntu_fixes_all` (no fetchall)."""
+    for r in conn.execute(
+        "SELECT * FROM ubuntu_fixes ORDER BY release, package, cve_id"
+    ):
+        yield dict(r)
+
+
 def ubuntu_fixes_all(conn) -> list[dict]:
     """All ubuntu_fixes overlay rows, ordered by (release, package, cve_id) — the
     stable shape the spine export serializes and the round-trip test compares
     against."""
-    rows = conn.execute(
-        "SELECT * FROM ubuntu_fixes ORDER BY release, package, cve_id"
-    ).fetchall()
-    return [dict(r) for r in rows]
+    return list(ubuntu_fixes_iter(conn))
 
 
 def ubuntu_fixes_for_release_package(conn, release: str, package: str) -> list[dict]:

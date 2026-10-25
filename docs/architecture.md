@@ -102,6 +102,14 @@ cosign-signs. A client (the shell, or any consumer) clones the signed
 repository, verifies the signature, and imports the JSONL into its own local
 SQLite database.
 
+Export is **streaming** by design: rows walk from SQLite to each shard through
+a server-side cursor with incremental sha256, so peak memory stays at one row
+plus per-part bookkeeping no matter how large the catalog grows. (The catalog
+outgrew a self-hosted runner's memory cap when the export assembled the whole
+catalog in RAM; the streaming export is what keeps the daily build viable on a
+small host.) The manifest pins every shard by sha256 + count, so importers and
+verifiers are unaffected by how the bytes were produced.
+
 ```
 CI ingestion pipeline          Client (shell or standalone)
 ─────────────────────          ───────────────────────────
