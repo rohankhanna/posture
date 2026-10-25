@@ -10,6 +10,10 @@
 # Gate 3 (spine size): the committed spine must not contain a file above the
 # host's hard per-file limit, because a push containing such a file is
 # rejected outright.
+# Gate 4 (deployment line): every `posture ...` invocation in the daily spine
+# script must resolve against the command-line interface this repository
+# ships. A script that calls a command the package does not provide loses a
+# capability silently; this gate makes that a loud failure instead.
 #
 # Exits 0 only when every gate that applies passes.
 set -euo pipefail
@@ -29,5 +33,8 @@ python -m pytest -q
 
 echo "verify-all: spine size guard"
 scripts/check_spine_size.sh
+
+echo "verify-all: deployment-line command gate"
+scripts/check_deployment_line.sh
 
 echo "verify-all: OK"

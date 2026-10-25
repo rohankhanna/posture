@@ -509,6 +509,34 @@ shard ever reaches the hard limit, so an un-publishable map is never
 published. The committed tree is checked by `scripts/check_spine_size.sh`,
 which runs as the third gate of `scripts/verify-all`.
 
+**Bounded growth on the serving host.** The catalog only ever grows and the
+host's disk does not, so the deployment line bounds itself in three places. A
+disk-space guard refuses to start a build that would fill the disk (it tries an
+aggressive one-year-retention purge first). A bounded-growth purge forgets
+ancient defects that are no longer relevant — never a known-exploited defect,
+never a defect that is still highly exploitable, never a defect with an
+outstanding fix on a tracked distribution, and never a row without a published
+date. A weekly git maintenance pass reclaims the pack-file bloat the advisory
+and CVE clones accumulate. The purge runs before the publish, so the served map
+is the purged map in one atomic publish:
+
+```bash
+# Report what the growth guard would forget, without forgetting anything:
+posture purge --dry-run --db posture.db
+
+# Forget it:
+posture purge --max-age-days 3650 --keep-epss-percentile 0.90 --db posture.db
+```
+
+**The deployment-line command gate.** The daily job is a shell script that
+calls this command-line interface. When the script and the package drift
+apart, the job calls a command that does not exist, the shell's best-effort
+handlers swallow it, and the spine silently loses a capability.
+`scripts/check_deployment_line.sh` closes that window: every `posture ...`
+invocation in the daily script must resolve against the interface this
+repository ships. It runs as the fourth gate of `scripts/verify-all`, so a
+script that outruns its package fails loudly instead of quietly.
+
 ## Data sources and ingestion
 
 **How the product is actually used.** There are two audiences for ingestion, and
@@ -686,6 +714,7 @@ Every subcommand takes `--help` for full options. Common options include
 | `posture ingest {kev\|osv\|ghsa\|apple}` | aggregator peers + overlays (`apple`: `--product`, `--history`) |
 | `posture refresh [--no-devices\|--devices <yaml>] [--cap N]` | incremental NVD enrichment + re-decide |
 | `posture enrich llm [--source …] [--dry-run]` | source-agnostic LLM draft over thin/unscored rows (off-by-default `POSTURE_LLM`; LLM-as-map, never trust) |
+| `posture purge [--max-age-days N] [--keep-epss-percentile P] [--dry-run]` | bounded-growth: forget ancient defects that are no longer relevant (never a known-exploited or highly-exploitable one, never one with an outstanding fix on a tracked distribution) |
 
 **Governance & development**
 

@@ -142,6 +142,25 @@ served directory with a single rename. A failed export or a failed verification
 leaves the previously published map serving untouched, so the served map is
 always either the last verified snapshot or the new one — never a mixture.
 
+The catalog that backs that map only grows, and the serving host's disk does
+not, so the deployment line is **bounded in growth** as well. A disk-space
+guard refuses to start a build that would fill the disk; a bounded-growth
+purge (`posture purge`) forgets ancient defects that are no longer relevant,
+never a known-exploited defect, never a defect that is still highly
+exploitable, and never one with an outstanding fix on a tracked distribution;
+a weekly git maintenance pass reclaims the pack-file bloat the advisory and
+CVE clones accumulate. The purge runs before the publish, so the published map
+is the purged map and the export never carries rows that are about to be
+forgotten.
+
+The daily job (`scripts/vps_spine.sh`) is a shell script that calls this
+package's command-line interface, so the two can drift apart. The
+**deployment-line command gate** (`scripts/check_deployment_line.sh`) makes
+that drift loud: every `posture ...` invocation in the daily script must
+resolve against the interface this repository ships, and the check runs as a
+gate of `scripts/verify-all`. A missing capability is a loud UNKNOWN, never a
+silently degraded spine.
+
 The spine is **data-only**. It serializes these MAP tables:
 
 | Table | Content |
