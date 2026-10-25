@@ -117,3 +117,110 @@ def test_cli_provides_the_commands_the_daily_script_uses(command):
             break
     assert top is not None
     assert command in top.choices
+
+
+# ---------------------------------------------------------------------------
+# Option-name validation: a renamed option silently drops a capability the
+# same way a missing command did. These tests pin the gate's second
+# dimension — checking that every --option the daily script passes is an
+# option the corresponding parser actually accepts.
+# ---------------------------------------------------------------------------
+
+def test_gate_rejects_an_unknown_option_on_a_bare_command(tmp_path):
+    # `posture purge` accepts --db, --max-age-days, --keep-epss-percentile,
+    # --dry-run, --help, -h — but NOT --bogus-option.
+    script = tmp_path / "vps_spine.sh"
+    script.write_text("posture purge --bogus-option --db /tmp/x.db\n")
+    result = _run_gate(script)
+    assert result.returncode == 1
+    assert "--bogus-option" in result.stdout
+
+
+def test_gate_rejects_an_unknown_option_on_a_subparser_command(tmp_path):
+    # `posture ingest ghsa` uses _SubParsersAction; --nonsense is not an
+    # option the ghsa subparser accepts.
+    script = tmp_path / "vps_spine.sh"
+    script.write_text("posture ingest ghsa --nonsense --db /tmp/x.db\n")
+    result = _run_gate(script)
+    assert result.returncode == 1
+    assert "--nonsense" in result.stdout
+
+
+def test_gate_rejects_an_unknown_option_on_a_positional_subcommand(tmp_path):
+    # `posture spine publish` uses a positional with choices; --bogus is not
+    # an option the spine parser accepts.
+    script = tmp_path / "vps_spine.sh"
+    script.write_text("posture spine publish --bogus --db /tmp/x.db --out /tmp/o\n")
+    result = _run_gate(script)
+    assert result.returncode == 1
+    assert "--bogus" in result.stdout
+
+
+def test_gate_accepts_known_options_on_a_subparser_command(tmp_path):
+    script = tmp_path / "vps_spine.sh"
+    script.write_text("posture ingest ghsa --cap 100 --db /tmp/x.db\n")
+    result = _run_gate(script)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_accepts_known_options_on_a_positional_subcommand(tmp_path):
+    script = tmp_path / "vps_spine.sh"
+    script.write_text(
+        "posture spine publish --db /tmp/x.db --out /tmp/o --sign-key /tmp/k\n")
+    result = _run_gate(script)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_validates_options_across_line_continuations(tmp_path):
+    # Options split across a continuation line must all be validated.
+    script = tmp_path / "vps_spine.sh"
+    script.write_text(
+        "posture ingest ubuntu \\\n"
+        "  --release noble --package linux --db /tmp/x.db\n")
+    result = _run_gate(script)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_rejects_unknown_option_across_line_continuations(tmp_path):
+    script = tmp_path / "vps_spine.sh"
+    script.write_text(
+        "posture ingest ubuntu \\\n"
+        "  --release noble --bogus --package linux --db /tmp/x.db\n")
+    result = _run_gate(script)
+    assert result.returncode == 1
+    assert "--bogus" in result.stdout
+
+
+def test_gate_skips_options_embedded_in_shell_expansions(tmp_path):
+    # A flag inside ${VAR:+--flag ...} is not statically visible; the gate
+    # must not reject it (and must not validate it either — it simply skips
+    # the token because it does not match a clean option pattern).
+    script = tmp_path / "vps_spine.sh"
+    script.write_text(
+        'posture spine publish --db "$DB_PATH" --out "$OUT" '
+        '${SIGN_KEY:+--sign-key "$SIGN_KEY"}\n')
+    result = _run_gate(script)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_rejects_unknown_option_while_ignoring_shell_expansion(tmp_path):
+    # Even when a shell expansion is present, a clean unknown --option on
+    # the same line must still be caught.
+    script = tmp_path / "vps_spine.sh"
+    script.write_text(
+        'posture purge --bogus --db "$DB_PATH" '
+        '${X:+--max-age-days "$X"}\n')
+    result = _run_gate(script)
+    assert result.returncode == 1
+    assert "--bogus" in result.stdout
+
+
+def test_gate_reports_accepted_options_on_unknown_option_failure(tmp_path):
+    # The failure message should list what the parser accepts so the
+    # operator can see the drift at a glance.
+    script = tmp_path / "vps_spine.sh"
+    script.write_text("posture purge --bogus --db /tmp/x.db\n")
+    result = _run_gate(script)
+    assert result.returncode == 1
+    assert "--max-age-days" in result.stdout
+    assert "--keep-epss-percentile" in result.stdout
