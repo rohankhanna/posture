@@ -10,6 +10,7 @@
   posture audit <observer>
   posture crosswalk {add|show} ...
   posture discover
+  posture source-history {list|show <id>|source <src>}   public-infrastructure event ledger
 
 The report footer emits NVD attribution whenever the NVD observer was actually
 used (project rule: the map is foreign-authored; say so).
@@ -41,6 +42,7 @@ from . import stream as _stream
 from . import refresh as _refresh
 from . import export as _export
 from . import llm_enrich as _llm_enrich
+from . import source_history as _source_history
 from .sources import build_default_registry
 from .sources.nvd_cve import NvdCveObserver
 from .sources import kev as _kev_mod
@@ -947,6 +949,41 @@ def _cmd_enrich_llm(args) -> int:
     return 0
 
 
+def _cmd_source_history(args) -> int:
+    """Public-infrastructure event ledger (source reliability history)."""
+    ledger = _source_history.default_ledger()
+    if getattr(args, "file", None):
+        ledger = _source_history.EventLedger.load(args.file)
+    sub = args.sub
+    if sub == "list":
+        print(f"{'date':12} {'source':8} {'type':16} {'layer':12} {'status':9} id")
+        print("-" * 80)
+        for e in ledger.sorted_by_date():
+            print(f"{e.date:12} {e.source:8} {e.event_type:16} "
+                  f"{e.map_layer:12} {e.status:9} {e.id}")
+        print(f"{len(ledger.events)} events ({len(ledger.active())} active)")
+        return 0
+    if sub == "show":
+        e = ledger.get(args.target)
+        if not e:
+            print(f"{args.target}: not in ledger")
+            return 1
+        print(json.dumps(e.to_dict(), indent=2))
+        return 0
+    if sub == "source":
+        rows = ledger.for_source(args.target)
+        if not rows:
+            print(f"{args.target}: no events")
+            return 1
+        for e in rows:
+            print(f"{e.date}  {e.id}  [{e.status}]")
+            print(f"  {e.summary}")
+            if e.interpretation:
+                print(f"  -> {e.interpretation}")
+        return 0
+    return 2
+
+
 def _cmd_catalog(args) -> int:
     with _open_db(args.db, readonly=True) as conn:
         if args.sub == "show":
@@ -1153,6 +1190,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=100)
     sp.add_argument("--offset", type=int, default=0)
     db_arg(sp); sp.set_defaults(func=_cmd_catalog)
+
+    sp = sub.add_parser("source-history",
+                        help="public-infrastructure event ledger: list | show <id> | source <src>")
+    sp.add_argument("sub", choices=["list", "show", "source"])
+    sp.add_argument("target", nargs="?", default=None,
+                    help="event id (show) or source id (source)")
+    sp.add_argument("--file", default=None, help="ledger JSONL (default: bundled seed)")
+    sp.set_defaults(func=_cmd_source_history)
 
     return p
 
