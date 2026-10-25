@@ -8,10 +8,12 @@ one fetch. No rate limit, schema-standard — the highest-leverage CVE peer.
 
 osv_ingest_tick is a two-phase cap-resumed ingestion:
 
-* **Backfill** — enumerate ecosystems.txt, then per ecosystem fetch
-  <ECO>/all.zip (a zip of OSV-schema JSON files, one record per file),
-  stream-parse it in memory (zipfile over bytes, never extracted to disk),
-  and upsert one osv catalog row per record. Cap-resumed across ticks: the
+* **Backfill** — enumerate ecosystems.txt, then per ecosystem download
+  <ECO>/all.zip (a zip of OSV-schema JSON files, one record per file)
+  straight to a temp file (records are then read from the zip on disk, one at
+  a time — the zip itself never lands in memory, which matters once an
+  ecosystem's zip grows past ~1GB compressed), and upsert one osv
+  catalog row per record. Cap-resumed across ticks: the
   processed-ecosystem set lives in posture.db (state key
   osv:done_ecosystems); each tick processes up to cap records, marking
   an ecosystem done when its zip is exhausted within the cap and continuing to
@@ -48,11 +50,21 @@ from __future__ import annotations
 import csv as _csv
 import io
 import json
+import os as _os
+import tempfile as _tempfile
 import zipfile
 from datetime import datetime, timezone
 
 from . import _net
 from .osv_schema import osv_skeleton
+
+
+def _unlink(path: str) -> None:
+    """Best-effort removal of a temp download (missing file is fine)."""
+    try:
+        _os.unlink(path)
+    except OSError:
+        pass
 
 DEFAULT_BASE = "https://storage.googleapis.com/osv-vulnerabilities"
 
@@ -194,10 +206,22 @@ def _backfill_tick(conn, ecosystems, done_set, base, cap, policy_version,
             continue
         stats["fetched_ecosystem"] = eco
 
-        # Fetch the ecosystem's all.zip (a binary payload — use the binary-safe
-        # fetch so the zip bytes are not corrupted by a lossy utf-8 decode).
-        zbody, zcode = _net.curl_get_bytes(f"{base}/{eco}/all.zip", max_time=300)
-        if zcode != 200 or not zbody:
+        # Download the ecosystem's all.zip straight to a temp file on disk —
+        # records are then read from the zip one at a time. Holding the body
+        # in memory twice (curl bytes + BytesIO copy) crossed the VPS memory
+        # cap once an ecosystem zip grew past ~1GB: the nightly build was
+        # OOM-killed inside this step. Streaming to disk keeps memory flat
+        # regardless of zip size.
+        zip_path = None
+        try:
+            fd, zip_path = _tempfile.mkstemp(prefix="posture-osv-",
+                                             suffix=".zip")
+            _os.close(fd)
+            zcode = _net.curl_download(f"{base}/{eco}/all.zip", zip_path,
+                                       max_time=600)
+        except Exception:
+            zcode = 0
+        if zcode != 200 or not zip_path or not _os.path.exists(zip_path):
             # Best-effort: a single ecosystem's all.zip fetch failure must NOT
             # sink the whole ingest tick (and the CI spine commit downstream).
             # Skip this ecosystem (it stays NOT in done_set -> retried next
@@ -213,9 +237,11 @@ def _backfill_tick(conn, ecosystems, done_set, base, cap, policy_version,
             stats["failed_ecosystems"].append(eco)
             continue
 
-        # Stream-parse the zip from in-memory bytes (do NOT extract to disk).
+        # Stream-parse the zip from disk (do NOT extract; zipfile reads each
+        # member on demand). The temp file is removed as soon as this
+        # ecosystem's slice is processed or skipped.
         try:
-            zf = zipfile.ZipFile(io.BytesIO(zbody))
+            zf = zipfile.ZipFile(zip_path)
         except Exception:
             # Same best-effort: a corrupt zip for one ecosystem skips it, not
             # the whole tick. Clear a mid-zip cursor here too.
@@ -224,6 +250,7 @@ def _backfill_tick(conn, ecosystems, done_set, base, cap, policy_version,
                 conn.commit()
                 cursor_eco = None
                 cursor_idx = 0
+            _unlink(zip_path)
             stats["failed_ecosystems"].append(eco)
             continue
         names = [n for n in zf.namelist() if n.endswith(".json")]
@@ -267,6 +294,8 @@ def _backfill_tick(conn, ecosystems, done_set, base, cap, policy_version,
             stats["upserted"] += 1
             count += 1
 
+        zf.close()
+        _unlink(zip_path)
         if eco_exhausted:
             done_set.add(eco)
             _store.set_state(conn, OSV_DONE_ECOSYSTEMS_KEY,

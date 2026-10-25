@@ -121,12 +121,28 @@ def _make_fake_fetch_bytes(base_dir: Path):
     return _fetch
 
 
+def _make_fake_download(base_dir: Path):
+    """Build a fake curl_download (stream-to-disk) that copies the mirrored
+    .zip file to dest_path and returns the HTTP status — the same
+    to-disk contract the backfill now relies on, without the network."""
+    import shutil
+    def _download(url, dest_path, headers=None, max_time=60, extra=None):
+        path = Path(url)
+        if not path.exists():
+            return 404
+        shutil.copyfile(path, dest_path)
+        return 200
+    return _download
+
+
 def _patch_fetch(monkeypatch, base_dir: Path):
-    """Monkeypatch curl_get (text) + curl_get_bytes (binary) to serve
-    from base_dir — the same split real CI uses (json/txt/csv via the text
-    fetch, the all.zip via the binary-safe fetch)."""
+    """Monkeypatch curl_get (text) + curl_get_bytes (binary) +
+    curl_download (stream-to-disk) to serve from base_dir — the same
+    split real CI uses (json/txt/csv via the text fetch, the all.zip downloaded
+    straight to a temp file via the disk fetch)."""
     monkeypatch.setattr(_net, "curl_get", _make_fake_fetch(base_dir))
     monkeypatch.setattr(_net, "curl_get_bytes", _make_fake_fetch_bytes(base_dir))
+    monkeypatch.setattr(_net, "curl_download", _make_fake_download(base_dir))
 
 
 # --- 1. backfill populates osv rows + registers the CVE alias ----------------
@@ -477,3 +493,53 @@ def test_incremental_records_failing_ecosystem_skips(conn, tmp_path,
     assert stats["upserted"] == 1                 # Good's new record landed
     assert stats["failed_ecosystems"] == ["Bad"]  # Bad's csv missing -> recorded
     assert store.get_defect(conn, "OSV-GOOD-1") is not None
+
+# --- all.zip streams to disk (the VPS OOM regression: a >1GB ecosystem zip
+#     held in memory twice — curl bytes + BytesIO copy — memcg-killed the
+#     nightly build inside ingest osv; the backfill must download to a temp
+#     file and read records from the zip on disk) -----------------------------
+
+def test_backfill_downloads_all_zip_to_disk(conn, tmp_path, monkeypatch):
+    """The backfill must fetch all.zip via the to-disk download (curl -o), NOT
+    the in-memory byte fetch, and must remove the temp file after the tick."""
+    _write_ecosystems(tmp_path, ["PySEC"])
+    records = [_osv_json(f"OSV-2026-{i}", cve_alias=f"CVE-2026-{i}")
+               for i in range(3)]
+    _build_zip(tmp_path, "PySEC", records)
+    _patch_fetch(monkeypatch, tmp_path)
+
+    def _no_in_memory_fetch(url, headers=None, max_time=60, extra=None):
+        raise AssertionError("all.zip must stream to disk, not into RAM")
+    monkeypatch.setattr(_net, "curl_get_bytes", _no_in_memory_fetch)
+    seen_temps = []
+    import tempfile as _tf
+    real_mkstemp = _tf.mkstemp
+    def _watch_mkstemp(*a, **k):
+        fd, path = real_mkstemp(*a, **k)
+        seen_temps.append(path)
+        return fd, path
+    monkeypatch.setattr(_osv._tempfile, "mkstemp", _watch_mkstemp)
+
+    stats = _osv.osv_ingest_tick(conn, cap=100, policy_version="v",
+                                 base_url=str(tmp_path))
+    assert stats["upserted"] == 3
+    assert stats["ecosystems_done"] is True
+    # the temp download was cleaned up; nothing lingers on disk
+    assert seen_temps and all(not Path(t).exists() for t in seen_temps)
+
+
+def test_backfill_corrupt_zip_streams_to_disk_and_skips(conn, tmp_path,
+                                                        monkeypatch):
+    """A corrupt all.zip still skips just that ecosystem (best-effort) and the
+    temp file is cleaned up — disk streaming changes behavior nowhere."""
+    _write_ecosystems(tmp_path, ["PySEC", "Go"])
+    (tmp_path / "PySEC").mkdir()
+    (tmp_path / "PySEC" / "all.zip").write_bytes(b"not a real zip")
+    records = [_osv_json("OSV-2026-9", cve_alias="CVE-2026-9")]
+    _build_zip(tmp_path, "Go", records)
+    _patch_fetch(monkeypatch, tmp_path)
+
+    stats = _osv.osv_ingest_tick(conn, cap=100, policy_version="v",
+                                 base_url=str(tmp_path))
+    assert "PySEC" in stats["failed_ecosystems"]
+    assert stats["upserted"] == 1  # Go still processed after PySEC skipped

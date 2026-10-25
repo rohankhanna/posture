@@ -72,3 +72,39 @@ def curl_get_bytes(url: str, headers: list[str] | None = None,
     if body.endswith(b"\n"):
         body = body[:-1]
     return body, code
+
+
+def curl_download(url: str, dest_path: str, headers: list[str] | None = None,
+                  max_time: int = 300,
+                  extra: list[str] | None = None) -> int:
+    """GET url streamed straight to dest_path on disk (curl -o),
+    returning the HTTP status (0 on transport failure). For payloads too large
+    to hold in memory (OSV ecosystem all.zip runs past 1GB compressed — a
+    bytes+BytesIO double-buffer OOM-killed the VPS build): the caller opens the
+    file from disk instead of holding the body in RAM. A failed download
+    removes the partial file so a truncated body is never mistaken for a full
+    one. Auth stays HEADER-ONLY (same rule as :func:`curl_get`)."""
+    import os
+    cmd = ["curl", "-sS", "--max-time", str(max_time),
+           "-w", "%{http_code}", "-o", dest_path]
+    for h in headers or []:
+        cmd += ["-H", h]
+    if extra:
+        cmd += list(extra)
+    cmd += [url]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=max_time + 10)
+    except subprocess.TimeoutExpired:
+        try:
+            os.unlink(dest_path)
+        except OSError:
+            pass
+        return 0
+    status = (r.stdout or b"").strip()
+    code = int(status) if status.isdigit() else 0
+    if code != 200:
+        try:
+            os.unlink(dest_path)
+        except OSError:
+            pass
+    return code
