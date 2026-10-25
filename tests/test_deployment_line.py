@@ -699,3 +699,176 @@ def test_timer_with_a_compound_duration_passes(tmp_path):
         "WantedBy=default.target\n"))
     result = _run_gate_on([timer])
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ---------------------------------------------------------------------------
+# The deployment runbook (dimension 4)
+# ---------------------------------------------------------------------------
+
+RUNBOOK = REPO_ROOT / "docs" / "deployment.md"
+
+
+def _shipped_unit_names() -> list[str]:
+    names = []
+    for pattern in ("*.service", "*.timer"):
+        names.extend(p.name for p in sorted((REPO_ROOT / "systemd").glob(pattern)))
+    return names
+
+
+def _unit_environment_variables() -> list[str]:
+    """The posture-specific variables the shipped units set."""
+    import re
+
+    variables: set[str] = set()
+    pair = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(?:\S+)")
+    for pattern in ("*.service", "*.timer"):
+        for unit in sorted((REPO_ROOT / "systemd").glob(pattern)):
+            for line in unit.read_text().splitlines():
+                stripped = line.strip()
+                if not stripped.startswith("Environment="):
+                    continue
+                value = stripped[len("Environment="):]
+                for match in pair.finditer(value):
+                    key = match.group(1)
+                    if key.startswith("POSTURE_") or key == "NVD_API_KEY":
+                        variables.add(key)
+    return sorted(variables)
+
+
+def _baseline_runbook(extra: str = "") -> str:
+    """A runbook that satisfies every runbook check, plus an extra line.
+
+    The baseline names every shipped unit and documents every environment
+    variable a shipped unit sets, so a test that adds one defect sees only
+    that defect.
+    """
+    lines = ["# Deployment runbook", ""]
+    for name in _shipped_unit_names():
+        lines.append(f"Install `{name}`.")
+        lines.append("")
+    for variable in _unit_environment_variables():
+        lines.append(f"The variable `{variable}` is read by the daily job.")
+        lines.append("")
+    if extra:
+        lines.append(extra)
+    return "\n".join(lines)
+
+
+def test_gate_passes_on_the_repository_runbook():
+    result = _run_gate_on([RUNBOOK])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "runbook reference resolves" in result.stdout
+
+
+def test_default_gate_run_covers_the_runbook():
+    # The canonical gate run (no arguments) must include the runbook, so the
+    # runbook is checked by the repository's own verification path.
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 runbook(s)" in result.stdout
+
+
+def test_runbook_names_every_shipped_unit():
+    # A unit the runbook does not install is a unit the operator never puts
+    # on the host, so its capability never runs.
+    names = _shipped_unit_names()
+    assert names, "the tree ships no systemd units"
+    text = RUNBOOK.read_text()
+    for name in names:
+        assert name in text, f"the runbook does not mention {name}"
+
+
+def test_runbook_that_omits_a_unit_is_rejected(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook()
+    omitted = _shipped_unit_names()[0]
+    body = body.replace(f"Install `{omitted}`.", "Install the service.")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert omitted in result.stdout
+    assert "does not name" in result.stdout
+
+
+def test_runbook_pointing_at_a_missing_tree_path_is_rejected(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook(
+        "The daily job lives in `scripts/not_a_script.sh`."))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "scripts/not_a_script.sh" in result.stdout
+    assert "does not exist in this tree" in result.stdout
+
+
+def test_runbook_showing_an_unknown_command_is_rejected(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook(
+        "Run `posture not-a-command --db /tmp/posture.db`."))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "not-a-command" in result.stdout
+
+
+def test_runbook_showing_an_unknown_option_is_rejected(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook(
+        "Run `posture spine publish --bogus /tmp/out`."))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "--bogus" in result.stdout
+
+
+def test_runbook_showing_an_unknown_command_in_a_code_block_is_rejected(
+        tmp_path):
+    # The commands an operator copies live in fenced code blocks, so the
+    # gate must read those too.
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook(
+        "```bash\nposture not-a-command --db /tmp/posture.db\n```"))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "not-a-command" in result.stdout
+
+
+def test_runbook_documenting_an_unread_variable_is_rejected(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook(
+        "The variable `POSTURE_NOT_A_REAL_VARIABLE` tunes the build."))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "POSTURE_NOT_A_REAL_VARIABLE" in result.stdout
+
+
+def test_runbook_that_omits_a_unit_variable_is_rejected(tmp_path):
+    # Every variable a shipped unit sets must be documented, so the
+    # environment file the operator writes is complete.
+    variables = _unit_environment_variables()
+    assert variables, "the shipped units set no posture variables"
+    omitted = variables[0]
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook().replace(
+        f"The variable `{omitted}` is read by the daily job.", ""))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert omitted in result.stdout
+    assert "does not document" in result.stdout
+
+
+def test_runbook_documents_the_variables_the_daily_job_reads():
+    # The environment file the operator writes must be complete for the
+    # daily job: every variable the job reads is documented.
+    text = RUNBOOK.read_text()
+    for variable in ("POSTURE_STATE_DIR", "POSTURE_EXPORT_DIR",
+                     "POSTURE_DB_PATH", "POSTURE_BACKFILL_CAP",
+                     "POSTURE_OSV_CAP", "POSTURE_REFRESH_CAP",
+                     "POSTURE_SIGN_KEY", "NVD_API_KEY"):
+        assert variable in text, f"the runbook does not document {variable}"
+
+
+def test_a_baseline_runbook_passes_the_gate(tmp_path):
+    # The baseline used by the runbook tests must itself satisfy every
+    # runbook check, so each defect test sees only its own defect.
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook())
+    result = _run_gate_on([runbook])
+    assert result.returncode == 0, result.stdout + result.stderr

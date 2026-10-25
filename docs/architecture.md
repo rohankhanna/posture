@@ -161,6 +161,15 @@ resolve against the interface this repository ships, and the check runs as a
 gate of `scripts/verify-all`. A missing capability is a loud UNKNOWN, never a
 silently degraded spine.
 
+The same gate covers the systemd units and the **deployment runbook**
+(`docs/deployment.md`), the operator's procedure for putting this tree on
+the single-VPS host and for verifying the published map there. The runbook is
+kept honest by the same mechanism: a unit it does not install, a tree path it
+points at that does not exist, a command this repository does not provide, an
+environment variable nothing reads, and an environment variable a shipped unit
+sets but the runbook does not document are all loud at check time, so the
+runbook cannot quietly stop describing the tree it installs.
+
 The spine is **data-only**. It serializes these MAP tables:
 
 | Table | Content |

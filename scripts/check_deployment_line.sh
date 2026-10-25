@@ -66,6 +66,30 @@
 #         has timers in scope must be scheduled by one of those timers. A
 #         service nothing triggers is a capability that never runs.
 #
+#   Deployment runbook (docs/deployment.md):
+#
+#     4a. Unit coverage — every unit file this tree ships must be named in
+#         the runbook. A unit the runbook does not install is a unit the
+#         operator never puts on the host, so its capability never runs.
+#
+#     4b. Tree paths — every path the runbook points at (scripts/...,
+#         systemd/..., posture/..., docs/..., tests/..., spine/...,
+#         config/...) must exist in this tree. A runbook that names a file
+#         this tree no longer ships sends the operator to a missing file.
+#
+#     4c. Commands — every `posture ...` command the runbook shows must
+#         resolve against the command-line interface this repository ships,
+#         with option names the parser accepts. A runbook that shows a
+#         renamed command is a runbook that fails on the host.
+#
+#     4d. Documented environment variables — every POSTURE_* or NVD_API_KEY
+#         variable the runbook names must be read by the posture package or
+#         by the daily job. A documented knob that nothing reads is drift.
+#
+#     4e. Unit environment coverage — every POSTURE_* or NVD_API_KEY
+#         variable a shipped unit sets must be documented in the runbook, so
+#         the environment file the operator writes is complete.
+#
 # Usage: check_deployment_line.sh [FILE ...]
 #   Default: scripts/vps_spine.sh plus every systemd/*.service and
 #   systemd/*.timer unit.
@@ -83,6 +107,7 @@ if [ "${#FILES[@]}" -eq 0 ]; then
   for u in systemd/*.service systemd/*.timer; do
     [ -f "$u" ] && FILES+=("$u")
   done
+  [ -f "docs/deployment.md" ] && FILES+=("docs/deployment.md")
 fi
 
 python3 - "${FILES[@]}" <<'PY'
@@ -579,6 +604,182 @@ def _check_service_coverage(
 
 
 # ---------------------------------------------------------------------------
+# Deployment runbook contract (4a-4e)
+# ---------------------------------------------------------------------------
+
+# The tree directories a runbook path reference may point into. A reference
+# that starts with one of these names a file in this tree, so it must exist.
+_TREE_DIRS = ("scripts", "systemd", "posture", "docs", "tests", "spine",
+              "config")
+# A code span in a markdown document: `like this`.
+_CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
+
+
+def _is_runbook(path: str) -> bool:
+    """A markdown document is a runbook for the gate's purposes."""
+    return path.endswith(".md")
+
+
+def _code_spans(text: str) -> list[str]:
+    """Every inline code span in a markdown document, stripped.
+
+    A span that contains an ellipsis is a placeholder, not a reference, and
+    is skipped by the callers.
+    """
+    return [m.group(1).strip() for m in _CODE_SPAN_RE.finditer(text)]
+
+
+def _code_blocks(text: str) -> list[str]:
+    """Every fenced code block in a markdown document, as plain text.
+
+    A runbook shows its commands in fenced blocks, so those blocks are part
+    of the runbook's contract: the commands in them are the commands the
+    operator copies.
+    """
+    blocks: list[str] = []
+    in_block = False
+    current: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if in_block:
+                blocks.append("\n".join(current))
+                current = []
+            in_block = not in_block
+            continue
+        if in_block:
+            current.append(line)
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+def _runbook_invocations(spans: list[str]):
+    """Every `posture ...` command shown in a runbook.
+
+    Returns (command_words, invocation_text) tuples, where command_words are
+    the leading non-option words after `posture` and invocation_text is the
+    argument string the option names are taken from.
+    """
+    for span in spans:
+        if "..." in span:
+            continue  # a placeholder, not a command
+        text = span.strip()
+        if not text.startswith("posture "):
+            continue
+        rest = text[len("posture"):].strip()
+        words: list[str] = []
+        for token in rest.split():
+            token = token.strip("\"'")
+            if token.startswith("-") or "${" in token or "$(" in token:
+                break
+            words.append(token)
+        if words:
+            yield words, rest
+
+
+def _runbook_tree_paths(spans: list[str], blocks: list[str]) -> list[str]:
+    """Every tree-relative path a runbook points at.
+
+    Inline code spans and the lines of fenced code blocks are both read: a
+    runbook may name a path in prose or in a command the operator copies.
+    """
+    paths: list[str] = []
+    candidates: list[str] = list(spans)
+    for block in blocks:
+        for line in block.splitlines():
+            candidates.extend(line.split())
+    for candidate in candidates:
+        if "..." in candidate:
+            continue
+        token = candidate.strip().strip("\"'").rstrip(",.;:")
+        if token.startswith(tuple(d + "/" for d in _TREE_DIRS)):
+            paths.append(token)
+    return paths
+
+
+def _shipped_unit_files() -> list[Path]:
+    """Every systemd unit file this tree ships."""
+    systemd = Path("systemd")
+    if not systemd.is_dir():
+        return []
+    units = sorted(systemd.glob("*.service")) + sorted(systemd.glob("*.timer"))
+    return units
+
+
+def _validate_runbook(
+    path: str,
+    text: str,
+    top: argparse._SubParsersAction,
+    package_vars: set[str],
+    script_vars: set[str],
+    failures: list[str],
+) -> int:
+    """Validate the runbook's deployment contract (dimensions 4a-4e).
+
+    Returns the number of posture invocations checked in the runbook.
+    """
+    spans = _code_spans(text)
+    blocks = _code_blocks(text)
+    read_vars = set(package_vars) | set(script_vars)
+    checked = 0
+
+    # 4a. Unit coverage: every shipped unit must be named in the runbook.
+    for unit in _shipped_unit_files():
+        if unit.name not in text:
+            failures.append(
+                f"{path}: the runbook does not name {unit.name} (a unit the "
+                f"runbook does not install is a unit the operator never puts "
+                f"on the host)")
+
+    # 4b. Tree paths: every path the runbook points at must exist.
+    for token in _runbook_tree_paths(spans, blocks):
+        if not Path(token).exists():
+            failures.append(
+                f"{path}: the runbook points at `{token}` which does not "
+                f"exist in this tree")
+
+    # 4c. Commands: every posture command shown must resolve. The commands
+    #     a runbook shows live in inline code spans and in fenced code
+    #     blocks; both are the commands the operator copies.
+    for words, invocation_text in _runbook_invocations(spans):
+        checked += 1
+        _validate_one_invocation(words, invocation_text, path, top, failures)
+    for block in blocks:
+        for words, invocation_text in _invocations(block):
+            checked += 1
+            _validate_one_invocation(
+                words, invocation_text, path, top, failures)
+
+    # 4d. Documented environment variables: every variable the runbook
+    #     names must be read by the package or the daily job.
+    for var in sorted(set(_VAR_NAME_RE.findall(text))):
+        if var not in read_vars:
+            failures.append(
+                f"{path}: the runbook documents `{var}` but nothing in the "
+                f"posture package or the daily job reads it (a documented "
+                f"knob that does nothing is drift)")
+
+    # 4e. Unit environment coverage: every variable a shipped unit sets must
+    #     be documented in the runbook.
+    for unit in _shipped_unit_files():
+        try:
+            utext = unit.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for key in sorted(_unit_env_settings(utext)):
+            if not _VAR_NAME_RE.fullmatch(key):
+                continue
+            if key not in text:
+                failures.append(
+                    f"{path}: the runbook does not document `{key}`, which "
+                    f"{unit.name} sets (the environment file the operator "
+                    f"writes would be incomplete)")
+
+    return checked
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -596,12 +797,15 @@ def main(paths: list[str]) -> int:
     failures: list[str] = []
     checked = 0  # posture invocations validated
 
-    # Separate shell scripts, service units, and timer units.
+    # Separate shell scripts, service units, timer units, and runbooks.
     script_paths: list[str] = []
     unit_paths: list[str] = []
     timer_paths: list[str] = []
+    runbook_paths: list[str] = []
     for p in paths:
-        if _is_timer_file(p):
+        if _is_runbook(p):
+            runbook_paths.append(p)
+        elif _is_timer_file(p):
             timer_paths.append(p)
         elif _is_unit_file(p):
             unit_paths.append(p)
@@ -702,6 +906,22 @@ def main(paths: list[str]) -> int:
     #     a timer in scope.
     _check_service_coverage(unit_paths, timer_paths, failures)
 
+    # --- Deployment runbook: unit coverage, tree paths, commands, and the
+    #     environment contract between the runbook and the shipped tree
+    #     (4a-4e).
+    if runbook_paths:
+        runbook_package_vars = _package_env_vars()
+        runbook_script_vars = _script_env_vars("scripts/vps_spine.sh")
+        for path in runbook_paths:
+            try:
+                text = open(path, encoding="utf-8").read()
+            except OSError as exc:
+                failures.append(f"{path}: cannot read ({exc})")
+                continue
+            checked += _validate_runbook(
+                path, text, top, runbook_package_vars, runbook_script_vars,
+                failures)
+
     for failure in failures:
         print(f"check_deployment_line: FAIL — {failure}")
     if failures:
@@ -717,6 +937,8 @@ def main(paths: list[str]) -> int:
         summary_parts.append(f"{len(unit_paths)} service unit(s)")
     if timer_paths:
         summary_parts.append(f"{len(timer_paths)} timer unit(s)")
+    if runbook_paths:
+        summary_parts.append(f"{len(runbook_paths)} runbook(s)")
     coverage = ", ".join(summary_parts) or "no files"
     ok_parts = [
         "every invocation resolves against this repository's CLI",
@@ -727,6 +949,8 @@ def main(paths: list[str]) -> int:
         ok_parts.append("every timer scheduling contract holds")
     if unit_paths and timer_paths:
         ok_parts.append("every service is scheduled by a timer")
+    if runbook_paths:
+        ok_parts.append("every runbook reference resolves")
     ok_text = ", ".join(ok_parts)
     print(f"check_deployment_line: OK — {ok_text} ({checked} invocation(s) "
           f"checked, {coverage})")
