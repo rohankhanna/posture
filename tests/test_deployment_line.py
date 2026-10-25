@@ -75,7 +75,7 @@ def test_gate_joins_line_continuations(tmp_path):
                       "  --release noble --package linux --db /tmp/x.db\n")
     result = _run_gate(script)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "1 checked" in result.stdout
+    assert "1 invocation(s) checked" in result.stdout
 
 
 def test_gate_ignores_shell_expansions(tmp_path):
@@ -224,3 +224,230 @@ def test_gate_reports_accepted_options_on_unknown_option_failure(tmp_path):
     assert result.returncode == 1
     assert "--max-age-days" in result.stdout
     assert "--keep-epss-percentile" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Systemd units: the units in systemd/ call posture commands and shell
+# scripts too, so they drift the same way the daily script does. These tests
+# pin the gate's unit dimension — unit invocations, unit script paths, and
+# the unit environment contract.
+# ---------------------------------------------------------------------------
+
+UNIT_DIR = REPO_ROOT / "systemd"
+
+
+def _run_gate_on(files):
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    return subprocess.run(
+        ["bash", str(GATE), *[str(f) for f in files]],
+        capture_output=True, text=True, cwd=str(REPO_ROOT), env=env,
+    )
+
+
+def _write_unit(tmp_path, body: str, name: str = "unit.service") -> Path:
+    unit = tmp_path / name
+    unit.write_text(body)
+    return unit
+
+
+def test_gate_passes_on_the_repository_own_units():
+    # With no arguments the gate covers the daily script and every unit in
+    # systemd/. This repository's own units must pass.
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "unit(s)" in result.stdout
+
+
+@pytest.mark.parametrize("unit_name", [
+    "posture-reconcile.service",
+    "posture-spine.service",
+    "posture-stream.service",
+])
+def test_each_repository_unit_passes_the_gate(unit_name):
+    unit = UNIT_DIR / unit_name
+    assert unit.exists()
+    result = _run_gate_on([unit])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_rejects_an_unknown_command_in_a_unit(tmp_path):
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=/usr/bin/env posture not-a-command\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "not-a-command" in result.stdout
+
+
+def test_gate_rejects_an_unknown_subcommand_in_a_unit(tmp_path):
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=/usr/bin/env posture spine not-a-sub\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "not-a-sub" in result.stdout
+
+
+def test_gate_rejects_an_unknown_option_in_a_unit(tmp_path):
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=/usr/bin/env posture purge --bogus-option\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "--bogus-option" in result.stdout
+
+
+def test_gate_accepts_a_known_unit_invocation(tmp_path):
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=/usr/bin/env posture stream\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_accepts_a_unit_script_path_present_in_the_tree(tmp_path):
+    # /opt/posture is the conventional deployment root; the referenced
+    # script exists in this tree, so the unit resolves.
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "WorkingDirectory=/opt/posture\n"
+        "ExecStart=/usr/bin/env bash /opt/posture/scripts/vps_spine.sh\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_rejects_a_unit_script_path_missing_from_the_tree(tmp_path):
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "WorkingDirectory=/opt/posture\n"
+        "ExecStart=/usr/bin/env bash /opt/posture/scripts/no_such_script.sh\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "does not exist in this tree" in result.stdout
+
+
+def test_gate_rejects_a_unit_script_path_outside_the_tree(tmp_path):
+    # A path that maps to neither the unit's WorkingDirectory nor the
+    # conventional deployment root is drift the gate must name.
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "WorkingDirectory=/opt/posture\n"
+        "ExecStart=/usr/bin/env bash /opt/other/scripts/vps_spine.sh\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "does not map to a path in this tree" in result.stdout
+
+
+def test_gate_checks_invocations_inside_a_unit_referenced_script(tmp_path):
+    # The referenced script exists but calls a command this repository does
+    # not ship. The gate must follow the unit into the script.
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "WorkingDirectory=/opt/posture\n"
+        "ExecStart=/usr/bin/env bash "
+        "/opt/posture/tests/fixtures/deployment_line/bad_command.sh\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "not-a-command" in result.stdout
+
+
+def test_gate_rejects_an_environment_variable_nothing_reads(tmp_path):
+    # A unit that sets a posture-specific variable no invocation target
+    # reads is silent drift: the unit thinks it configures a capability
+    # that was removed or renamed.
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "Environment=POSTURE_GATE_TEST_UNREAD=1\n"
+        "ExecStart=/usr/bin/env posture stream\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "POSTURE_GATE_TEST_UNREAD" in result.stdout
+
+
+def test_gate_accepts_an_environment_variable_the_package_reads(tmp_path):
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "Environment=POSTURE_GHSA_DIR=/var/lib/posture/ghsa\n"
+        "ExecStart=/usr/bin/env posture stream\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_accepts_an_environment_variable_the_referenced_script_reads(tmp_path):
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "WorkingDirectory=/opt/posture\n"
+        "Environment=POSTURE_BACKFILL_CAP=5000\n"
+        "ExecStart=/usr/bin/env bash /opt/posture/scripts/vps_spine.sh\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_ignores_runtime_environment_variables(tmp_path):
+    # Runtime variables configure the process environment, not posture's
+    # behaviour; they are not part of the environment contract.
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "Environment=PYTHONUNBUFFERED=1\n"
+        "Environment=PATH=/opt/posture/.venv/bin:/usr/local/bin:/usr/bin:/bin\n"
+        "ExecStart=/usr/bin/env posture stream\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_ignores_an_inline_bash_pre_check(tmp_path):
+    # `bash -c '...'` is an inline script, not a reference to a file in
+    # this tree; it must not be reported as a missing script.
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStartPre=/usr/bin/bash -c 'exit 0'\n"
+        "ExecStart=/usr/bin/env posture stream\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_reports_a_unit_environment_variable_naming_the_variable(tmp_path):
+    # The failure message must name the variable so the operator can see
+    # which line of the unit drifted.
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "Environment=\"POSTURE_GATE_TEST_UNREAD=1\"\n"
+        "ExecStart=/usr/bin/env posture stream\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "POSTURE_GATE_TEST_UNREAD" in result.stdout
+
+
+def test_gate_ignores_a_command_that_only_looks_like_posture(tmp_path):
+    # `posture-helper` is not this repository's command-line interface; the
+    # gate must not treat it as a posture invocation.
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=/usr/bin/env posture-helper --bogus-option\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_accepts_a_bare_env_runner_prefix(tmp_path):
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=env posture stream\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 0, result.stdout + result.stderr
