@@ -13,6 +13,7 @@ from posture.source_history import (
     KNOWN_EVENT_TYPES,
     KNOWN_LAYERS,
     KNOWN_STATUSES,
+    SEED_DATA_PATH,
     STATUS_ACTIVE,
     STATUS_RESOLVED,
     EventLedger,
@@ -259,3 +260,109 @@ def test_cli_loads_file(tmp_path, capsys):
     rc, out, _ = _run(["source-history", "list", "--file", str(path)], capsys)
     assert rc == 0
     assert "a" in out and "b" in out and "c" in out
+
+
+# ---------------------------------------------------------------------------
+# the seed history is a versioned DATA file (trust-as-data), not code
+# ---------------------------------------------------------------------------
+
+def test_bundled_seed_data_file_exists():
+    assert SEED_DATA_PATH.exists()
+    assert SEED_DATA_PATH.name == "source_history.json"
+    assert SEED_DATA_PATH.parent.name == "policy"   # beside policy.yaml
+
+
+def test_bundled_data_file_is_a_valid_versioned_document():
+    from posture.source_history import load_document
+    doc = load_document(SEED_DATA_PATH)
+    assert doc["schema_version"] == 1
+    assert isinstance(doc["version"], str) and doc["version"]
+    assert isinstance(doc["dated"], str) and doc["dated"]
+    assert isinstance(doc["events"], list) and doc["events"]
+
+
+def test_seed_events_are_read_from_the_data_file():
+    """seed_events() is a view of the file, not a hardcoded list."""
+    from posture.source_history import SEED_DATA_PATH, load_document
+    doc = load_document(SEED_DATA_PATH)
+    from_file = {e["id"] for e in doc["events"]}
+    assert from_file == {e.id for e in seed_events()}
+
+
+def test_default_ledger_carries_the_document_version():
+    led = default_ledger()
+    assert led.version
+    assert led.dated
+    from posture.source_history import seed_version
+    assert led.version == seed_version()
+
+
+def test_document_round_trip_through_jsonl(tmp_path):
+    led = EventLedger.load_document(SEED_DATA_PATH)
+    out = tmp_path / "ledger.jsonl"
+    led.save(out)
+    again = EventLedger.load(out)
+    assert {e.id for e in again.events} == {e.id for e in led.events}
+    assert again.version is None  # JSONL carries events only
+
+
+def test_load_any_dispatches_on_suffix(tmp_path):
+    doc = EventLedger.load_any(SEED_DATA_PATH)
+    assert doc.version
+    jsonl = tmp_path / "l.jsonl"
+    doc.save(jsonl)
+    assert EventLedger.load_any(jsonl).version is None
+
+
+def test_load_document_rejects_missing_file(tmp_path):
+    from posture.source_history import load_document
+    with pytest.raises(SourceHistoryError):
+        load_document(tmp_path / "nope.json")
+
+
+def test_load_document_rejects_invalid_json(tmp_path):
+    from posture.source_history import load_document
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    with pytest.raises(SourceHistoryError):
+        load_document(bad)
+
+
+def test_load_document_rejects_unknown_schema_version(tmp_path):
+    from posture.source_history import load_document
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"schema_version": 99, "events": []}), encoding="utf-8")
+    with pytest.raises(SourceHistoryError):
+        load_document(bad)
+
+
+def test_load_document_rejects_missing_events_list(tmp_path):
+    from posture.source_history import load_document
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    with pytest.raises(SourceHistoryError):
+        load_document(bad)
+
+
+def test_from_document_rejects_non_mapping_event(tmp_path):
+    with pytest.raises(SourceHistoryError):
+        EventLedger.from_document({"schema_version": 1, "events": ["nope"]})
+
+
+def test_package_data_ships_the_seed_data_file():
+    import pathlib
+    pyproject = (pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    assert 'policy/*.json' in pyproject
+
+
+def test_cli_reports_the_ledger_version(capsys):
+    rc, out, _ = _run(["source-history", "list"], capsys)
+    assert rc == 0
+    assert "ledger version:" in out
+
+
+def test_cli_reads_the_canonical_document_file(capsys):
+    rc, out, _ = _run(["source-history", "list", "--file", str(SEED_DATA_PATH)], capsys)
+    assert rc == 0
+    assert "ledger version:" in out
+    assert "events" in out

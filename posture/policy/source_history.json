@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "version": "2026-10-25.1",
+  "dated": "2026-10-25",
+  "rationale": "The public-infrastructure event ledger is trust-as-data, like the trust policy: the engine reads it, it never hardcodes trust. This file is the canonical, versioned home of the seed history of the public sources posture depends on (NVD, MITRE/CVE Program, EPSS, OSV). It lives beside posture/policy/policy.yaml so a change to how posture reads the upstream world is a dated, reviewable data edit, not a code change. Append-only: never rewrite a past event's facts, only add a superseding event and point the old one at it.",
+  "changelog": [
+    "2026-10-25.1: initial externalization of the six seed events from posture/source_history.py into this versioned data file. Content is byte-for-byte the same as the code seed it replaces."
+  ],
+  "events": [
+    {
+      "id": "nvd-2026-04-15-enrichment-gap",
+      "date": "2026-04-15",
+      "source": "nvd",
+      "event_type": "degradation",
+      "summary": "NVD moved to risk-based enrichment; many CVEs no longer carry CVSS vector / CPE applicability / EPSS-style data.",
+      "map_layer": "enrichment",
+      "status": "active",
+      "evidence_url": "https://nvd.nist.gov/general/nvd-dashboard",
+      "interpretation": "The thin/unscored region is filled by OSV + EPSS overlays and (operator-gated) LLM drafts labeled source='llm:<model>'; nvd-thin rows are labeled and barred from the assess decide path until promoted."
+    },
+    {
+      "id": "nvd-2026-07-31-apikey-query-404-masquerade",
+      "date": "2026-07-31",
+      "source": "nvd",
+      "event_type": "data-correction",
+      "summary": "An authenticated broad-CPE pull with the API key in the URL query string returns 404 + empty body (the '404-masquerade'); a DELETE+INSERT recompute then wiped ~14000 fleet rows.",
+      "map_layer": "identifier",
+      "status": "resolved",
+      "evidence_url": "https://services.nvd.nist.gov/rest/json/cves/2.0",
+      "interpretation": "Key is sent header-only (never in the query string); the per-device completeness gate means an empty/incomplete fetch preserves last-known-good verdicts instead of wiping them (run-#10 class)."
+    },
+    {
+      "id": "epss-2026-09-09-feed-host-expired",
+      "date": "2026-09-09",
+      "source": "epss",
+      "event_type": "feed-relocated",
+      "summary": "EPSS feed host epss.cyentific.com expired; feed relocated to epss.empiricalsecurity.com.",
+      "map_layer": "scoring",
+      "status": "resolved",
+      "evidence_url": "https://epss.empiricalsecurity.com/",
+      "interpretation": "EPSS URL is pinned and monitored; the exploitability-likelihood overlay (CVE-keyed, daily full refresh) fills the NVD enrichment-degradation scoring gap."
+    },
+    {
+      "id": "mitre-cvelistV5-canonical-stream",
+      "date": "2024-02-01",
+      "source": "mitre",
+      "event_type": "format-change",
+      "summary": "CVE Program publishes cvelistV5 as the authoritative git-published CVE record stream (CVE JSON 5.0), superseding the legacy CVE List web downloads.",
+      "map_layer": "identifier",
+      "status": "active",
+      "evidence_url": "https://github.com/CVEProject/cvelistV5",
+      "interpretation": "The posture stream tick consumes cvelistV5 as the publication signal (skeletons only, rate-limit-free but git-fetch heavy); NVD enrichment runs as a separate paced per-CVE pass, not as the publication source."
+    },
+    {
+      "id": "nvd-rate-limits",
+      "date": "2026-04-15",
+      "source": "nvd",
+      "event_type": "rate-limit",
+      "summary": "NVD API throttles at ~5 req/30s anonymous and ~50 req/30s with an API key.",
+      "map_layer": "identifier",
+      "status": "active",
+      "evidence_url": "https://nvd.nist.gov/developers/vulnerabilities",
+      "interpretation": "Ingestion is paced + incremental with a per-source budget and cap-resumed backfill; rate limits become natural throttling, not failures. The client never holds the NVD API key in the signed-spine topology."
+    },
+    {
+      "id": "osv-package-keyed-coverage",
+      "date": "2026-08-01",
+      "source": "osv",
+      "event_type": "format-change",
+      "summary": "OSV mirrors NVD + GHSA plus many ecosystems (PyPI, npm, Crates, etc.) keyed by package@ecosystem with affected event-ranges, NOT by CPE.",
+      "map_layer": "identifier",
+      "status": "active",
+      "evidence_url": "https://osv.dev/",
+      "interpretation": "Consuming OSV/GHSA at assess needs a package matcher (ecosystem+name+version) alongside nvd_cpe and OSV-range decision logic over fixed_raw.ranges (tracked separately; not yet wired)."
+    }
+  ]
+}

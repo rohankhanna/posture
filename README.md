@@ -508,6 +508,36 @@ gated) lives in [`docs/sources.md`](docs/sources.md).
 | `posture refresh [--devices <yaml> \| --no-devices]` | Incremental NVD enrichment + per-CVE re-decide; upserts verdicts one key at a time, never a bulk swap. |
 | `posture enrich llm [--source …] [--cap N] [--model M] [--dry-run]` | Source-agnostic LLM draft over thin/unscored catalog rows (every peer scheme, not just NVD). LLM-as-map/human-as-trust: the LLM drafts catalog MAP fields only, drafts are labeled `source='llm:<model>'`, and the assess decide path selects `source='nvd'` only, so a draft is structurally barred from ever producing a trust/DEFCON verdict. Off-by-default `POSTURE_LLM` seam (no provider until the operator gates one); `--dry-run` inspects the thin pool with no provider. |
 
+### Public-infrastructure event ledger (source reliability)
+
+The map is not the territory. A device's risk moves for two separable reasons:
+something changed on the device, or something changed **upstream** in the
+public sources posture depends on (NVD stopped enriching a CVE, MITRE moved to
+a new record format, an EPSS feed host expired, a rate limit tightened).
+Without a side-by-side record of the second kind, a shift in the fleet view is
+indistinguishable from a shift in the map.
+
+`posture source-history` is that record: a dated, structured ledger of
+upstream-source events, each with the source, the event kind, the map layer it
+perturbs, an evidence URL, its current status, and how posture should read it.
+
+```bash
+posture source-history list                      # the bundled, versioned history
+posture source-history show nvd-2026-04-15-enrichment-gap
+posture source-history source nvd
+posture source-history list --file my-ledger.jsonl   # your own ledger (JSONL or JSON)
+```
+
+The history is **data, not code** — the same trust-as-data discipline as the
+trust policy. It lives in the versioned, dated file
+[`posture/policy/source_history.json`](posture/policy/source_history.json)
+(beside `policy.yaml`), and the engine only reads it. Recording a new
+upstream event is a data edit plus a version bump, not a code change; the
+ledger is append-only — never rewrite a past event's facts, add a superseding
+one instead. The vocabulary of event kinds, map layers and statuses is
+deliberately **open**: a new kind of upstream event records without a code
+change.
+
 ### CI ingestion (the recommended publication path)
 
 `.github/workflows/spine.yml` runs on ephemeral GitHub-hosted runners every 6 h
@@ -623,6 +653,7 @@ Every subcommand takes `--help` for full options. Common options include
 | `posture glossary {list\|roles\|show\|add\|promote\|deprecate}` | the vocabulary as data (axes, defect types, roles) |
 | `posture monitor {run\|queue}` | vocabulary monitor |
 | `posture repair {list\|apply <id>\|reconcile}` | trust-repair proposals (`apply` takes a proposal id) |
+| `posture source-history {list\|show <id>\|source <src>}` | public-infrastructure event ledger: upstream-source reliability history (versioned data file) |
 
 ## Library API
 

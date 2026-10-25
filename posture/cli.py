@@ -953,7 +953,8 @@ def _cmd_source_history(args) -> int:
     """Public-infrastructure event ledger (source reliability history)."""
     ledger = _source_history.default_ledger()
     if getattr(args, "file", None):
-        ledger = _source_history.EventLedger.load(args.file)
+        # .json is read as the versioned document; anything else as JSONL.
+        ledger = _source_history.EventLedger.load_any(args.file)
     sub = args.sub
     if sub == "list":
         print(f"{'date':12} {'source':8} {'type':16} {'layer':12} {'status':9} id")
@@ -962,6 +963,9 @@ def _cmd_source_history(args) -> int:
             print(f"{e.date:12} {e.source:8} {e.event_type:16} "
                   f"{e.map_layer:12} {e.status:9} {e.id}")
         print(f"{len(ledger.events)} events ({len(ledger.active())} active)")
+        if ledger.version:
+            print(f"ledger version: {ledger.version}"
+                  + (f" (dated {ledger.dated})" if ledger.dated else ""))
         return 0
     if sub == "show":
         e = ledger.get(args.target)
@@ -1196,7 +1200,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("sub", choices=["list", "show", "source"])
     sp.add_argument("target", nargs="?", default=None,
                     help="event id (show) or source id (source)")
-    sp.add_argument("--file", default=None, help="ledger JSONL (default: bundled seed)")
+    sp.add_argument("--file", default=None,
+                    help="ledger file: .json document or .jsonl stream "
+                         "(default: bundled versioned seed data)")
     sp.set_defaults(func=_cmd_source_history)
 
     return p

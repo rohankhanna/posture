@@ -24,10 +24,12 @@ Design notes
   axis-set creed: the seed set is not a structural ceiling). Validation only
   rejects malformed *structure* (missing required fields, bad dates), never an
   unknown vocabulary value.
-* **Data, not code, is the goal.** The seed events are bundled here so the
-  first slice is self-contained and testable, but EventLedger loads/saves
-  JSONL, so the canonical home can move to a versioned data file (alongside
-  posture/policy/policy.yaml) without an API change.
+* **Data, not code, is the goal.** The seed history is *not* hardcoded in
+  this module: it lives in the versioned data file
+  posture/policy/source_history.json (alongside posture/policy/policy.yaml),
+  with the same trust-as-data discipline as the trust policy — the engine
+  reads the file, it never hardcodes trust. The code API (seed_events(),
+  default_ledger()) is unchanged; only the home of the facts moved.
 * **Stdlib-only, offline, deterministic** — autonomy A1: no network, no
   secrets, no wall-clock dependence. Dates are stored as ISO-8601 strings.
 """
@@ -84,6 +86,46 @@ REQUIRED_FIELDS = ("id", "date", "source", "event_type", "summary",
 
 class SourceHistoryError(ValueError):
     """Malformed event structure (missing field, bad date, bad enum shape)."""
+
+
+# ---------------------------------------------------------------------------
+# Canonical data file — the seed history is data, not code
+# ---------------------------------------------------------------------------
+
+#: Versioned, dated home of the public-infrastructure seed history. Same
+#: trust-as-data discipline as posture/policy/policy.yaml: the file is the
+#: artifact, the engine only reads it.
+SEED_DATA_PATH = Path(__file__).resolve().parent / "policy" / "source_history.json"
+
+#: Schema version of the document format written by this module.
+SEED_DOCUMENT_SCHEMA_VERSION = 1
+
+
+def load_document(path: os.PathLike | str | Path) -> dict:  # type: ignore[name-defined]
+    """Read and structurally validate a source-history document (JSON).
+
+    The document shape is {schema_version, version, dated, rationale,
+    changelog, events[]}. Only structure is validated here; event content
+    is validated by :func:`validate_event` (open vocabulary).
+    """
+    p = Path(path)
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise SourceHistoryError(f"source-history data file not found: {p}") from exc
+    except json.JSONDecodeError as exc:
+        raise SourceHistoryError(f"source-history data file is not valid JSON: {p}: {exc}") from exc
+    if not isinstance(doc, dict):
+        raise SourceHistoryError("source-history document must be a JSON object")
+    schema = doc.get("schema_version")
+    if schema != SEED_DOCUMENT_SCHEMA_VERSION:
+        raise SourceHistoryError(
+            f"unsupported source-history schema_version: {schema!r} "
+            f"(expected {SEED_DOCUMENT_SCHEMA_VERSION})")
+    events = doc.get("events")
+    if not isinstance(events, list):
+        raise SourceHistoryError("source-history document must carry an 'events' list")
+    return doc
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +212,11 @@ def validate_event(d: dict) -> None:
 @dataclass
 class EventLedger:
     events: list[SourceEvent] = field(default_factory=list)
+    # Provenance of the ledger itself, when it was loaded from a versioned
+    # document. None for an in-memory or JSONL-loaded ledger (JSONL carries
+    # events only).
+    version: str | None = None
+    dated: str | None = None
 
     # -- mutation ----------------------------------------------------------
     def add(self, event: SourceEvent) -> None:
@@ -227,6 +274,36 @@ class EventLedger:
     def load(cls, path: os.PathLike | str | Path) -> EventLedger:  # type: ignore[name-defined]
         return cls.from_jsonl(Path(path).read_text(encoding="utf-8"))
 
+    @classmethod
+    def from_document(cls, doc: dict) -> EventLedger:
+        """Build a ledger from a versioned document (see :func:`load_document`)."""
+        if not isinstance(doc, dict):
+            raise SourceHistoryError("source-history document must be a mapping")
+        events = doc.get("events")
+        if not isinstance(events, list):
+            raise SourceHistoryError("source-history document must carry an 'events' list")
+        ledger = cls(version=doc.get("version"), dated=doc.get("dated"))
+        for raw in events:
+            if not isinstance(raw, dict):
+                raise SourceHistoryError("each source-history event must be a mapping")
+            ledger.add(SourceEvent.from_dict(raw))
+        return ledger
+
+    @classmethod
+    def load_document(cls, path: os.PathLike | str | Path) -> EventLedger:  # type: ignore[name-defined]
+        return cls.from_document(load_document(path))
+
+    @classmethod
+    def load_any(cls, path: os.PathLike | str | Path) -> EventLedger:  # type: ignore[name-defined]
+        """Load a ledger from either a JSON document or a JSONL event stream.
+
+        .json is read as a versioned document; anything else as JSONL.
+        """
+        p = Path(path)
+        if p.suffix.lower() == ".json":
+            return cls.load_document(p)
+        return cls.load(p)
+
 
 # ---------------------------------------------------------------------------
 # Seed — the known public-infrastructure history posture has already lived
@@ -236,106 +313,31 @@ class EventLedger:
 # ---------------------------------------------------------------------------
 
 def seed_events() -> list[SourceEvent]:
-    return [
-        SourceEvent(
-            id="nvd-2026-04-15-enrichment-gap",
-            date="2026-04-15",
-            source="nvd",
-            event_type=EVENT_DEGRADATION,
-            summary="NVD moved to risk-based enrichment; many CVEs no longer "
-                    "carry CVSS vector / CPE applicability / EPSS-style data.",
-            map_layer=LAYER_ENRICHMENT,
-            status=STATUS_ACTIVE,
-            evidence_url="https://nvd.nist.gov/general/nvd-dashboard",
-            interpretation="The thin/unscored region is filled by OSV + EPSS "
-                          "overlays and (operator-gated) LLM drafts labeled "
-                          "source='llm:<model>'; nvd-thin rows are labeled and "
-                          "barred from the assess decide path until promoted.",
-        ),
-        SourceEvent(
-            id="nvd-2026-07-31-apikey-query-404-masquerade",
-            date="2026-07-31",
-            source="nvd",
-            event_type=EVENT_DATA_CORRECTION,
-            summary="An authenticated broad-CPE pull with the API key in the "
-                    "URL query string returns 404 + empty body (the "
-                    "'404-masquerade'); a DELETE+INSERT recompute then wiped "
-                    "~14000 fleet rows.",
-            map_layer=LAYER_IDENTIFIER,
-            status=STATUS_RESOLVED,
-            evidence_url="https://services.nvd.nist.gov/rest/json/cves/2.0",
-            interpretation="Key is sent header-only (never in the query "
-                          "string); the per-device completeness gate means an "
-                          "empty/incomplete fetch preserves last-known-good "
-                          "verdicts instead of wiping them (run-#10 class).",
-        ),
-        SourceEvent(
-            id="epss-2026-09-09-feed-host-expired",
-            date="2026-09-09",
-            source="epss",
-            event_type=EVENT_FEED_RELOCATED,
-            summary="EPSS feed host epss.cyentific.com expired; feed relocated "
-                    "to epss.empiricalsecurity.com.",
-            map_layer=LAYER_SCORING,
-            status=STATUS_RESOLVED,
-            evidence_url="https://epss.empiricalsecurity.com/",
-            interpretation="EPSS URL is pinned and monitored; the exploitability-"
-                          "likelihood overlay (CVE-keyed, daily full refresh) "
-                          "fills the NVD enrichment-degradation scoring gap.",
-        ),
-        SourceEvent(
-            id="mitre-cvelistV5-canonical-stream",
-            date="2024-02-01",
-            source="mitre",
-            event_type=EVENT_FORMAT_CHANGE,
-            summary="CVE Program publishes cvelistV5 as the authoritative "
-                    "git-published CVE record stream (CVE JSON 5.0), "
-                    "superseding the legacy CVE List web downloads.",
-            map_layer=LAYER_IDENTIFIER,
-            status=STATUS_ACTIVE,
-            evidence_url="https://github.com/CVEProject/cvelistV5",
-            interpretation="The posture stream tick consumes cvelistV5 as the "
-                          "publication signal (skeletons only, rate-limit-free "
-                          "but git-fetch heavy); NVD enrichment runs as a "
-                          "separate paced per-CVE pass, not as the publication "
-                          "source.",
-        ),
-        SourceEvent(
-            id="nvd-rate-limits",
-            date="2026-04-15",
-            source="nvd",
-            event_type=EVENT_RATE_LIMIT,
-            summary="NVD API throttles at ~5 req/30s anonymous and ~50 req/30s "
-                    "with an API key.",
-            map_layer=LAYER_IDENTIFIER,
-            status=STATUS_ACTIVE,
-            evidence_url="https://nvd.nist.gov/developers/vulnerabilities",
-            interpretation="Ingestion is paced + incremental with a per-source "
-                          "budget and cap-resumed backfill; rate limits become "
-                          "natural throttling, not failures. The client never "
-                          "holds the NVD API key in the signed-spine topology.",
-        ),
-        SourceEvent(
-            id="osv-package-keyed-coverage",
-            date="2026-08-01",
-            source="osv",
-            event_type=EVENT_FORMAT_CHANGE,
-            summary="OSV mirrors NVD + GHSA plus many ecosystems (PyPI, npm, "
-                    "Crates, etc.) keyed by package@ecosystem with affected "
-                    "event-ranges, NOT by CPE.",
-            map_layer=LAYER_IDENTIFIER,
-            status=STATUS_ACTIVE,
-            evidence_url="https://osv.dev/",
-            interpretation="Consuming OSV/GHSA at assess needs a package "
-                          "matcher (ecosystem+name+version) alongside nvd_cpe "
-                          "and OSV-range decision logic over fixed_raw.ranges "
-                          "(tracked separately; not yet wired).",
-        ),
-    ]
+    """The known public-infrastructure history posture has already lived through.
+
+    Sourced from the versioned data file (posture/policy/source_history.json),
+    not from code. Dates are the posture-observed/adopted dates; evidence URLs
+    point at the canonical upstream. Append-only: never rewrite a past event's
+    facts, only add a superseding one.
+    """
+    return list(load_seed_ledger().events)
+
+
+def load_seed_ledger(path: os.PathLike | str | Path | None = None) -> EventLedger:  # type: ignore[name-defined]
+    """Load the bundled seed ledger from its versioned data file."""
+    p = Path(path) if path is not None else SEED_DATA_PATH
+    return EventLedger.load_document(p)
+
+
+def seed_version() -> str:
+    """The version string of the bundled seed data file."""
+    return load_seed_ledger().version or ""
 
 
 def default_ledger() -> EventLedger:
-    """Ledger seeded with the known public-infrastructure history."""
-    ledger = EventLedger()
-    ledger.extend(seed_events())
-    return ledger
+    """Ledger seeded with the known public-infrastructure history.
+
+    Reads the versioned data file, so the ledger carries the document's
+    version/dated metadata.
+    """
+    return load_seed_ledger()

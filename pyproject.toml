@@ -25,4 +25,4 @@ posture = "posture.cli:main"
 packages = ["posture", "posture.sources"]
 
 [tool.setuptools.package-data]
-posture = ["fixtures/*.json", "fixtures/*.yaml", "policy/*.yaml"]
+posture = ["fixtures/*.json", "fixtures/*.yaml", "policy/*.yaml", "policy/*.json"]
