@@ -86,6 +86,10 @@ served_dir_owner: posture
 map_max_age_days: 2
 publish_cadence_days: 1
 required_overlays: ubuntu_fixes,debian_fixes
+overlay_ubuntu_releases: resolute,noble,jammy,focal
+overlay_ubuntu_packages: linux,linux-nvidia
+overlay_debian_releases: trixie,bookworm
+overlay_debian_packages: linux
 ```
 
 The last two keys are the free-space thresholds the daily job applies to the
@@ -157,6 +161,9 @@ overlays the host requires, the verification step below requires them,
 the nightly job checks them after every publish, and the deployment-line
 gate checks that the runbook and the job still require exactly the
 overlays the contract declares.
+
+`overlay_ubuntu_releases`, `overlay_ubuntu_packages`, `overlay_debian_releases` and
+`overlay_debian_packages` are the ingest scope the nightly job must keep for each distro-tracker overlay the host requires. The Ubuntu and Debian tracker overlays are ingested per release and per source package (`posture ingest ubuntu --release <codename> --package <source>`), and the ingest is best-effort: a transient tracker outage must not block the daily spine build, and the catalog is not wiped between runs, so the rows for a release the job stops ingesting are retained from the last run that did. That retention is what makes a narrowed scope silent: drop a `--release` from the nightly job and the served map still carries that release's fix-status rows, the overlay coverage check above still passes, and the only thing that changes is that those rows stop being refreshed and quietly go stale — a patched kernel on the dropped release is then reported as unpatched, exactly the false positive the overlay exists to clear. The contract therefore declares the releases and the packages the job must ingest for each required distro-tracker overlay, and the deployment-line gate checks the nightly job's `posture ingest ubuntu` and `posture ingest debian` invocations against it: a `--release` or `--package` the contract declares but the job no longer carries is reported as drift at check time, and a value the job carries that the contract does not declare is reported too, so the contract and the job never disagree about which releases and packages the host refreshes. The operator owns the public-spine editorial choice of which releases and packages that is; the contract makes the choice loud and binding rather than free to shrink silently.
 
 The environment table below states a default for every knob the daily job
 reads. Those defaults live in the job itself, as the values it falls back
@@ -521,3 +528,4 @@ deployment line, and makes these kinds of drift loud:
     drift at check time, because the operator's question — does the map
     this host serves still say which packages are patched? — would
     otherwise have no answer.
+17. **Overlay ingest scope of the nightly job** — the host contract declares the per-distro ingest scope for every distro-tracker overlay it requires (`overlay_ubuntu_releases`, `overlay_ubuntu_packages`, `overlay_debian_releases`, `overlay_debian_packages`), and the gate checks the nightly job's `posture ingest ubuntu` and `posture ingest debian` invocations against it. The ingest is best-effort and the catalog is not wiped, so a dropped `--release` leaves the last-known-good rows for that release in place: the served map still carries the overlay rows, the overlay coverage check (item 16) still passes, and the only thing that changes is that the rows for the dropped release stop being refreshed and quietly go stale. A `--release` or `--package` the contract declares but the job no longer carries is reported as drift at check time, and a value the job carries that the contract does not declare is reported too, so the contract and the nightly job never disagree about which releases and packages the host refreshes. A contract that declares scope for a distro whose overlay it does not require, or that names no releases or no packages for a required overlay, is drift too, because the gate would otherwise have nothing to bind the job's arguments to.

@@ -755,6 +755,10 @@ served_dir_owner: posture
 map_max_age_days: 2
 publish_cadence_days: 1
 required_overlays: ubuntu_fixes,debian_fixes
+overlay_ubuntu_releases: resolute,noble,jammy,focal
+overlay_ubuntu_packages: linux,linux-nvidia
+overlay_debian_releases: trixie,bookworm
+overlay_debian_packages: linux
 ```
 """
 
@@ -2261,3 +2265,131 @@ def test_gate_rejects_a_contract_whose_overlays_the_daily_job_never_checks(
     assert result.returncode == 1
     assert "the daily job checks the served map but does not require" in (
         result.stdout)
+
+
+# ---------------------------------------------------------------------------
+# Overlay ingest scope of the nightly job (dimension 4p)
+# ---------------------------------------------------------------------------
+
+
+def test_the_host_contract_declares_the_overlay_ingest_scope():
+    # The contract states the releases and packages the nightly job must
+    # ingest for each distro-tracker overlay the host requires, so the gate
+    # can bind the job's --release/--package arguments to it.
+    body = RUNBOOK.read_text()
+    assert "overlay_ubuntu_releases: resolute,noble,jammy,focal" in body, (
+        "the host contract does not declare the Ubuntu overlay ingest "
+        "release scope")
+    assert "overlay_ubuntu_packages: linux,linux-nvidia" in body, (
+        "the host contract does not declare the Ubuntu overlay ingest "
+        "package scope")
+    assert "overlay_debian_releases: trixie,bookworm" in body, (
+        "the host contract does not declare the Debian overlay ingest "
+        "release scope")
+    assert "overlay_debian_packages: linux" in body, (
+        "the host contract does not declare the Debian overlay ingest "
+        "package scope")
+
+
+def test_the_daily_job_ingests_the_scope_the_contract_declares():
+    # The nightly job's posture ingest ubuntu/debian invocations must carry
+    # exactly the --release and --package values the contract declares, so a
+    # scope that shrinks in the job is loud at check time.
+    text = DAILY_SCRIPT.read_text()
+    assert "posture ingest ubuntu" in text
+    assert "posture ingest debian" in text
+    for release in ("resolute", "noble", "jammy", "focal"):
+        assert f"--release {release}" in text, (
+            f"the daily job does not ingest Ubuntu release {release}")
+    for package in ("linux", "linux-nvidia"):
+        assert f"--package {package}" in text, (
+            f"the daily job does not ingest Ubuntu package {package}")
+    for release in ("trixie", "bookworm"):
+        assert f"--release {release}" in text, (
+            f"the daily job does not ingest Debian release {release}")
+    assert "--package linux" in text
+
+
+def test_gate_reports_the_overlay_ingest_scope_dimension_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "the nightly job's overlay ingest scope matches" in result.stdout
+
+
+def test_gate_rejects_a_contract_that_drops_a_required_release(tmp_path):
+    # A contract that drops a release the nightly job still ingests describes
+    # a narrower scope than the job, so the contract and the job disagree
+    # about which releases the host refreshes.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "overlay_ubuntu_releases: resolute,noble,jammy,focal",
+        "overlay_ubuntu_releases: noble,jammy,focal")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "ingests ubuntu with --release resolute" in result.stdout
+    assert "the host contract does not declare" in result.stdout
+
+
+def test_gate_rejects_a_contract_that_declares_a_release_the_job_never_ingests(
+        tmp_path):
+    # A contract that declares a release the nightly job does not ingest is
+    # the silent-narrowing direction the dimension exists to catch: the job
+    # dropped the release, the no-wipe ingest retains last-known-good rows,
+    # and the coverage check still passes while the rows go stale.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "overlay_ubuntu_releases: resolute,noble,jammy,focal",
+        "overlay_ubuntu_releases: resolute,noble,jammy,focal,impish")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "ingests ubuntu without the --release impish" in result.stdout
+    assert "silently narrows" in result.stdout
+
+
+def test_gate_rejects_a_contract_that_drops_a_required_package(tmp_path):
+    # A contract that drops a package the nightly job still ingests describes
+    # a narrower scope than the job.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "overlay_ubuntu_packages: linux,linux-nvidia",
+        "overlay_ubuntu_packages: linux")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "ingests ubuntu with --package linux-nvidia" in result.stdout
+    assert "the host contract does not declare" in result.stdout
+
+
+def test_gate_rejects_a_contract_missing_the_overlay_ingest_scope(tmp_path):
+    # A contract that requires the distro-tracker overlays but declares no
+    # ingest scope leaves the gate nothing to bind the job's arguments to.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook()
+    for key_line in (
+            "overlay_ubuntu_releases: resolute,noble,jammy,focal",
+            "overlay_ubuntu_packages: linux,linux-nvidia",
+            "overlay_debian_releases: trixie,bookworm",
+            "overlay_debian_packages: linux"):
+        body = body.replace(key_line + "\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "overlay_ubuntu_releases" in result.stdout
+    assert "declares no overlay_ubuntu_releases" in result.stdout
+
+
+def test_gate_rejects_a_contract_that_declares_scope_for_an_unrequired_distro(
+        tmp_path):
+    # A contract that declares Ubuntu ingest scope but does not require the
+    # ubuntu_fixes overlay describes ingest work whose overlay the host does
+    # not serve.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "required_overlays: ubuntu_fixes,debian_fixes",
+        "required_overlays: debian_fixes")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "does not require the ubuntu_fixes overlay" in result.stdout

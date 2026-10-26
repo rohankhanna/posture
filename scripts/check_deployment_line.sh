@@ -201,6 +201,24 @@
 #         exact fire time within a window without changing how often the
 #         timer fires.
 #
+#     4p. Overlay ingest scope of the nightly job — the contract declares
+#         which overlay tables the served map must carry (required_overlays)
+#         and, for every distro-tracker overlay it requires (an overlay named
+#         <distro>_fixes whose <distro> ingest subcommand carries
+#         --release/--package scope), the contract also declares the ingest
+#         scope: overlay_<distro>_releases and overlay_<distro>_packages. The
+#         nightly job's `posture ingest <distro>` invocation must carry
+#         exactly the --release and --package values the contract declares.
+#         The ingest is best-effort and the catalog is not wiped, so a
+#         dropped --release leaves the last-known-good rows for that release
+#         in place: the served map still carries the overlay rows, the
+#         coverage check (4o) still passes, and the only thing that changes
+#         is that the rows for the dropped release stop being refreshed and
+#         quietly go stale. Binding the job's arguments to the contract makes
+#         a scope that shrinks in the job while the contract still describes
+#         the full scope loud at check time, rather than discovered when a
+#         patched kernel on a dropped release is reported as unpatched.
+#
 #     4k. Documented environment defaults — the runbook's environment table
 #         states a default for every knob the daily job reads: the state
 #         and export directories, the catalog and clone paths, the
@@ -936,6 +954,10 @@ _CONTRACT_KEYS = (
     "map_max_age_days",
     "publish_cadence_days",
     "required_overlays",
+    "overlay_ubuntu_releases",
+    "overlay_ubuntu_packages",
+    "overlay_debian_releases",
+    "overlay_debian_packages",
 )
 # The contract keys that name a path on the host.
 _CONTRACT_PATH_KEYS = (
@@ -1936,6 +1958,193 @@ def _validate_overlay_coverage_job(
 
 
 # ---------------------------------------------------------------------------
+# Overlay ingest scope of the nightly job (4p)
+# ---------------------------------------------------------------------------
+
+# The distro-tracker overlays whose ingest subcommand carries
+# --release/--package scope. Each distro D here serves an overlay table
+# named D_fixes, and the nightly job ingests it with `posture ingest D`.
+# Other overlays (kev, apple_fixes) do not carry per-release/per-package
+# scope, so the ingest-scope contract does not govern them.
+_OVERLAY_INGEST_DISTROS = ("ubuntu", "debian")
+
+
+def _required_overlay_distros(contract: dict[str, str]) -> list[str]:
+    """The distro-tracker distros whose overlay the contract requires.
+
+    An overlay table named <distro>_fixes is a distro-tracker overlay
+    whose ingest subcommand carries --release/--package scope. The
+    contract therefore declares the ingest scope for that distro, and the
+    nightly job must ingest it with exactly that scope. Other overlays
+    (kev, apple_fixes) are not distro-tracker overlays and do not
+    carry per-release/per-package scope.
+    """
+    distros: list[str] = []
+    for name in _contract_overlays(contract):
+        if name.endswith("_fixes"):
+            distro = name[: -len("_fixes")]
+            if distro in _OVERLAY_INGEST_DISTROS:
+                distros.append(distro)
+    return distros
+
+
+def _declared_overlay_scope(
+        contract: dict[str, str]) -> dict[str, dict[str, list[str]]]:
+    """The per-distro overlay ingest scope the contract declares.
+
+    Returns {distro: {"releases": [...], "packages": [...]}} for every
+    distro the contract carries overlay_<distro>_releases or
+    overlay_<distro>_packages for. A distro is present even when only
+    one of the two keys is declared, so a half-declared scope is reported
+    rather than treated as undeclared.
+    """
+    scope: dict[str, dict[str, list[str]]] = {}
+    for distro in _OVERLAY_INGEST_DISTROS:
+        releases_raw = contract.get(
+            f"overlay_{distro}_releases", "").strip()
+        packages_raw = contract.get(
+            f"overlay_{distro}_packages", "").strip()
+        if not releases_raw and not packages_raw:
+            continue
+        scope[distro] = {
+            "releases": [r.strip() for r in releases_raw.split(",")
+                         if r.strip()],
+            "packages": [p.strip() for p in packages_raw.split(",")
+                         if p.strip()],
+        }
+    return scope
+
+
+def _validate_overlay_ingest_scope_contract(
+        path: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the contract's declared overlay ingest scope (dimension 4p).
+
+    The contract declares which overlay tables the served map must carry
+    (required_overlays); for every distro-tracker overlay it requires,
+    the contract must also declare the ingest scope (the releases and the
+    packages the nightly job must ingest), or the gate has nothing to bind
+    the job's arguments to. A contract that declares scope for a distro
+    whose overlay the host does not require describes ingest work the host
+    does not serve, and a scope that names no releases or no packages
+    describes an ingest that produces no overlay rows.
+    """
+    if contract is None:
+        return
+    required_distros = _required_overlay_distros(contract)
+    declared = _declared_overlay_scope(contract)
+    for distro in required_distros:
+        releases = declared.get(distro, {}).get("releases", [])
+        packages = declared.get(distro, {}).get("packages", [])
+        if not releases:
+            failures.append(
+                f"{path}: the host contract requires the {distro}_fixes "
+                f"overlay but declares no overlay_{distro}_releases, so the "
+                f"gate cannot bind the nightly job's --release arguments to "
+                f"the scope the host expects (a dropped --release narrows "
+                f"the overlay silently while the coverage check still "
+                f"passes, because the no-wipe ingest retains last-known-good "
+                f"rows for the dropped release)")
+        if not packages:
+            failures.append(
+                f"{path}: the host contract requires the {distro}_fixes "
+                f"overlay but declares no overlay_{distro}_packages, so the "
+                f"gate cannot bind the nightly job's --package arguments to "
+                f"the scope the host expects (a dropped --package narrows "
+                f"the overlay silently while the coverage check still "
+                f"passes)")
+    for distro in declared:
+        if distro not in required_distros:
+            failures.append(
+                f"{path}: the host contract declares overlay_{distro}_"
+                f"releases/packages but does not require the {distro}_fixes "
+                f"overlay, so it describes ingest scope for an overlay the "
+                f"host does not serve")
+
+
+def _validate_overlay_ingest_scope_job(
+        path: str,
+        script_text: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the nightly job's overlay ingest scope (dimension 4p).
+
+    The nightly job ingests each distro-tracker overlay with
+    posture ingest <distro> --release <r> ... --package <p> .... The
+    ingest is best-effort and the catalog is not wiped, so a dropped
+    --release leaves the last-known-good rows for that release in
+    place: the served map still carries the overlay rows, the coverage
+    check (4o) still passes, and the only thing that changed is that the
+    rows for the dropped release stop being refreshed and quietly go
+    stale. The job's --release and --package arguments must
+    therefore be exactly the ones the contract declares, so a scope that
+    shrinks in the job while the contract still describes the full scope
+    is loud at check time rather than discovered when a patched kernel on
+    a dropped release is reported as unpatched.
+    """
+    if contract is None or not script_text:
+        return
+    required_distros = _required_overlay_distros(contract)
+    if not required_distros:
+        return
+    declared = _declared_overlay_scope(contract)
+    for distro in required_distros:
+        invocations = [invocation for words, invocation
+                       in _invocations(script_text)
+                       if words[:2] == ["ingest", distro]]
+        if not invocations:
+            failures.append(
+                f"{path}: the host contract requires the {distro}_fixes "
+                f"overlay but the daily job never runs `posture ingest "
+                f"{distro}`, so the overlay rows are not refreshed and the "
+                f"coverage check passes against rows that grow stale")
+            continue
+        job_releases: list[str] = []
+        job_packages: list[str] = []
+        for invocation in invocations:
+            job_releases.extend(_option_values(invocation, "--release"))
+            job_packages.extend(_option_values(invocation, "--package"))
+        want_releases = declared.get(distro, {}).get("releases", [])
+        want_packages = declared.get(distro, {}).get("packages", [])
+        missing_releases = [r for r in want_releases
+                            if r not in job_releases]
+        extra_releases = [r for r in job_releases if r not in want_releases]
+        missing_packages = [p for p in want_packages
+                            if p not in job_packages]
+        extra_packages = [p for p in job_packages if p not in want_packages]
+        if missing_releases:
+            failures.append(
+                f"{path}: the daily job ingests {distro} without the "
+                f"--release {', '.join(missing_releases)} the host contract "
+                f"declares, so the {distro}_fixes overlay silently narrows "
+                f"to the releases the job still ingests while the coverage "
+                f"check still passes (the no-wipe ingest retains "
+                f"last-known-good rows for the dropped release)")
+        if extra_releases:
+            failures.append(
+                f"{path}: the daily job ingests {distro} with --release "
+                f"{', '.join(extra_releases)} the host contract does not "
+                f"declare, so the contract describes a narrower scope than "
+                f"the job")
+        if missing_packages:
+            failures.append(
+                f"{path}: the daily job ingests {distro} without the "
+                f"--package {', '.join(missing_packages)} the host contract "
+                f"declares, so the {distro}_fixes overlay silently narrows "
+                f"to the packages the job still ingests while the coverage "
+                f"check still passes")
+        if extra_packages:
+            failures.append(
+                f"{path}: the daily job ingests {distro} with --package "
+                f"{', '.join(extra_packages)} the host contract does not "
+                f"declare, so the contract describes a narrower scope than "
+                f"the job")
+
+
+# ---------------------------------------------------------------------------
 # Host command contract (4g)
 # ---------------------------------------------------------------------------
 
@@ -2788,6 +2997,8 @@ def main(paths: list[str]) -> int:
                 path, runbook_contracts.get(path), failures)
             _validate_overlay_coverage_verification(
                 path, text, runbook_contracts.get(path), failures)
+            _validate_overlay_ingest_scope_contract(
+                path, runbook_contracts.get(path), failures)
             checked += _validate_runbook_host_commands(
                 path, text, runbook_contracts.get(path), failures)
             if daily_script_text:
@@ -2798,6 +3009,14 @@ def main(paths: list[str]) -> int:
     # so it must make the same overlay-coverage check the runbook shows.
     if daily_script_text and contract is not None:
         _validate_overlay_coverage_job(
+            "scripts/vps_spine.sh", daily_script_text, contract, failures)
+
+    # 4p (job side). The nightly job's overlay ingest scope must be the
+    #     one the contract declares, so a dropped --release that narrows
+    #     the overlay silently while the coverage check still passes is
+    #     loud at check time.
+    if daily_script_text and contract is not None:
+        _validate_overlay_ingest_scope_job(
             "scripts/vps_spine.sh", daily_script_text, contract, failures)
 
     for failure in failures:
@@ -2849,6 +3068,9 @@ def main(paths: list[str]) -> int:
                         "least that often")
         ok_parts.append("the served map's overlay coverage is checked "
                         "against the contract's required overlays")
+        ok_parts.append("the nightly job's overlay ingest scope matches "
+                        "the contract's declared per-distro releases and "
+                        "packages")
     if contract is not None:
         ok_parts.append("the growth-guard thresholds match the contract")
     if runbook_paths and daily_script_text:
