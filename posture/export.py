@@ -820,6 +820,122 @@ def verify_overlay_release_coverage(
     return checked
 
 
+def verify_overlay_package_coverage(
+        manifest: dict,
+        requirements: list[tuple[str, str, str, int]] | None = None,
+) -> dict[str, dict]:
+    """Check that a published map still carries every required overlay package.
+
+    The per-release coverage check (:func:`verify_overlay_release_coverage`)
+    asks whether a release still holds rows. That is a per-release
+    question, and a per-release answer hides a per-package failure: the
+    nightly job ingests each distro-tracker overlay per release and per
+    source package (posture ingest ubuntu --release noble --package
+    linux), and the per-(release, package) refresh deletes the rows it
+    is about to replace, so a source package whose tracker feed returned
+    nothing ends up with no rows at all while the release as a whole
+    still holds the other packages' rows and the per-release floor still
+    passes. The map is then quietly narrow in a different direction: the
+    missing package's fix-status rows are gone, so a patched package of
+    that source on that release is reported as unpatched, which is
+    exactly the false positive the vendor fix-status overlay exists to
+    clear.
+
+    requirements is a list of (table, release, package, min_rows)
+    quadruples: the map must carry at least min_rows rows for that
+    package of that release of that release-keyed overlay table. The
+    manifest already records, per release, which source packages
+    contributed rows and how many (the packages map inside the
+    release_coverage entry), so the check reads that record and
+    reports a package that is missing or below its floor rather than
+    serving it as a quietly narrow overlay.
+
+    Freshness is not checked at the package level. A release's recorded
+    fetch time is the newest across every package it carries, so a
+    package whose rows went stale while a sibling package stayed fresh
+    would pass a package-level freshness check by borrowing the sibling's
+    timestamp — a misleading signal. The freshness of the overlay rows is
+    bound at the per-release level by
+    :func:`verify_overlay_release_coverage`, which is the right
+    granularity for it.
+
+    Returns the per-package coverage that was checked. Raises
+    ValueError when a requirement names a table that is not a
+    release-keyed overlay table, when the manifest carries no per-release
+    coverage at all, when a required release is absent, or when a
+    required package is absent or below its floor.
+    """
+    requirements = list(requirements or [])
+    if not requirements:
+        return {}
+    for table, release, package, min_rows in requirements:
+        if table not in RELEASE_KEYED_OVERLAY_TABLES:
+            raise ValueError(
+                f"{table} is not a release-keyed overlay table "
+                f"(the release-keyed overlay tables are: "
+                f"{', '.join(RELEASE_KEYED_OVERLAY_TABLES)})")
+        if not str(release).strip():
+            raise ValueError(
+                f"the {table} overlay package coverage requirement names "
+                f"no release")
+        if not str(package).strip():
+            raise ValueError(
+                f"the {table} overlay package coverage requirement for "
+                f"release {release} names no package")
+        if int(min_rows) < 1:
+            raise ValueError(
+                f"the {table} overlay package coverage requirement for "
+                f"release {release} package {package} asks for {min_rows} "
+                f"row(s); the minimum is one")
+    coverage = manifest.get("release_coverage")
+    if not isinstance(coverage, dict):
+        raise ValueError(
+            "the published map's manifest carries no per-release overlay "
+            "coverage, so the packages the host requires cannot be "
+            "established (the map was published before the manifest "
+            "recorded it)")
+    checked: dict[str, dict] = {}
+    missing: list[str] = []
+    for table, release, package, min_rows in requirements:
+        release = str(release).strip()
+        package = str(package).strip()
+        per_table = coverage.get(table)
+        if not isinstance(per_table, dict):
+            missing.append(
+                f"{table} (the map's manifest records no per-release "
+                f"coverage for it)")
+            continue
+        entry = per_table.get(release)
+        if not isinstance(entry, dict):
+            missing.append(
+                f"{table} release {release} (the map carries no rows for "
+                f"that release at all, so its packages cannot be checked)")
+            continue
+        packages = entry.get("packages")
+        if not isinstance(packages, dict):
+            missing.append(
+                f"{table} release {release} (the map records no per-package "
+                f"counts for it)")
+            continue
+        rows = int(packages.get(package) or 0)
+        if rows < int(min_rows):
+            missing.append(
+                f"{table} release {release} package {package} "
+                f"(the map carries {rows} row(s) for that package, "
+                f"fewer than the {int(min_rows)} the host requires)")
+            continue
+        checked.setdefault(table, {}).setdefault(release, {})[package] = rows
+    if missing:
+        raise ValueError(
+            "the published map does not carry the per-package overlay "
+            "coverage the host requires: " + "; ".join(missing) +
+            " (the vendor fix-status overlays are what clear NVD's "
+            "unknown-fix false positives on a fully-updated host, so a map "
+            "without a package's rows reports patched packages of that "
+            "source as unpatched)")
+    return checked
+
+
 # ---------------------------------------------------------------------------
 # import (client consumption path; idempotent)
 # ---------------------------------------------------------------------------

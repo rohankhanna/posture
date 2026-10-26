@@ -762,6 +762,8 @@ overlay_debian_packages: linux
 overlay_ubuntu_min_rows: 1
 overlay_debian_min_rows: 1
 overlay_max_age_days: 2
+overlay_ubuntu_min_package_rows: 1
+overlay_debian_min_package_rows: 1
 ```
 """
 
@@ -860,6 +862,16 @@ def _baseline_runbook(extra: str = "") -> str:
                  "--require-overlay-release ubuntu_fixes:focal:1 "
                  "--require-overlay-release debian_fixes:trixie:1 "
                  "--require-overlay-release debian_fixes:bookworm:1 "
+                 "--require-overlay-package ubuntu_fixes:resolute:linux:1 "
+                 "--require-overlay-package ubuntu_fixes:resolute:linux-nvidia:1 "
+                 "--require-overlay-package ubuntu_fixes:noble:linux:1 "
+                 "--require-overlay-package ubuntu_fixes:noble:linux-nvidia:1 "
+                 "--require-overlay-package ubuntu_fixes:jammy:linux:1 "
+                 "--require-overlay-package ubuntu_fixes:jammy:linux-nvidia:1 "
+                 "--require-overlay-package ubuntu_fixes:focal:linux:1 "
+                 "--require-overlay-package ubuntu_fixes:focal:linux-nvidia:1 "
+                 "--require-overlay-package debian_fixes:trixie:linux:1 "
+                 "--require-overlay-package debian_fixes:bookworm:linux:1 "
                  "--require-overlay-max-age-days 2")
     lines.append("```")
     if extra:
@@ -2533,3 +2545,155 @@ def test_gate_rejects_a_runbook_that_uses_a_different_row_floor(tmp_path):
     result = _run_gate_on([runbook])
     assert result.returncode == 1
     assert "overlay_ubuntu_min_rows floor" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Per-package overlay coverage of the served map (dimension 4r)
+# ---------------------------------------------------------------------------
+
+
+def test_the_host_contract_declares_the_per_package_overlay_floor():
+    # The contract states a per-package row floor for every distro-tracker
+    # overlay it requires, so the gate can require the served map's
+    # per-package coverage.
+    body = RUNBOOK.read_text()
+    assert "overlay_ubuntu_min_package_rows: 1" in body, (
+        "the host contract does not declare the Ubuntu overlay per-package "
+        "row floor")
+    assert "overlay_debian_min_package_rows: 1" in body, (
+        "the host contract does not declare the Debian overlay per-package "
+        "row floor")
+
+
+def test_the_runbook_requires_every_declared_package():
+    # The runbook's verification must require the rows of every (release,
+    # package) pair the contract's overlay scope declares: a per-release
+    # floor cannot see a package that is missing while its release still
+    # looks populated.
+    body = RUNBOOK.read_text()
+    for table, release, package in (
+            ("ubuntu_fixes", "resolute", "linux"),
+            ("ubuntu_fixes", "resolute", "linux-nvidia"),
+            ("ubuntu_fixes", "noble", "linux"),
+            ("ubuntu_fixes", "noble", "linux-nvidia"),
+            ("ubuntu_fixes", "jammy", "linux"),
+            ("ubuntu_fixes", "jammy", "linux-nvidia"),
+            ("ubuntu_fixes", "focal", "linux"),
+            ("ubuntu_fixes", "focal", "linux-nvidia"),
+            ("debian_fixes", "trixie", "linux"),
+            ("debian_fixes", "bookworm", "linux")):
+        assert (f"--require-overlay-package "
+                f"{table}:{release}:{package}:1" in body), (
+            f"the runbook does not require the {table} rows of release "
+            f"{release} package {package}")
+
+
+def test_the_daily_job_requires_every_declared_package():
+    # The nightly job builds the map; it must make the same per-package
+    # check the runbook shows, right after it publishes.
+    text = DAILY_SCRIPT.read_text()
+    for table, release, package in (
+            ("ubuntu_fixes", "resolute", "linux"),
+            ("ubuntu_fixes", "resolute", "linux-nvidia"),
+            ("ubuntu_fixes", "noble", "linux"),
+            ("ubuntu_fixes", "noble", "linux-nvidia"),
+            ("ubuntu_fixes", "jammy", "linux"),
+            ("ubuntu_fixes", "jammy", "linux-nvidia"),
+            ("ubuntu_fixes", "focal", "linux"),
+            ("ubuntu_fixes", "focal", "linux-nvidia"),
+            ("debian_fixes", "trixie", "linux"),
+            ("debian_fixes", "bookworm", "linux")):
+        assert (f"--require-overlay-package "
+                f"{table}:{release}:{package}:1" in text), (
+            f"the daily job does not require the {table} rows of release "
+            f"{release} package {package}")
+
+
+def test_gate_reports_the_per_package_overlay_coverage_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "per-package overlay coverage is checked" in result.stdout
+
+
+def test_gate_rejects_a_contract_with_no_per_package_row_floor(tmp_path):
+    # Without a per-package floor the gate has nothing to require of the
+    # map's per-package rows.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "overlay_ubuntu_min_package_rows: 1\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "declares no overlay_ubuntu_min_package_rows" in result.stdout
+
+
+def test_gate_rejects_a_contract_with_a_per_package_floor_for_an_unrequired_overlay(
+        tmp_path):
+    # A per-package floor for an overlay the host does not serve describes
+    # a requirement about rows the map never carries.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "required_overlays: ubuntu_fixes,debian_fixes",
+        "required_overlays: debian_fixes")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "does not require the ubuntu_fixes overlay" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_drops_a_package_requirement(tmp_path):
+    # A runbook that requires the releases but not the packages inside
+    # them confirms a map that may be quietly narrow in the narrowest
+    # direction.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        " --require-overlay-package ubuntu_fixes:noble:linux-nvidia:1", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert ("does not require the ubuntu_fixes rows of release noble "
+            "package linux-nvidia") in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_uses_a_different_per_package_floor(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "--require-overlay-package ubuntu_fixes:noble:linux:1",
+        "--require-overlay-package ubuntu_fixes:noble:linux:9")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "overlay_ubuntu_min_package_rows floor" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_requires_an_undeclared_package(tmp_path):
+    # A runbook that requires a package the contract's scope does not
+    # declare describes a different per-package scope than the contract.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        " --require-overlay-package ubuntu_fixes:resolute:linux:1",
+        " --require-overlay-package ubuntu_fixes:resolute:linux:1"
+        " --require-overlay-package ubuntu_fixes:resolute:ghost:1")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "release resolute package ghost" in result.stdout
+
+
+def test_gate_rejects_a_daily_job_that_drops_a_package_requirement(tmp_path):
+    # The nightly job must make the same per-package check the runbook
+    # shows. Declare a package in the contract that the real daily job's
+    # spine verify does not require, so the job-side validator fires (the
+    # gate always checks the repository's own daily script against the
+    # runbook's contract).
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "overlay_ubuntu_packages: linux,linux-nvidia",
+        "overlay_ubuntu_packages: linux,linux-nvidia,ghost")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "the daily job checks the served map but does not require" in (
+        result.stdout)
+    assert "package ghost" in result.stdout

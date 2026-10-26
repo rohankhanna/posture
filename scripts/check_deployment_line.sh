@@ -961,6 +961,8 @@ _CONTRACT_KEYS = (
     "overlay_ubuntu_min_rows",
     "overlay_debian_min_rows",
     "overlay_max_age_days",
+    "overlay_ubuntu_min_package_rows",
+    "overlay_debian_min_package_rows",
 )
 # The contract keys that name a path on the host.
 _CONTRACT_PATH_KEYS = (
@@ -2434,6 +2436,260 @@ def _validate_overlay_release_coverage_job(
 
 
 # ---------------------------------------------------------------------------
+# Per-package overlay coverage of the served map (4r)
+# ---------------------------------------------------------------------------
+
+def _contract_overlay_min_package_rows(
+        contract: dict[str, str]) -> dict[str, int]:
+    """The per-package row floor the contract declares for each distro.
+
+    The contract states one per-package floor per distro-tracker overlay
+    it requires: every source package of every release of that overlay's
+    declared scope must carry at least this many rows in the served map.
+    The floor is a number of rows, not a per-package number, because the
+    host's own expectation is "this package of this release is present and
+    populated", and the operator can raise the floor to the count
+    observed on the host once it is known.
+    """
+    floors: dict[str, int] = {}
+    for distro in _OVERLAY_INGEST_DISTROS:
+        raw = contract.get(
+            f"overlay_{distro}_min_package_rows", "").strip()
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            continue  # reported by the contract-level check
+        floors[distro] = value
+    return floors
+
+
+def _expected_package_requirements(
+        contract: dict[str, str]) -> list[tuple[str, str, str, int]]:
+    """The (table, release, package, min_rows) requirements the contract
+    implies.
+
+    Every source package of every release of every required distro-tracker
+    overlay's declared ingest scope must carry at least the per-package
+    floor the contract declares for that overlay.
+    """
+    floors = _contract_overlay_min_package_rows(contract)
+    declared = _declared_overlay_scope(contract)
+    requirements: list[tuple[str, str, str, int]] = []
+    for distro in _required_overlay_distros(contract):
+        floor = floors.get(distro)
+        if floor is None:
+            continue
+        releases = declared.get(distro, {}).get("releases", [])
+        packages = declared.get(distro, {}).get("packages", [])
+        for release in releases:
+            for package in packages:
+                requirements.append(
+                    (f"{distro}_fixes", release, package, floor))
+    return requirements
+
+
+def _stated_package_requirements(
+        invocation: str) -> list[tuple[str, str, str, int]]:
+    """The (table, release, package, min_rows) requirements an invocation
+    states."""
+    stated: list[tuple[str, str, str, int]] = []
+    for value in _option_values(invocation, "--require-overlay-package"):
+        parts = value.split(":")
+        if len(parts) != 4:
+            continue
+        try:
+            min_rows = int(parts[3])
+        except ValueError:
+            continue
+        stated.append(
+            (parts[0].strip(), parts[1].strip(),
+             parts[2].strip(), min_rows))
+    return stated
+
+
+def _validate_overlay_package_coverage_contract(
+        path: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the contract's declared per-package overlay coverage (4r).
+
+    The contract declares the ingest scope of every distro-tracker overlay
+    it requires (4p) and a per-release row floor (4q). Neither binds the
+    map's rows to the per-package scope: a source package whose tracker
+    feed returned nothing ends up with no rows (the per-(release, package)
+    refresh deletes the rows it replaces) while the release as a whole
+    still holds the other packages' rows and the per-release floor still
+    passes. The contract therefore declares a per-package row floor per
+    required overlay, so the per-package coverage of the served map can be
+    required rather than assumed.
+    """
+    if contract is None:
+        return
+    required_distros = _required_overlay_distros(contract)
+    for distro in required_distros:
+        raw = contract.get(
+            f"overlay_{distro}_min_package_rows", "").strip()
+        if not raw:
+            failures.append(
+                f"{path}: the host contract requires the {distro}_fixes "
+                f"overlay but declares no overlay_{distro}_min_package_rows, "
+                f"so the gate cannot require the served map to carry a "
+                f"per-package row floor for it (a source package whose "
+                f"tracker feed returned nothing leaves the release looking "
+                f"populated while its fix-status rows are gone, so the "
+                f"per-release floor still passes while a patched package of "
+                f"that source is reported as unpatched)")
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            failures.append(
+                f"{path}: the host contract's "
+                f"overlay_{distro}_min_package_rows is {raw!r}, which is not "
+                f"a row count")
+            continue
+        if value < 1:
+            failures.append(
+                f"{path}: the host contract's "
+                f"overlay_{distro}_min_package_rows is {value}, which is not "
+                f"a positive row count")
+    for distro in _OVERLAY_INGEST_DISTROS:
+        if distro in required_distros:
+            continue
+        if contract.get(
+                f"overlay_{distro}_min_package_rows", "").strip():
+            failures.append(
+                f"{path}: the host contract declares "
+                f"overlay_{distro}_min_package_rows but does not require the "
+                f"{distro}_fixes overlay, so it describes a per-package row "
+                f"floor for an overlay the host does not serve")
+
+
+def _validate_overlay_package_coverage_verification(
+        path: str,
+        text: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the runbook's per-package overlay coverage (dimension 4r).
+
+    The operator's confirmation of the served map is the check the runbook
+    shows. A runbook that requires the releases but not the packages
+    inside them confirms a map that may be quietly narrow in the
+    narrowest direction: a source package whose fix-status rows are gone
+    is invisible to a per-release floor while its release still looks
+    populated.
+    """
+    if contract is None:
+        return
+    expected = _expected_package_requirements(contract)
+    if not expected:
+        return
+    commands = _runbook_spine_verify_commands(text)
+    if not commands:
+        # The missing verification is reported by dimension 4l.
+        return
+    for invocation in commands:
+        stated = _stated_package_requirements(invocation)
+        for table, release, package, min_rows in expected:
+            matching = [s for s in stated
+                        if s[0] == table and s[1] == release
+                        and s[2] == package]
+            if not matching:
+                failures.append(
+                    f"{path}: the runbook verifies the served map but does "
+                    f"not require the {table} rows of release {release} "
+                    f"package {package}, which the host contract's overlay "
+                    f"scope declares (the command must carry "
+                    f"`--require-overlay-package "
+                    f"{table}:{release}:{package}:{min_rows}`; a source "
+                    f"package whose tracker feed returned nothing leaves the "
+                    f"release looking populated while its fix-status rows "
+                    f"are gone, so the per-release floor still passes)")
+            elif min_rows not in [s[3] for s in matching]:
+                failures.append(
+                    f"{path}: the runbook requires "
+                    f"{[s[3] for s in matching][0]} row(s) of {table} "
+                    f"release {release} package {package} where the host "
+                    f"contract's overlay_{table[:-len('_fixes')]}"
+                    f"_min_package_rows floor is {min_rows}")
+        for table, release, package, min_rows in stated:
+            if (table, release, package) not in [
+                    (t, r, p) for t, r, p, _ in expected]:
+                failures.append(
+                    f"{path}: the runbook requires the {table} rows of "
+                    f"release {release} package {package}, which the host "
+                    f"contract's overlay scope does not declare, so the "
+                    f"runbook describes a different per-package scope than "
+                    f"the contract")
+
+
+def _validate_overlay_package_coverage_job(
+        path: str,
+        script_text: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the nightly job's per-package overlay coverage (dimension 4r).
+
+    The nightly job builds the map; the operator checks it by hand. A job
+    that publishes a map whose overlay rows no longer cover every required
+    (release, package) pair, and never looks, is a quiet success every
+    night: the map stays intact, signed and fresh, the per-release floor
+    still passes, and only the missing package's fix-status rows are gone.
+    The job must make the same per-package check the runbook shows, right
+    after it publishes.
+    """
+    if contract is None or not script_text:
+        return
+    expected = _expected_package_requirements(contract)
+    if not expected:
+        return
+    commands = [invocation for words, invocation in _invocations(script_text)
+                if words[:2] == ["spine", "verify"]]
+    if not commands:
+        failures.append(
+            f"{path}: the daily job never checks the served map's "
+            f"per-package overlay coverage, so a build that publishes a map "
+            f"whose overlay rows no longer cover every required (release, "
+            f"package) pair is a quiet success instead of a degraded run")
+        return
+    for invocation in commands:
+        stated = _stated_package_requirements(invocation)
+        for table, release, package, min_rows in expected:
+            matching = [s for s in stated
+                        if s[0] == table and s[1] == release
+                        and s[2] == package]
+            if not matching:
+                failures.append(
+                    f"{path}: the daily job checks the served map but does "
+                    f"not require the {table} rows of release {release} "
+                    f"package {package}, which the host contract's overlay "
+                    f"scope declares (the check must carry "
+                    f"`--require-overlay-package "
+                    f"{table}:{release}:{package}:{min_rows}`; a source "
+                    f"package whose tracker feed returned nothing leaves the "
+                    f"release looking populated while its fix-status rows "
+                    f"are gone, so the per-release floor still passes)")
+            elif min_rows not in [s[3] for s in matching]:
+                failures.append(
+                    f"{path}: the daily job requires "
+                    f"{[s[3] for s in matching][0]} row(s) of {table} "
+                    f"release {release} package {package} where the host "
+                    f"contract's per-package floor is {min_rows}")
+        for table, release, package, min_rows in stated:
+            if (table, release, package) not in [
+                    (t, r, p) for t, r, p, _ in expected]:
+                failures.append(
+                    f"{path}: the daily job requires the {table} rows of "
+                    f"release {release} package {package}, which the host "
+                    f"contract's overlay scope does not declare")
+
+
+# ---------------------------------------------------------------------------
 # Host command contract (4g)
 # ---------------------------------------------------------------------------
 
@@ -3292,6 +3548,10 @@ def main(paths: list[str]) -> int:
                 path, runbook_contracts.get(path), failures)
             _validate_overlay_release_coverage_verification(
                 path, text, runbook_contracts.get(path), failures)
+            _validate_overlay_package_coverage_contract(
+                path, runbook_contracts.get(path), failures)
+            _validate_overlay_package_coverage_verification(
+                path, text, runbook_contracts.get(path), failures)
             checked += _validate_runbook_host_commands(
                 path, text, runbook_contracts.get(path), failures)
             if daily_script_text:
@@ -3318,6 +3578,15 @@ def main(paths: list[str]) -> int:
     #     at check time instead of a quietly narrow overlay.
     if daily_script_text and contract is not None:
         _validate_overlay_release_coverage_job(
+            "scripts/vps_spine.sh", daily_script_text, contract, failures)
+
+    # 4r (job side). The nightly job's per-package overlay coverage
+    #     must be the one the contract declares, so a source package
+    #     whose tracker feed returned nothing (and whose rows are
+    #     therefore gone) is loud at check time instead of a quietly
+    #     narrow overlay that still passes the per-release floor.
+    if daily_script_text and contract is not None:
+        _validate_overlay_package_coverage_job(
             "scripts/vps_spine.sh", daily_script_text, contract, failures)
 
     for failure in failures:
@@ -3375,6 +3644,9 @@ def main(paths: list[str]) -> int:
         ok_parts.append("the served map's per-release overlay coverage is "
                         "checked against the contract's row floor and "
                         "freshness allowance")
+        ok_parts.append("the served map's per-package overlay coverage "
+                        "is checked against the contract's per-package "
+                        "row floor")
     if contract is not None:
         ok_parts.append("the growth-guard thresholds match the contract")
     if runbook_paths and daily_script_text:

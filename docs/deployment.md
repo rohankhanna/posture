@@ -93,6 +93,8 @@ overlay_debian_packages: linux
 overlay_ubuntu_min_rows: 1
 overlay_debian_min_rows: 1
 overlay_max_age_days: 2
+overlay_ubuntu_min_package_rows: 1
+overlay_debian_min_package_rows: 1
 ```
 
 The last two keys are the free-space thresholds the daily job applies to the
@@ -169,6 +171,8 @@ overlays the contract declares.
 `overlay_debian_packages` are the ingest scope the nightly job must keep for each distro-tracker overlay the host requires. The Ubuntu and Debian tracker overlays are ingested per release and per source package (`posture ingest ubuntu --release <codename> --package <source>`), and the ingest is best-effort: a transient tracker outage must not block the daily spine build, and the catalog is not wiped between runs, so the rows for a release the job stops ingesting are retained from the last run that did. That retention is what makes a narrowed scope silent: drop a `--release` from the nightly job and the served map still carries that release's fix-status rows, the overlay coverage check above still passes, and the only thing that changes is that those rows stop being refreshed and quietly go stale — a patched kernel on the dropped release is then reported as unpatched, exactly the false positive the overlay exists to clear. The contract therefore declares the releases and the packages the job must ingest for each required distro-tracker overlay, and the deployment-line gate checks the nightly job's `posture ingest ubuntu` and `posture ingest debian` invocations against it: a `--release` or `--package` the contract declares but the job no longer carries is reported as drift at check time, and a value the job carries that the contract does not declare is reported too, so the contract and the job never disagree about which releases and packages the host refreshes. The operator owns the public-spine editorial choice of which releases and packages that is; the contract makes the choice loud and binding rather than free to shrink silently.
 
 `overlay_ubuntu_min_rows` and `overlay_debian_min_rows` are the row floors the served map must meet for every release of that overlay's declared scope, and `overlay_max_age_days` is how old those rows may be. The two checks above are per-table: they say that the `ubuntu_fixes` table holds rows, not that it holds the rows of every release the host requires. The per-(release, package) refresh deletes the rows it is about to replace, so a release whose tracker feed returned nothing ends up with no rows at all while the table as a whole still holds the other releases' rows — the presence check still passes, the map is still intact, signed and fresh, and the missing release reports patched packages as unpatched, which is exactly the false positive the overlay exists to clear. The published map therefore states, per release, how many rows it carries and when the most recent of them was fetched, and the verification step below requires every declared release to meet the floor and to be fresher than the allowance. The shipped floor of one row is the conservative "this release is present and populated" expectation; raise it to the row count actually observed on the host once it is known. The freshness allowance catches the other silent direction: a release the nightly job stops ingesting keeps its last-known-good rows, so only the age of those rows shows that they stopped being refreshed. The deployment-line gate checks that the contract declares a floor and an allowance for every required distro-tracker overlay, and that the runbook and the nightly job require exactly the releases and the floor the contract declares.
+
+`overlay_ubuntu_min_package_rows` and `overlay_debian_min_package_rows` are the row floors the served map must meet for every source package of every release of that overlay's declared scope. The per-release floor above is a per-release question, and a per-release answer hides a per-package failure: the nightly job ingests each distro-tracker overlay per release and per source package, and the per-(release, package) refresh deletes the rows it is about to replace, so a source package whose tracker feed returned nothing ends up with no rows at all while the release as a whole still holds the other packages' rows and the per-release floor still passes — the missing package's fix-status rows are gone, and a patched package of that source on that release is reported as unpatched, which is exactly the false positive the overlay exists to clear. The published map already states, per release, which source packages contributed rows and how many, so the verification step below requires every (release, package) pair the contract's ingest scope declares to meet the per-package floor. The shipped floor of one row is the conservative "this package of this release is present and populated" expectation; raise it to the count observed on the host once it is known. The deployment-line gate checks that the contract declares a per-package floor for every required distro-tracker overlay, and that the runbook and the nightly job require exactly the (release, package) pairs and the floor the contract declares.
 
 The environment table below states a default for every knob the daily job
 reads. Those defaults live in the job itself, as the values it falls back
@@ -321,6 +325,16 @@ posture spine verify --from /var/lib/posture --max-age-days 2 --require-overlay 
   --require-overlay-release ubuntu_fixes:focal:1 \
   --require-overlay-release debian_fixes:trixie:1 \
   --require-overlay-release debian_fixes:bookworm:1 \
+  --require-overlay-package ubuntu_fixes:resolute:linux:1 \
+  --require-overlay-package ubuntu_fixes:resolute:linux-nvidia:1 \
+  --require-overlay-package ubuntu_fixes:noble:linux:1 \
+  --require-overlay-package ubuntu_fixes:noble:linux-nvidia:1 \
+  --require-overlay-package ubuntu_fixes:jammy:linux:1 \
+  --require-overlay-package ubuntu_fixes:jammy:linux-nvidia:1 \
+  --require-overlay-package ubuntu_fixes:focal:linux:1 \
+  --require-overlay-package ubuntu_fixes:focal:linux-nvidia:1 \
+  --require-overlay-package debian_fixes:trixie:linux:1 \
+  --require-overlay-package debian_fixes:bookworm:linux:1 \
   --require-overlay-max-age-days 2
 sudo ls -l /var/lib/posture/spine/manifest.json
 sudo ls -l /var/lib/posture/spine/defects
@@ -371,6 +385,8 @@ that clear NVD's unknown-fix false positives on that release. When this
 check fails, read the last run's journal: the nightly job makes the same
 check after every publish and reports the same failure as a degraded run.
 
+`--require-overlay-package <table>:<release>:<package>:<rows>` are the contract's per-package expectations: every source package of every release of the contract's overlay scope must carry at least the stated number of rows in the served map. The map's manifest already states, per release, which source packages contributed rows and how many, so this check reads the map's own per-package counts. A failure here is a map that is quietly narrow in the narrowest direction: a source package whose tracker feed returned nothing has no rows while its release still looks populated and passes the per-release floor, so the missing package's fix-status rows are gone and a patched package of that source on that release is reported as unpatched. When this check fails, read the last run's journal: the nightly job makes the same check after every publish and reports the same failure as a degraded run.
+
 A client that pulls the map verifies the manifest's shard digests before it
 imports anything, so a half-written map is refused rather than believed.
 
@@ -393,6 +409,16 @@ posture spine verify --from /var/lib/posture --verify-sig --signature-key /etc/p
   --require-overlay-release ubuntu_fixes:focal:1 \
   --require-overlay-release debian_fixes:trixie:1 \
   --require-overlay-release debian_fixes:bookworm:1 \
+  --require-overlay-package ubuntu_fixes:resolute:linux:1 \
+  --require-overlay-package ubuntu_fixes:resolute:linux-nvidia:1 \
+  --require-overlay-package ubuntu_fixes:noble:linux:1 \
+  --require-overlay-package ubuntu_fixes:noble:linux-nvidia:1 \
+  --require-overlay-package ubuntu_fixes:jammy:linux:1 \
+  --require-overlay-package ubuntu_fixes:jammy:linux-nvidia:1 \
+  --require-overlay-package ubuntu_fixes:focal:linux:1 \
+  --require-overlay-package ubuntu_fixes:focal:linux-nvidia:1 \
+  --require-overlay-package debian_fixes:trixie:linux:1 \
+  --require-overlay-package debian_fixes:bookworm:linux:1 \
   --require-overlay-max-age-days 2
 ```
 
@@ -563,3 +589,5 @@ deployment line, and makes these kinds of drift loud:
     otherwise have no answer.
 17. **Overlay ingest scope of the nightly job** — the host contract declares the per-distro ingest scope for every distro-tracker overlay it requires (`overlay_ubuntu_releases`, `overlay_ubuntu_packages`, `overlay_debian_releases`, `overlay_debian_packages`), and the gate checks the nightly job's `posture ingest ubuntu` and `posture ingest debian` invocations against it. The ingest is best-effort and the catalog is not wiped, so a dropped `--release` leaves the last-known-good rows for that release in place: the served map still carries the overlay rows, the overlay coverage check (item 16) still passes, and the only thing that changes is that the rows for the dropped release stop being refreshed and quietly go stale. A `--release` or `--package` the contract declares but the job no longer carries is reported as drift at check time, and a value the job carries that the contract does not declare is reported too, so the contract and the nightly job never disagree about which releases and packages the host refreshes. A contract that declares scope for a distro whose overlay it does not require, or that names no releases or no packages for a required overlay, is drift too, because the gate would otherwise have nothing to bind the job's arguments to.
 18. **Per-release overlay coverage of the served map** — the host contract declares a row floor for every distro-tracker overlay it requires (`overlay_ubuntu_min_rows`, `overlay_debian_min_rows`) and a freshness allowance for the overlay rows (`overlay_max_age_days`), and the gate checks that every `posture spine verify` command the runbook shows, and the check the nightly job runs after its publish, requires exactly the releases the contract's overlay scope declares, at the floor the contract declares, with the freshness allowance the contract declares. The overlay coverage check (item 16) is a per-table question, and a per-table answer hides a per-release failure: the per-(release, package) refresh deletes the rows it is about to replace, so a release whose tracker feed returned nothing ends up with no rows at all while the table as a whole still holds the other releases' rows, and the presence check still passes. The published map therefore states, per release, how many rows it carries and when the most recent of them was fetched, so the check can require the declared releases to be present, populated and fresh. A contract with no floor or no allowance for a required overlay, a runbook that requires the tables but not the releases inside them, and a nightly job that never checks the per-release coverage are all drift at check time, because the operator's question — does the map this host serves still say which packages are patched, on every release it claims to cover? — would otherwise have no answer.
+
+19. **Per-package overlay coverage of the served map** — the host contract declares a row floor for every source package of every release of the distro-tracker overlays it requires (`overlay_ubuntu_min_package_rows`, `overlay_debian_min_package_rows`), and the gate checks that every `posture spine verify` command the runbook shows, and the check the nightly job runs after its publish, requires exactly the (release, package) pairs the contract's overlay scope declares, at the per-package floor the contract declares. The per-release coverage check (item 18) is a per-release question, and a per-release answer hides a per-package failure: the nightly job ingests each distro-tracker overlay per release and per source package, and the per-(release, package) refresh deletes the rows it is about to replace, so a source package whose tracker feed returned nothing ends up with no rows at all while the release as a whole still holds the other packages' rows and the per-release floor still passes. The published map already states, per release, which source packages contributed rows and how many, so the check can require the declared (release, package) pairs to be present and populated. A contract with no per-package floor for a required overlay, a runbook that requires the releases but not the packages inside them, and a nightly job that never checks the per-package coverage are all drift at check time, because the operator's question — does the map this host serves still carry, for every source package it claims to cover, the fix-status rows that clear NVD's unknown-fix false positives? — would otherwise have no answer.

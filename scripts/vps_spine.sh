@@ -181,7 +181,13 @@ posture spine publish --db "$DB_PATH" --out "$EXPORT_DIR" ${SIGN_KEY:+--sign-key
 #     the host needs and how many rows each must carry, and the freshness
 #     allowance catches the other silent direction — a release the nightly
 #     job stopped ingesting keeps its last-known-good rows, so only their
-#     age shows that they stopped being refreshed.
+#     age shows that they stopped being refreshed. The per-package
+#     requirement goes one level narrower: the per-(release, package)
+#     refresh deletes the rows it replaces, so a source package whose
+#     tracker feed returned nothing leaves that (release, package) pair
+#     empty while the release still looks populated and passes the
+#     per-release floor, so the missing package's fix-status rows are
+#     gone and a patched package of that source is reported as unpatched.
 posture spine verify --from "$EXPORT_DIR" \
   --require-overlay ubuntu_fixes --require-overlay debian_fixes \
   --require-overlay-release ubuntu_fixes:resolute:1 \
@@ -190,6 +196,16 @@ posture spine verify --from "$EXPORT_DIR" \
   --require-overlay-release ubuntu_fixes:focal:1 \
   --require-overlay-release debian_fixes:trixie:1 \
   --require-overlay-release debian_fixes:bookworm:1 \
+  --require-overlay-package ubuntu_fixes:resolute:linux:1 \
+  --require-overlay-package ubuntu_fixes:resolute:linux-nvidia:1 \
+  --require-overlay-package ubuntu_fixes:noble:linux:1 \
+  --require-overlay-package ubuntu_fixes:noble:linux-nvidia:1 \
+  --require-overlay-package ubuntu_fixes:jammy:linux:1 \
+  --require-overlay-package ubuntu_fixes:jammy:linux-nvidia:1 \
+  --require-overlay-package ubuntu_fixes:focal:linux:1 \
+  --require-overlay-package ubuntu_fixes:focal:linux-nvidia:1 \
+  --require-overlay-package debian_fixes:trixie:linux:1 \
+  --require-overlay-package debian_fixes:bookworm:linux:1 \
   --require-overlay-max-age-days 2 \
   || degrade "the published map does not carry the vendor fix-status overlay rows"
 
