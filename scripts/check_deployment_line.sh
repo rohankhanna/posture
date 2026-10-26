@@ -66,6 +66,21 @@
 #         has timers in scope must be scheduled by one of those timers. A
 #         service nothing triggers is a capability that never runs.
 #
+#     3f. Host contract — the runbook declares, in machine-readable form,
+#         the paths and the service account the units are written against
+#         (the install root, the state and export directories, the two
+#         environment files, the service account). Every unit must match
+#         that contract: its WorkingDirectory, its User and Group, its
+#         StateDirectory, the catalog paths it points at, and the
+#         environment file it loads. The environment file a unit loads must
+#         also be the one its kind loads (a system unit loads the system
+#         file, a user unit the user file), and every environment file the
+#         contract names must be loaded by a unit of that kind, so an
+#         environment file the operator creates is never dead
+#         configuration. The contract is also what maps a unit's absolute
+#         script path back into this tree, so the deployment root lives in
+#         one place instead of two.
+#
 #   Deployment runbook (docs/deployment.md):
 #
 #     4a. Unit coverage — every unit file this tree ships must be named in
@@ -89,6 +104,12 @@
 #     4e. Unit environment coverage — every POSTURE_* or NVD_API_KEY
 #         variable a shipped unit sets must be documented in the runbook, so
 #         the environment file the operator writes is complete.
+#
+#     4f. Install layout coverage — the runbook's host contract and its
+#         install layout table must agree: every path the contract names
+#         must appear in the table, and every path in the table must be
+#         covered by the contract. The two describe the same host, so
+#         neither may drift away from the other.
 #
 # Usage: check_deployment_line.sh [FILE ...]
 #   Default: scripts/vps_spine.sh plus every systemd/*.service and
@@ -158,6 +179,9 @@ _DURATION_DIRECTIVES = (
 _DURATION_RE = re.compile(
     r"^(?:\d+(?:\.\d+)?(?:us|\u00b5s|ms|s|min|h|d|w|month|year)\s*)+$"
     r"|^\d+$")
+# The conventional deployment root, used only when no runbook in scope
+# carries a host contract.
+_DEFAULT_INSTALL_ROOT = "/opt/posture"
 # Runtime/system variables that are not posture-specific and need no
 # contract check. These are set for the process environment, not read by
 # posture's own code.
@@ -314,22 +338,30 @@ def _unit_posture_calls(text: str) -> list[tuple[list[str], str]]:
     return calls
 
 
-def _map_to_tree(abs_path: str, workdir: str | None) -> str | None:
+def _map_to_tree(
+    abs_path: str,
+    workdir: str | None,
+    install_root: str = _DEFAULT_INSTALL_ROOT,
+) -> str | None:
     """Map an absolute path from a unit to a tree-relative path.
 
-    Tries the unit's WorkingDirectory prefix first, then the conventional
-    /opt/posture deployment root. Returns the tree-relative path string if
-    the mapping is found (the file may or may not exist), or None if no
-    known prefix matches.
+    Tries the unit's WorkingDirectory prefix first, then the deployment
+    root the runbook's host contract names. Returns the tree-relative path
+    string if the mapping is found (the file may or may not exist), or None
+    if no known prefix matches.
     """
     p = abs_path.strip("\"'")
-    for prefix in (workdir, "/opt/posture"):
+    for prefix in (workdir, install_root):
         if prefix and p.startswith(prefix + "/"):
             return p[len(prefix) + 1:]
     return None
 
 
-def _unit_script_refs(text: str, workdir: str | None) -> list[tuple[str, str | None]]:
+def _unit_script_refs(
+    text: str,
+    workdir: str | None,
+    install_root: str = _DEFAULT_INSTALL_ROOT,
+) -> list[tuple[str, str | None]]:
     """Extract bash-script references from ExecStart values.
 
     Returns (absolute_path, tree_relative_path_or_None) tuples. Only
@@ -347,7 +379,7 @@ def _unit_script_refs(text: str, workdir: str | None) -> list[tuple[str, str | N
             if tok == "-c":
                 break  # inline script, not a file reference
             if tok.endswith(".sh"):
-                rel = _map_to_tree(tok, workdir)
+                rel = _map_to_tree(tok, workdir, install_root)
                 refs.append((tok, rel))
                 break
     return refs
@@ -780,6 +812,245 @@ def _validate_runbook(
 
 
 # ---------------------------------------------------------------------------
+# Host contract (3f) and install layout coverage (4f)
+# ---------------------------------------------------------------------------
+
+# The keys the runbook's host contract block must carry.
+_CONTRACT_KEYS = (
+    "install_root",
+    "state_dir",
+    "export_dir",
+    "system_env_file",
+    "user_env_file",
+    "service_account",
+)
+# The contract keys that name a path on the host.
+_CONTRACT_PATH_KEYS = (
+    "install_root",
+    "state_dir",
+    "export_dir",
+    "system_env_file",
+    "user_env_file",
+)
+def _host_contract(blocks: list[str]) -> dict[str, str] | None:
+    """The host contract a runbook declares, or None.
+
+    The contract is a fenced block of `key: value` lines that starts with
+    the `install_root:` key. The first block that carries that key is the
+    contract; every other block is documentation.
+    """
+    for block in blocks:
+        if not any(line.strip().startswith("install_root:")
+                   for line in block.splitlines()):
+            continue
+        contract: dict[str, str] = {}
+        for line in block.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if ":" not in stripped:
+                continue
+            key, value = stripped.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key or not value:
+                continue
+            contract[key] = value
+        return contract
+    return None
+
+
+def _normalize_host_path(value: str) -> str:
+    """Normalize a host path so two spellings of it can be compared.
+
+    systemd spells the user's home as %h and the runbook spells it as ~;
+    both are normalized to ~. Trailing slashes are dropped.
+    """
+    v = value.strip().strip('"').strip("'")
+    if v.startswith("%h"):
+        v = "~" + v[len("%h"):]
+    if len(v) > 1:
+        v = v.rstrip("/")
+    return v or "/"
+
+
+def _is_under(path: str, root: str) -> bool:
+    """True when path is root itself or lies under it."""
+    if path == root:
+        return True
+    return path.startswith(root.rstrip("/") + "/")
+
+
+def _layout_table_paths(text: str) -> list[str]:
+    """The absolute host paths the runbook's install layout table names.
+
+    Only the first cell of a table row is read, and only when it names an
+    absolute path (one that starts with / or ~). A table of environment
+    variables or of shipped artifacts is not a layout table.
+    """
+    paths: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if not cells:
+            continue
+        first = cells[0].strip("`").strip()
+        if first.startswith("/") or first.startswith("~"):
+            paths.append(_normalize_host_path(first))
+    return paths
+
+
+def _contract_roots(contract: dict[str, str]) -> list[str]:
+    """The contract paths that other paths may live under."""
+    roots = []
+    for key in ("install_root", "state_dir", "export_dir"):
+        if key in contract:
+            roots.append(_normalize_host_path(contract[key]))
+    return roots
+
+
+def _validate_unit_contract(
+    path: str,
+    text: str,
+    contract: dict[str, str],
+    failures: list[str],
+) -> str | None:
+    """Validate one service unit against the host contract (dimension 3f).
+
+    Returns the normalized environment-file path the unit loads, or None.
+    """
+    sections = _unit_sections(text)
+    install_root = _normalize_host_path(contract["install_root"])
+    state_dir = _normalize_host_path(contract["state_dir"])
+    export_dir = _normalize_host_path(contract["export_dir"])
+    system_env = _normalize_host_path(contract["system_env_file"])
+    user_env = _normalize_host_path(contract["user_env_file"])
+    account = contract["service_account"].strip()
+
+    # A system unit runs as a named account; a user unit runs as the
+    # operator. The kind decides which environment file it may load.
+    user = _directive_value(sections, "Service", "User")
+    is_system_unit = user is not None
+
+    workdir = _directive_value(sections, "Service", "WorkingDirectory")
+    if workdir is not None:
+        if _normalize_host_path(workdir) != install_root:
+            failures.append(
+                f"{path}: WorkingDirectory={workdir} does not match the "
+                f"runbook's install root ({install_root})")
+
+    for directive in ("User", "Group"):
+        value = _directive_value(sections, "Service", directive)
+        if value is None:
+            continue
+        if value.strip() != account:
+            failures.append(
+                f"{path}: {directive}={value} is not the runbook's service "
+                f"account ({account})")
+
+    state_directory = _directive_value(sections, "Service", "StateDirectory")
+    if state_directory is not None:
+        expected = state_dir.rsplit("/", 1)[-1]
+        if state_directory.strip() != expected:
+            failures.append(
+                f"{path}: StateDirectory={state_directory} does not match the "
+                f"runbook's state directory ({state_dir})")
+
+    for key, value in _unit_env_settings(text).items():
+        if "$" in value:
+            # The value is expanded at run time; it cannot be checked
+            # statically, exactly like the shell expansions elsewhere.
+            continue
+        if key == "POSTURE_STATE_DIR":
+            if _normalize_host_path(value) != state_dir:
+                failures.append(
+                    f"{path}: POSTURE_STATE_DIR={value} does not match the "
+                    f"runbook's state directory ({state_dir})")
+            continue
+        if key == "POSTURE_EXPORT_DIR":
+            if _normalize_host_path(value) != export_dir:
+                failures.append(
+                    f"{path}: POSTURE_EXPORT_DIR={value} does not match the "
+                    f"runbook's export directory ({export_dir})")
+            continue
+        if not key.endswith(("_DIR", "_PATH")):
+            continue
+        normalized = _normalize_host_path(value)
+        if not (_is_under(normalized, state_dir)
+                or _is_under(normalized, export_dir)):
+            failures.append(
+                f"{path}: {key}={value} points outside the runbook's state "
+                f"and export directories ({state_dir}, {export_dir})")
+
+    env_file = _directive_value(sections, "Service", "EnvironmentFile")
+    if env_file is None:
+        return None
+    raw = env_file.strip()
+    if raw.startswith("-"):
+        # A leading dash marks the file as optional; the path is the rest.
+        raw = raw[1:].strip()
+    loaded = _normalize_host_path(raw)
+    expected = system_env if is_system_unit else user_env
+    if loaded != expected:
+        kind = "system" if is_system_unit else "user"
+        failures.append(
+            f"{path}: EnvironmentFile={env_file} is not the {kind} "
+            f"environment file the runbook declares ({expected})")
+    return loaded
+
+
+def _validate_host_contract(
+    path: str,
+    text: str,
+    contract: dict[str, str] | None,
+    failures: list[str],
+) -> None:
+    """Validate the runbook's host contract and install layout (4f)."""
+    if contract is None:
+        failures.append(
+            f"{path}: the runbook carries no host contract block (a fenced "
+            f"block of `key: value` lines that starts with `install_root:`) "
+            f"for the deployment-line gate to check the units against")
+        return
+
+    missing = [key for key in _CONTRACT_KEYS if key not in contract]
+    if missing:
+        failures.append(
+            f"{path}: the host contract is missing "
+            f"{', '.join(sorted(missing))}")
+    unknown = [key for key in contract if key not in _CONTRACT_KEYS]
+    if unknown:
+        failures.append(
+            f"{path}: the host contract carries unknown key(s) "
+            f"{', '.join(sorted(unknown))}")
+
+    layout = _layout_table_paths(text)
+    contract_paths = []
+    for key in _CONTRACT_PATH_KEYS:
+        if key not in contract:
+            continue
+        normalized = _normalize_host_path(contract[key])
+        contract_paths.append((key, normalized))
+        if normalized not in layout:
+            failures.append(
+                f"{path}: the host contract's {key} ({normalized}) is not in "
+                f"the install layout table")
+
+    roots = _contract_roots(contract)
+    for layout_path in layout:
+        if any(_is_under(layout_path, root) for root in roots):
+            continue
+        if any(layout_path == normalized
+               for _key, normalized in contract_paths):
+            continue
+        failures.append(
+            f"{path}: the install layout names `{layout_path}` which no host "
+            f"contract path covers")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -812,6 +1083,45 @@ def main(paths: list[str]) -> int:
         else:
             script_paths.append(p)
 
+    # --- The host contract the runbook declares (3f, 4f) ---
+    # The contract is the runbook's machine-readable statement of the
+    # paths and the service account the units are written against. It is
+    # read from a runbook in scope; when no runbook is in scope the
+    # repository's own deployment runbook is the source of truth.
+    # Every runbook in scope is checked against the contract IT declares;
+    # the contract the units are checked against is the first one declared
+    # in scope, or the repository's own runbook when no runbook is in
+    # scope.
+    runbook_contracts: dict[str, dict[str, str]] = {}
+    for candidate in runbook_paths:
+        try:
+            ctext = Path(candidate).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        found = _host_contract(_code_blocks(ctext))
+        if found is not None:
+            runbook_contracts[candidate] = found
+    contract: dict[str, str] | None = None
+    contract_source: str | None = None
+    for candidate in runbook_paths:
+        if candidate in runbook_contracts:
+            contract = runbook_contracts[candidate]
+            contract_source = candidate
+            break
+    default_runbook = Path("docs/deployment.md")
+    if contract is None and default_runbook.is_file():
+        try:
+            dtext = default_runbook.read_text(encoding="utf-8")
+        except OSError:
+            dtext = ""
+        found = _host_contract(_code_blocks(dtext))
+        if found is not None:
+            contract = found
+            contract_source = str(default_runbook)
+    install_root = _DEFAULT_INSTALL_ROOT
+    if contract is not None and "install_root" in contract:
+        install_root = _normalize_host_path(contract["install_root"])
+
     # --- Shell scripts: invocation + option validation (existing logic) ---
     for path in script_paths:
         try:
@@ -840,7 +1150,8 @@ def main(paths: list[str]) -> int:
 
         # 3b. Unit script paths: verify referenced bash scripts exist in tree.
         workdir = _unit_workdir(text)
-        for abs_path, rel_path in _unit_script_refs(text, workdir):
+        for abs_path, rel_path in _unit_script_refs(
+                text, workdir, install_root):
             if rel_path is None:
                 failures.append(
                     f"{path}: ExecStart references `{abs_path}` which does "
@@ -872,7 +1183,7 @@ def main(paths: list[str]) -> int:
         # Build the read-set for this unit: package vars plus any referenced
         # script's vars (the script calls posture, so both are in the chain).
         read_vars = set(package_vars)
-        for _abs, rel in _unit_script_refs(text, workdir):
+        for _abs, rel in _unit_script_refs(text, workdir, install_root):
             if rel and Path(rel).exists():
                 read_vars |= _script_env_vars(rel)
 
@@ -887,6 +1198,48 @@ def main(paths: list[str]) -> int:
                     f"{path}: Environment= sets `{key}` but nothing in the "
                     f"invocation chain reads it (the posture package and "
                     f"any referenced script do not reference `{key}`)")
+
+    # --- Host contract: the units against the contract the runbook
+    #     declares (3f), and the environment files that contract names
+    #     against the units that load them.
+    if contract is not None and unit_paths:
+        system_env = _normalize_host_path(contract.get(
+            "system_env_file", "/etc/posture/posture.env"))
+        user_env = _normalize_host_path(contract.get(
+            "user_env_file", "~/.config/posture/env"))
+        loaded_system = False
+        loaded_user = False
+        for path in unit_paths:
+            try:
+                utext = Path(path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            loaded = _validate_unit_contract(path, utext, contract, failures)
+            if loaded is None:
+                continue
+            if loaded == system_env:
+                loaded_system = True
+            if loaded == user_env:
+                loaded_user = True
+        # The environment-file coverage is a claim about every unit the
+        # operator installs, so it is only checked when every shipped
+        # service unit is in scope.
+        in_scope = {Path(p).name for p in unit_paths}
+        whole_set = in_scope >= _shipped_service_names()
+        if not whole_set:
+            loaded_system = loaded_user = True
+        if "system_env_file" in contract and not loaded_system:
+            failures.append(
+                f"{contract_source}: the host contract's system_env_file "
+                f"({system_env}) is not loaded by any unit that runs as the "
+                f"system service account (an environment file the operator "
+                f"creates that no unit reads is dead configuration)")
+        if "user_env_file" in contract and not loaded_user:
+            failures.append(
+                f"{contract_source}: the host contract's user_env_file "
+                f"({user_env}) is not loaded by any unit that runs as the "
+                f"operator (an environment file the operator creates that no "
+                f"unit reads is dead configuration)")
 
     # --- Timer units: scheduling contract (3d) ---
     shipped_services = _shipped_service_names() if timer_paths else set()
@@ -921,6 +1274,8 @@ def main(paths: list[str]) -> int:
             checked += _validate_runbook(
                 path, text, top, runbook_package_vars, runbook_script_vars,
                 failures)
+            _validate_host_contract(
+                path, text, runbook_contracts.get(path), failures)
 
     for failure in failures:
         print(f"check_deployment_line: FAIL — {failure}")
@@ -951,6 +1306,10 @@ def main(paths: list[str]) -> int:
         ok_parts.append("every service is scheduled by a timer")
     if runbook_paths:
         ok_parts.append("every runbook reference resolves")
+    if contract is not None and unit_paths:
+        ok_parts.append("every unit matches the host contract")
+    if runbook_paths and contract is not None:
+        ok_parts.append("the host contract and the install layout agree")
     ok_text = ", ".join(ok_parts)
     print(f"check_deployment_line: OK — {ok_text} ({checked} invocation(s) "
           f"checked, {coverage})")

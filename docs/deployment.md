@@ -51,6 +51,25 @@ units will point at paths that do not exist.
 | `/etc/posture/posture.env` | the environment overrides for the system units |
 | `~/.config/posture/env` | the environment overrides for the two user units |
 
+### The host contract
+
+The layout above is prose, and prose drifts silently. This block is the same
+layout in machine-readable form, and the deployment-line gate checks the
+units against it: a unit whose `WorkingDirectory`, service account, state
+directory, catalog paths or environment file no longer match this block is
+reported as drift at check time, instead of pointing at a path that does not
+exist at 03:07 UTC. The paths here must stay in step with the install layout
+table above; the gate checks that too.
+
+```yaml
+install_root: /opt/posture
+state_dir: /var/lib/posture
+export_dir: /var/lib/posture
+system_env_file: /etc/posture/posture.env
+user_env_file: ~/.config/posture/env
+service_account: posture
+```
+
 ## Step 1 — the service account and the directories
 
 The daily build runs as an unprivileged account, `posture`, and writes only
@@ -231,3 +250,14 @@ deployment line, and makes five kinds of drift loud:
 5. **Unit environment coverage** — every `POSTURE_*` or `NVD_API_KEY`
    variable a shipped unit sets must be documented here, so the
    environment file an operator writes is complete.
+6. **The host contract** — the block above names the paths and the service
+   account the units are written against. A unit whose `WorkingDirectory`,
+   `User`, `Group`, `StateDirectory`, catalog paths or `EnvironmentFile`
+   no longer match it is drift. Every environment file the contract names
+   must be loaded by a unit of the matching kind (a system unit loads the
+   system file, a user unit loads the user file), so an environment file
+   the operator creates is never dead configuration.
+7. **Install layout coverage** — every path in the install layout table
+   must be covered by the host contract, and every path in the host
+   contract must appear in that table, so the two never disagree about
+   where the tree lives on the host.

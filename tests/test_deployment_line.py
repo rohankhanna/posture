@@ -735,12 +735,35 @@ def _unit_environment_variables() -> list[str]:
     return sorted(variables)
 
 
+# The host contract the runbook declares, in machine-readable form. The
+# gate checks the units against it, and the install layout table below
+# against it.
+_HOST_CONTRACT_BLOCK = """```yaml
+install_root: /opt/posture
+state_dir: /var/lib/posture
+export_dir: /var/lib/posture
+system_env_file: /etc/posture/posture.env
+user_env_file: ~/.config/posture/env
+service_account: posture
+```
+"""
+
+_HOST_LAYOUT_TABLE = """"| Path | Holds |
+| --- | --- |
+| `/opt/posture` | this repository\'s tree |
+| `/var/lib/posture` | the catalog database and the published map |
+| `/etc/posture/posture.env` | the environment overrides for the system units |
+| `~/.config/posture/env` | the environment overrides for the two user units |
+"""
+
+
 def _baseline_runbook(extra: str = "") -> str:
     """A runbook that satisfies every runbook check, plus an extra line.
 
-    The baseline names every shipped unit and documents every environment
-    variable a shipped unit sets, so a test that adds one defect sees only
-    that defect.
+    The baseline names every shipped unit, documents every environment
+    variable a shipped unit sets, and declares the host contract and the
+    install layout that agree with it, so a test that adds one defect sees
+    only that defect.
     """
     lines = ["# Deployment runbook", ""]
     for name in _shipped_unit_names():
@@ -749,6 +772,8 @@ def _baseline_runbook(extra: str = "") -> str:
     for variable in _unit_environment_variables():
         lines.append(f"The variable `{variable}` is read by the daily job.")
         lines.append("")
+    lines.append(_HOST_CONTRACT_BLOCK)
+    lines.append(_HOST_LAYOUT_TABLE)
     if extra:
         lines.append(extra)
     return "\n".join(lines)
@@ -871,4 +896,142 @@ def test_a_baseline_runbook_passes_the_gate(tmp_path):
     runbook = tmp_path / "deployment.md"
     runbook.write_text(_baseline_runbook())
     result = _run_gate_on([runbook])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ---------------------------------------------------------------------------
+# The host contract (dimension 3f) and the install layout (dimension 4f)
+# ---------------------------------------------------------------------------
+
+HOST_CONTRACT_KEYS = (
+    "install_root",
+    "state_dir",
+    "export_dir",
+    "system_env_file",
+    "user_env_file",
+    "service_account",
+)
+
+
+def _shipped_unit_text(name: str) -> str:
+    return (REPO_ROOT / "systemd" / name).read_text()
+
+
+def test_runbook_declares_a_host_contract():
+    # The host contract is the runbook\'s machine-readable statement of the
+    # paths and the service account the units are written against.
+    text = RUNBOOK.read_text()
+    assert "install_root:" in text
+    for key in HOST_CONTRACT_KEYS:
+        assert f"{key}:" in text, f"the host contract has no {key}"
+
+
+def test_gate_reports_the_host_contract_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "every unit matches the host contract" in result.stdout
+
+
+def test_gate_rejects_a_unit_whose_working_directory_drifted(tmp_path):
+    # A unit that points at a different tree root than the runbook\'s
+    # install root runs a tree the operator never installed.
+    unit = tmp_path / "posture-spine.service"
+    unit.write_text(_shipped_unit_text("posture-spine.service").replace(
+        "WorkingDirectory=/opt/posture", "WorkingDirectory=/opt/other"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "install root" in result.stdout
+
+
+def test_gate_rejects_a_unit_that_runs_as_another_account(tmp_path):
+    unit = tmp_path / "posture-spine.service"
+    unit.write_text(_shipped_unit_text("posture-spine.service").replace(
+        "User=posture", "User=root"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "service account" in result.stdout
+
+
+def test_gate_rejects_a_unit_whose_state_directory_drifted(tmp_path):
+    unit = tmp_path / "posture-spine.service"
+    unit.write_text(_shipped_unit_text("posture-spine.service").replace(
+        "StateDirectory=posture", "StateDirectory=postured"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "StateDirectory" in result.stdout
+
+
+def test_gate_rejects_a_unit_that_loads_the_wrong_environment_file(tmp_path):
+    # The system unit must load the system environment file; loading the
+    # operator\'s user file instead drops the operator\'s overrides for the
+    # daily build.
+    unit = tmp_path / "posture-spine.service"
+    unit.write_text(_shipped_unit_text("posture-spine.service").replace(
+        "EnvironmentFile=-/etc/posture/posture.env",
+        "EnvironmentFile=-/etc/posture/other.env"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "environment file" in result.stdout
+
+
+def test_gate_rejects_a_user_unit_that_loads_the_system_environment_file(
+        tmp_path):
+    unit = tmp_path / "posture-stream.service"
+    unit.write_text(_shipped_unit_text("posture-stream.service").replace(
+        "EnvironmentFile=%h/.config/posture/env",
+        "EnvironmentFile=/etc/posture/posture.env"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "environment file" in result.stdout
+
+
+def test_gate_rejects_a_unit_that_points_the_catalog_outside_the_state_dir(
+        tmp_path):
+    unit = tmp_path / "posture-spine.service"
+    unit.write_text(_shipped_unit_text("posture-spine.service").replace(
+        "POSTURE_DB_PATH=/var/lib/posture/posture.db",
+        "POSTURE_DB_PATH=/tmp/posture.db"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "outside" in result.stdout
+
+
+def test_gate_rejects_a_runbook_without_a_host_contract(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook().replace(
+        _HOST_CONTRACT_BLOCK, ""))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "host contract" in result.stdout
+
+
+def test_gate_rejects_a_runbook_whose_contract_path_is_not_in_the_layout(
+        tmp_path):
+    # The contract and the install layout describe the same host, so a
+    # contract path the table does not name is drift.
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook().replace(
+        "state_dir: /var/lib/posture", "state_dir: /srv/posture"))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "install layout table" in result.stdout
+
+
+def test_gate_rejects_an_install_layout_path_no_contract_path_covers(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook().replace(
+        _HOST_LAYOUT_TABLE,
+        _HOST_LAYOUT_TABLE + "| `/srv/other` | a path the contract does not "
+        "cover |\n"))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "no host contract path covers" in result.stdout
+
+
+def test_the_shipped_units_match_the_host_contract():
+    # The tree as it ships must satisfy the contract the runbook declares.
+    units = sorted((REPO_ROOT / "systemd").glob("*.service"))
+    assert units, "the tree ships no service units"
+    result = _run_gate_on([*units, RUNBOOK])
     assert result.returncode == 0, result.stdout + result.stderr

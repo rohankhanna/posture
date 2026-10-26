@@ -170,6 +170,15 @@ environment variable nothing reads, and an environment variable a shipped unit
 sets but the runbook does not document are all loud at check time, so the
 runbook cannot quietly stop describing the tree it installs.
 
+The runbook also declares a **host contract**: the install root, the state
+and export directories, the two environment files and the service account
+the units are written against. The gate checks the units against that
+contract (a unit whose `WorkingDirectory`, account, state directory,
+catalog paths or environment file no longer match it is drift, and the
+contract is what maps a unit's absolute script path back into this tree),
+and checks the contract against the runbook's install layout table, so the
+two never disagree about where the tree lives on the host.
+
 The spine is **data-only**. It serializes these MAP tables:
 
 | Table | Content |

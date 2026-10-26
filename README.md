@@ -535,7 +535,12 @@ handlers swallow it, and the spine silently loses a capability.
 `scripts/check_deployment_line.sh` closes that window: every `posture ...`
 invocation in the daily script must resolve against the interface this
 repository ships. It runs as the fourth gate of `scripts/verify-all`, so a
-script that outruns its package fails loudly instead of quietly.
+script that outruns its package fails loudly instead of quietly. The same
+gate covers the systemd units and the deployment runbook, including the
+runbook's **host contract** — the install root, the state and export
+directories, the environment files and the service account the units are
+written against — so a unit that drifts away from the documented host
+layout fails loudly instead of quietly at 03:07 UTC.
 
 ## Data sources and ingestion
 
