@@ -300,6 +300,15 @@ else
     RUN_GC=1
   fi
 fi
+# Re-compute free space here: the value from step 0 is stale after the
+# ingest, refresh, purge, and publish steps (steps 1-7) may have consumed
+# or freed significant disk. Using the pre-build value would miss a
+# disk-space drop that happened during the build — the GC would not fire
+# when it should, the clone bloat would not be reclaimed, and the operator
+# would see no warning. The every-degradation-is-loud principle requires
+# the disk-space trigger to read the current state, not a stale snapshot.
+FREE_GB="$(_free_gb)"
+echo "posture-spine: ${FREE_GB} GB free (post-build, before git maintenance)"
 if [ "$FREE_GB" -lt "$DISK_WARN_GB" ]; then
   RUN_GC=1
 fi

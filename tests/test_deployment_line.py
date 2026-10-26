@@ -359,6 +359,57 @@ def test_daily_script_git_maintenance_failures_call_degrade():
         )
 
 
+def test_daily_script_git_maintenance_disk_trigger_reads_current_free_space():
+    # The git maintenance step (step 8) forces a gc run when free disk space
+    # drops below DISK_WARN_GB. The FREE_GB variable is first computed at the
+    # top of the script (step 0, the disk guard), but the ingest, refresh,
+    # purge, and publish steps (steps 1-7) may have consumed or freed
+    # significant disk. Using the stale step-0 value would miss a disk-space
+    # drop that happened during the build: the gc would not fire when it
+    # should, the clone bloat would not be reclaimed, and the operator would
+    # see no warning. The every-degradation-is-loud principle requires the
+    # disk-space trigger to read the current state, not a stale snapshot.
+    # This test verifies the script re-computes FREE_GB (via _free_gb)
+    # between the publish step and the disk-space GC trigger check.
+    text = DAILY_SCRIPT.read_text()
+    lines = text.splitlines()
+    logicals = _join_continuations(lines)
+    publish_line = None
+    gc_trigger_line = None
+    free_gb_recompute_line = None
+    free_gb_assignments = []
+    for lineno, logical in logicals:
+        stripped = logical.strip()
+        if "spine publish" in stripped and publish_line is None:
+            publish_line = lineno
+        if "FREE_GB" in stripped and "DISK_WARN_GB" in stripped:
+            gc_trigger_line = lineno
+        if "_free_gb" in stripped and "FREE_GB=" in stripped:
+            free_gb_assignments.append(lineno)
+    # The first _free_gb assignment is step 0 (the initial disk guard).
+    # A second assignment after the publish step is the fix that
+    # re-computes the current free space before the GC trigger.
+    if len(free_gb_assignments) >= 2:
+        for ln in free_gb_assignments:
+            if ln > publish_line:
+                free_gb_recompute_line = ln
+                break
+    assert publish_line is not None, "publish step not found in vps_spine.sh"
+    assert gc_trigger_line is not None, "GC disk trigger not found"
+    assert free_gb_recompute_line is not None and free_gb_recompute_line > publish_line, (
+        "the script does not re-compute FREE_GB after the publish step; "
+        "the git maintenance disk-space trigger uses a stale value from "
+        "the start of the build (step 0), so a disk-space drop during "
+        "ingest/export/publish is not detected and the gc does not fire "
+        "when it should \u2014 a silent degradation"
+    )
+    assert free_gb_recompute_line < gc_trigger_line, (
+        "the script re-computes FREE_GB but after the GC trigger check, "
+        "so the trigger still uses the stale value"
+    )
+
+
+
 @pytest.mark.parametrize("command", ["purge", "spine", "ingest"])
 def test_cli_provides_the_commands_the_daily_script_uses(command):
     from posture.cli import build_parser
