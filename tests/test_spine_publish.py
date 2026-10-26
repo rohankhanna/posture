@@ -274,14 +274,23 @@ def test_cli_verify_without_verify_sig_is_unchanged(conn, tmp_path, capsys):
 # the daily job script
 # ---------------------------------------------------------------------------
 
-def _run_daily_job(tmp_path: Path, fail_on: tuple[str, ...] = ()
-                   ) -> tuple[list[str], subprocess.CompletedProcess]:
+def _run_daily_job(tmp_path: Path, fail_on: tuple[str, ...] = (),
+                    clone_dirs: bool = False,
+                    git_fail: bool = False
+                    ) -> tuple[list[str], subprocess.CompletedProcess]:
     """Run scripts/vps_spine.sh against a stub `posture` binary and return the
     recorded invocations (one argv line per call, space-joined) plus the
     completed process.
 
     `fail_on` lists invocation prefixes (e.g. "discover") whose stub call
-    exits non-zero, so a test can drive a transient failure of one step."""
+    exits non-zero, so a test can drive a transient failure of one step.
+
+    `clone_dirs` creates empty cvelistV5 and advisory-database clone
+    directories (each with a `.git` subdirectory) under the state dir so the
+    weekly git maintenance loop in step 8 actually iterates over a clone.
+
+    `git_fail` installs a stub `git` that always exits non-zero, so a test
+    can drive a failed `git gc` / `git remote prune` in step 8."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "posture-calls.log"
@@ -301,9 +310,18 @@ def _run_daily_job(tmp_path: Path, fail_on: tuple[str, ...] = ()
             "exit 0\n"
         )
     stub.chmod(0o755)
+    if git_fail:
+        git_stub = bin_dir / "git"
+        git_stub.write_text("#!/usr/bin/env bash\nexit 1\n")
+        git_stub.chmod(0o755)
 
     state = tmp_path / "state"
     state.mkdir()
+    if clone_dirs:
+        for sub in ("cvelist/cvelistV5", "ghsa/advisory-database"):
+            clone = state / sub
+            clone.mkdir(parents=True)
+            (clone / ".git").mkdir()
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["POSTURE_STATE_DIR"] = str(state)
@@ -380,3 +398,52 @@ def test_a_failing_horizon_scan_still_publishes_the_map(tmp_path):
     assert result.returncode == 1, result.stdout + result.stderr
     assert "DEGRADED" in result.stdout, result.stdout
     assert "horizon scan failed" in result.stdout, result.stdout
+
+
+
+def test_a_failing_git_gc_does_not_abort_the_daily_build(tmp_path):
+    # The weekly git clone maintenance (step 8) runs AFTER the publish, so a
+    # failed `git gc` cannot stop the map being served. It must still be
+    # loud: the script's stated principle is "Every degradation is loud ...
+    # instead of being swallowed," yet the gc handlers used `2>/dev/null ||
+    # true`, which swallowed the failure completely -- the clones kept
+    # growing and the operator never saw it in the journal until the
+    # disk-space guard finally aborted the build. The fix marks the run
+    # DEGRADED so the failure is visible and the build still publishes.
+    calls, result = _run_daily_job(tmp_path, clone_dirs=True, git_fail=True)
+
+    # the map was already published before the maintenance step
+    assert any(c.startswith("spine publish") for c in calls), calls
+    # the gc failure is loud: the run ends degraded
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "DEGRADED" in result.stdout, result.stdout
+    assert "git gc failed" in result.stdout, result.stdout
+
+
+def test_a_failing_git_gc_does_not_stamp_the_next_run(tmp_path):
+    # A failed gc must not push the next maintenance pass out by
+    # GC_INTERVAL_DAYS: the clones are still bloated, so the next daily
+    # build must retry maintenance instead of waiting a week. No stamp is
+    # written on a failed pass.
+    _calls, result = _run_daily_job(tmp_path, clone_dirs=True, git_fail=True)
+    assert result.returncode == 1, result.stdout + result.stderr
+    stamp = tmp_path / "state" / ".gc_last_run"
+    assert not stamp.exists(), (
+        "a failed git gc wrote the maintenance stamp, so the next run would "
+        "wait GC_INTERVAL_DAYS before retrying maintenance on still-bloated "
+        "clones"
+    )
+
+
+def test_the_daily_job_does_not_stamp_maintenance_when_no_clone_exists(tmp_path):
+    # On a fresh state with no source clones yet, no maintenance ran, so no
+    # stamp must be written: the next run retries maintenance once the clones
+    # appear instead of waiting a week for a pass that never happened. The
+    # old code stamped unconditionally inside the RUN_GC block.
+    _calls, result = _run_daily_job(tmp_path)
+    assert result.returncode == 0, result.stderr
+    stamp = tmp_path / "state" / ".gc_last_run"
+    assert not stamp.exists(), (
+        "the daily job wrote the gc stamp without running maintenance on any "
+        "clone, so the next run would skip maintenance for GC_INTERVAL_DAYS"
+    )

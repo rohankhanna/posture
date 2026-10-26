@@ -323,6 +323,42 @@ def test_daily_script_maintenance_command_failures_call_degrade():
         )
 
 
+def test_daily_script_git_maintenance_failures_call_degrade():
+    # The weekly git clone maintenance (step 8) reclaims the pack bloat the
+    # advisory-database and cvelistV5 clones accumulate from every fetch.
+    # The script's own header states the principle: "Every degradation is
+    # loud: a step that cannot do its job prints a warning and marks the run
+    # degraded, and the job exits non-zero at the end so the failure is
+    # visible in the journal instead of being swallowed." The git gc/prune
+    # handlers used to use `2>/dev/null || true`, which swallowed a failed
+    # gc completely: the clones kept growing and the operator never saw it
+    # in the journal until the disk-space guard finally aborted the build.
+    # A failed `git gc` or `git remote prune` must call `degrade` (not a
+    # bare `|| true`) so the run is marked DEGRADED and the failure is
+    # visible. The gc runs after the publish, so a failed gc cannot stop the
+    # map being served; it only needs to be loud.
+    text = DAILY_SCRIPT.read_text()
+    lines = text.splitlines()
+    logicals = _join_continuations(lines)
+    git_maintenance = []
+    for _, logical in logicals:
+        if "git -C" in logical and (
+                "remote prune" in logical or " gc" in logical):
+            git_maintenance.append(logical)
+    assert git_maintenance, (
+        "no git maintenance commands found in vps_spine.sh"
+    )
+    for logical in git_maintenance:
+        assert "|| true" not in logical, (
+            f"git maintenance command silently swallows its failure with "
+            f"`|| true` instead of marking the run degraded: {logical}"
+        )
+        assert "degrade" in logical, (
+            f"git maintenance command failure does not call degrade: "
+            f"{logical}"
+        )
+
+
 @pytest.mark.parametrize("command", ["purge", "spine", "ingest"])
 def test_cli_provides_the_commands_the_daily_script_uses(command):
     from posture.cli import build_parser

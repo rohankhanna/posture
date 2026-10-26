@@ -305,13 +305,32 @@ if [ "$FREE_GB" -lt "$DISK_WARN_GB" ]; then
 fi
 if [ "$RUN_GC" -eq 1 ]; then
   echo "posture-spine: running git clone maintenance (gc + prune)"
+  # Every degradation is loud: a failed gc or prune must mark the run
+  # DEGRADED (a non-zero exit at the end, visible in the journal) instead of
+  # being swallowed by `|| true`. The clones keep their last-known-good
+  # state on a failed gc, so the daily build still publishes a fresh map;
+  # the loud failure tells the operator the clone bloat is not being
+  # reclaimed before the disk guard has to act on it.
+  GC_RAN=0
+  GC_OK=1
   for repo in "$CVELIST_DIR/cvelistV5" "$GHSA_DIR/advisory-database"; do
     if [ -d "$repo/.git" ]; then
-      git -C "$repo" remote prune origin 2>/dev/null || true
-      git -C "$repo" gc 2>/dev/null || true
+      GC_RAN=1
+      git -C "$repo" remote prune origin 2>/dev/null || \
+        { degrade "git remote prune failed for $repo; clone bloat not reclaimed, spine continues"; GC_OK=0; }
+      git -C "$repo" gc 2>/dev/null || \
+        { degrade "git gc failed for $repo; clone bloat not reclaimed, spine continues"; GC_OK=0; }
     fi
   done
-  date -u +%Y-%m-%dT%H:%M:%SZ > "$GC_STAMP"
+  # Only stamp a maintenance pass that actually ran and did not fail. A
+  # failed gc must not push the next run out by GC_INTERVAL_DAYS -- the
+  # clones are still bloated, so the next daily build retries maintenance
+  # instead of waiting a week. When no clone directory exists yet, no
+  # maintenance ran and no stamp is written either, so the next run retries
+  # once the clones appear.
+  if [ "$GC_RAN" -ne 0 ] && [ "$GC_OK" -ne 0 ]; then
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$GC_STAMP"
+  fi
 fi
 
 if [ "$DEGRADED" -ne 0 ]; then
