@@ -183,6 +183,80 @@ def test_daily_script_ingest_failures_call_degrade():
         assert source in text, f"source {source} not found in vps_spine.sh"
 
 
+def test_daily_script_tracker_commands_have_fault_tolerance():
+    # The script runs under `set -euo pipefail`, so any `posture` command
+    # that returns non-zero aborts the entire daily spine build.  The
+    # ingest commands were made fault-tolerant (guarded by `|| degrade`
+    # or inside a `set +e` block), but three other tracker-dependent
+    # commands pull from remote sources and have the same exposure:
+    #
+    #   posture stream   -- step 1, MITRE cvelistV5 forward stream
+    #   posture backfill -- step 2, MITRE cvelistV5 historical backfill
+    #   posture refresh  -- step 4, NVD per-CVE refresh
+    #
+    # A transient outage in any of these three should NOT block the daily
+    # spine build: the persistent database retains last-known-good and the
+    # run continues, marked degraded so the failure is visible in the
+    # journal without aborting the export.  Each of these commands must be
+    # guarded by `|| degrade` (or inside a `set +e` block with a `$?`
+    # check) just like the ingest commands.
+    text = DAILY_SCRIPT.read_text()
+    lines = text.splitlines()
+    logicals = _join_continuations(lines)
+    in_plus_e = False
+    tracker_commands = ("posture stream ", "posture backfill ", "posture refresh ")
+    unguarded = []
+    for lineno, logical in logicals:
+        stripped = logical.strip()
+        if stripped == "set +e":
+            in_plus_e = True
+            continue
+        if stripped == "set -e":
+            in_plus_e = False
+            continue
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not any(stripped.startswith(tc) for tc in tracker_commands):
+            continue
+        if in_plus_e:
+            continue
+        if "||" in stripped:
+            continue
+        unguarded.append((lineno, stripped))
+    assert not unguarded, (
+        "unguarded tracker-dependent command(s) in vps_spine.sh would abort "
+        "the entire daily spine build on a transient source failure: "
+        + "; ".join(f"line {n}: {s}" for n, s in unguarded)
+    )
+
+
+def test_daily_script_tracker_command_failures_call_degrade():
+    # Each tracker-dependent command's failure handler must call `degrade`
+    # (not a bare `echo`) so the run is marked DEGRADED and exits non-zero
+    # at the end, making the failure visible in the journal.  This is the
+    # script's stated principle: "Every degradation is loud."
+    text = DAILY_SCRIPT.read_text()
+    lines = text.splitlines()
+    logicals = _join_continuations(lines)
+    tracker_commands = ("posture stream ", "posture backfill ", "posture refresh ")
+    for _, logical in logicals:
+        stripped = logical.strip()
+        if not any(stripped.startswith(tc) for tc in tracker_commands):
+            continue
+        if "||" not in stripped:
+            continue
+        # The continuation line (or the tail of the same logical line)
+        # must call degrade, not echo.
+        joined = logical
+        assert "degrade" in joined, (
+            f"tracker command failure handler does not call degrade: {stripped}"
+        )
+        assert "::warning::" not in joined, (
+            f"tracker command failure handler uses ::warning:: instead of "
+            f"degrade: {stripped}"
+        )
+
+
 
 
 

@@ -76,10 +76,20 @@ if [ "$FREE_GB" -lt "$DISK_WARN_GB" ]; then
 fi
 
 # 1) Forward stream: pick up newly published skeletons.
-posture stream --db "$DB_PATH"
+#    Best-effort: a transient MITRE cvelistV5 outage must NOT block the daily
+#    spine build; the no-wipe stream retains last-known-good and the run is
+#    marked degraded so the failure is visible in the journal without aborting
+#    the export.
+posture stream --db "$DB_PATH" || \
+  degrade "stream incomplete; last-known-good retained, spine continues"
 
 # 2) Backfill historical skeletons once, then no-op on later runs.
-posture backfill --cap "$BACKFILL_CAP" --db "$DB_PATH"
+#    Best-effort: a transient MITRE cvelistV5 outage must NOT block the daily
+#    spine build; the no-wipe backfill retains last-known-good and the run is
+#    marked degraded so the failure is visible in the journal without aborting
+#    the export.
+posture backfill --cap "$BACKFILL_CAP" --db "$DB_PATH" || \
+  degrade "backfill incomplete; last-known-good retained, spine continues"
 
 # 3) Peer overlays. Caps keep the small VPS bounded; each source is
 #    incremental from the persistent database. Best-effort: a transient
@@ -134,8 +144,12 @@ fi
 set -e
 
 # 4) Refresh the catalog with a small per-run cap. The persistent DB means
-#    later runs continue rather than restart.
-posture refresh --no-devices --cap "$REFRESH_CAP" --db "$DB_PATH"
+#    later runs continue rather than restart. Best-effort: a transient NVD
+#    outage must NOT block the daily spine build; the no-wipe refresh retains
+#    last-known-good and the run is marked degraded so the failure is visible
+#    in the journal without aborting the export.
+posture refresh --no-devices --cap "$REFRESH_CAP" --db "$DB_PATH" || \
+  degrade "refresh incomplete; last-known-good retained, spine continues"
 
 # 5) Keep the map honest without touching devices.
 posture monitor run --db "$DB_PATH"
