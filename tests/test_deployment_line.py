@@ -743,6 +743,7 @@ _HOST_CONTRACT_BLOCK = """```yaml
 install_root: /opt/posture
 state_dir: /var/lib/posture
 export_dir: /var/lib/posture
+served_map_dir: /var/lib/posture/spine
 system_env_file: /etc/posture/posture.env
 user_env_file: ~/.config/posture/env
 service_account: posture
@@ -757,6 +758,9 @@ _HOST_LAYOUT_TABLE = """"| Path | Holds |
 | --- | --- |
 | `/opt/posture` | this repository\'s tree |
 | `/var/lib/posture` | the catalog database and the published map |
+| `/var/lib/posture/spine` | the published map a client pulls |
+| `/var/lib/posture/spine/manifest.json` | the published map's manifest |
+| `/var/lib/posture/spine/defects` | the published defect shards |
 | `/etc/posture/posture.env` | the environment overrides for the system units |
 | `/etc/posture/signing_key.pem` | the manifest signing key, when the manifest is signed |
 | `~/.config/posture/env` | the environment overrides for the two user units |
@@ -1587,3 +1591,108 @@ def test_gate_rejects_a_contract_whose_sign_key_is_outside_the_layout(
     assert result.returncode == 1
     assert "sign_key" in result.stdout
     assert "install layout table" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# The published-map layout (dimension 4j)
+# ---------------------------------------------------------------------------
+
+def test_the_host_contract_declares_the_served_map_directory():
+    # The directory the published map lands in is a host expectation: it is
+    # the directory a web server serves and a client pulls from, so it
+    # belongs in the contract rather than only in prose.
+    assert _contract_value("served_map_dir")
+
+
+def test_the_served_map_directory_is_the_one_the_publish_implementation_writes():
+    # The publish step writes the map into a `spine` directory inside the
+    # export directory; a contract that names any other directory describes
+    # a host the daily job never publishes into.
+    from posture.export import SPINE_DIR
+    export_dir = _normalize_host_path_helper(_contract_value("export_dir"))
+    served = _normalize_host_path_helper(_contract_value("served_map_dir"))
+    assert served == f"{export_dir}/{SPINE_DIR}", (
+        f"the host contract's served_map_dir ({served}) is not the directory "
+        f"the publish implementation writes ({export_dir}/{SPINE_DIR})")
+
+
+def test_the_published_map_paths_are_in_the_install_layout_table():
+    # The operator's verification step names the manifest and the shards;
+    # both must be the paths the publish implementation actually writes.
+    from posture.export import DEFECTS_DIR, MANIFEST_NAME
+    served = _normalize_host_path_helper(_contract_value("served_map_dir"))
+    layout = _layout_table_paths(RUNBOOK.read_text())
+    for path in (f"{served}/{MANIFEST_NAME}", f"{served}/{DEFECTS_DIR}"):
+        assert path in layout, (
+            f"the install layout does not name the published map's {path}")
+
+
+def test_the_shipped_runbook_does_not_name_a_published_map_path_outside_the_served_directory():
+    # The manifest lives inside the served map directory. A runbook that
+    # tells the operator to look at the export directory's root for it
+    # describes a file the publish step never writes.
+    served = _normalize_host_path_helper(_contract_value("served_map_dir"))
+    text = RUNBOOK.read_text()
+    assert f"{served}/manifest.json" in text
+    assert "/var/lib/posture/manifest.json" not in text
+    assert "/var/lib/posture/defects" not in text
+
+
+def test_gate_reports_the_published_map_dimension_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ("the published-map layout matches the publish implementation"
+            ) in result.stdout
+
+
+def test_gate_rejects_a_contract_whose_served_map_dir_drifted_from_the_code(
+        tmp_path):
+    # A contract that names a served map directory the publish
+    # implementation never writes to is drift.
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook().replace(
+        "served_map_dir: /var/lib/posture/spine",
+        "served_map_dir: /var/lib/posture/map"))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "served_map_dir" in result.stdout
+    assert "publish implementation" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_documents_the_manifest_outside_the_served_map_directory(
+        tmp_path):
+    # The manifest is written inside the served map directory; a layout
+    # that names it elsewhere describes a path the code never writes.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "| `/var/lib/posture/spine/manifest.json` | the published map's manifest |",
+        "| `/var/lib/posture/manifest.json` | the published map's manifest |")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "manifest" in result.stdout
+    assert "served map directory" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_omits_the_published_map_paths(
+        tmp_path):
+    # A layout that does not name the manifest the publish step writes
+    # leaves the operator's verification step without a path to check.
+    runbook = tmp_path / "deployment.md"
+    body = "\n".join(
+        line for line in _baseline_runbook().splitlines()
+        if "/var/lib/posture/spine/manifest.json" not in line)
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "does not name the published map's manifest" in result.stdout
+
+
+def test_gate_rejects_a_contract_without_the_served_map_directory(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(
+        _baseline_runbook().replace(
+            "served_map_dir: /var/lib/posture/spine\n", ""))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "served_map_dir" in result.stdout

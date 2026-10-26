@@ -66,6 +66,13 @@ from . import store as _store
 
 MANIFEST_VERSION = "1"
 SPINE_DIR = "spine"
+# The published map's own layout, inside the served directory. The manifest
+# names every shard and its digest; the defect shards live in their own
+# directory, one file per published month. These names are the ones the
+# deployment runbook documents and the deployment-line gate checks, so the
+# operator's verification steps name the paths the code actually writes.
+MANIFEST_NAME = "manifest.json"
+DEFECTS_DIR = "defects"
 # Per-shard size caps. The repository host rejects a push that contains a file
 # above its hard per-file limit, so every shard the export writes is capped
 # well below it. The defect shards are capped per published month; the flat
@@ -305,7 +312,7 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
 
     # --- defects: streamed shard-by-shard, rows already ordered by published
     #     month (server-side cursor; the whole catalog never lands in RAM) ---
-    defects_dir = root / "defects"
+    defects_dir = root / DEFECTS_DIR
     # drop provisional parts from any crashed prior run — the self-clean
     # below only matches final *.jsonl names
     _clean_stale_parts(defects_dir)
@@ -368,7 +375,7 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
         "counts": counts,
         "files": files,
     }
-    (root / "manifest.json").write_text(
+    (root / MANIFEST_NAME).write_text(
         json.dumps(manifest, sort_keys=True, indent=2) + "\n"
     )
     return manifest
@@ -459,7 +466,7 @@ def verify_spine(from_dir: os.PathLike | str = ".") -> dict:
     Returns the manifest on success.
     """
     root = Path(from_dir) / SPINE_DIR
-    manifest = json.loads((root / "manifest.json").read_text())
+    manifest = json.loads((root / MANIFEST_NAME).read_text())
     for entry in manifest["files"]:
         path = root / entry["path"]
         if not path.exists():
@@ -517,7 +524,7 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
     root = Path(from_dir) / SPINE_DIR
     if verify_manifest:
         verify_spine(from_dir)
-    manifest = json.loads((root / "manifest.json").read_text())
+    manifest = json.loads((root / MANIFEST_NAME).read_text())
 
     stats = {k: 0 for k in ("defects", "crosswalk", "candidates",
                            "distrust_marks", "seen_defects", "kev",
@@ -527,7 +534,7 @@ def import_spine(conn, from_dir: os.PathLike | str = ".",
     # --- defects: full INSERT OR REPLACE (all columns, including enrich_state,
     #     distrusted, distrust_reason, discovered_at, prompt_hash, raw_text_hash
     #     — a faithful mirror of the signed map; upsert_defect would drop those) ---
-    for shard_path in sorted((root / "defects").glob("*.jsonl")):
+    for shard_path in sorted((root / DEFECTS_DIR).glob("*.jsonl")):
         for row in _read_jsonl(shard_path):
             conn.execute(
                 """INSERT OR REPLACE INTO defects
@@ -729,7 +736,7 @@ def sign_manifest(out_dir: os.PathLike | str,
     from cryptography.hazmat.primitives.asymmetric import ed25519
 
     root = Path(out_dir) / SPINE_DIR
-    manifest_path = root / "manifest.json"
+    manifest_path = root / MANIFEST_NAME
     if not manifest_path.exists():
         raise ValueError(f"manifest not found: {manifest_path}")
     priv_pem = Path(private_key_path).read_bytes()
@@ -758,7 +765,7 @@ def verify_manifest_signature(out_dir: os.PathLike | str,
 
     root = Path(out_dir) / SPINE_DIR
     sig_path = root / "state.sig"
-    manifest_path = root / "manifest.json"
+    manifest_path = root / MANIFEST_NAME
     if not sig_path.exists():
         raise ValueError("spine signature missing: state.sig not found")
     if not manifest_path.exists():

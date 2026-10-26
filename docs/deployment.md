@@ -47,7 +47,9 @@ units will point at paths that do not exist.
 | `/opt/posture/.venv` | the Python environment the units put first on `PATH` |
 | `/var/lib/posture` | the catalog database, the source clones, and the published map |
 | `/var/lib/posture/posture.db` | the persistent catalog database |
-| `/var/lib/posture/manifest.json` | the published map's manifest: shard digests and row counts |
+| `/var/lib/posture/spine` | the published map a client pulls: the manifest, the signature, and the shards |
+| `/var/lib/posture/spine/manifest.json` | the published map's manifest: shard digests and row counts |
+| `/var/lib/posture/spine/defects` | the published defect shards, one file per published month |
 | `/etc/posture/posture.env` | the environment overrides for the system units |
 | `/etc/posture/signing_key.pem` | the manifest signing key, when the manifest is signed (readable by the posture group) |
 | `~/.config/posture/env` | the environment overrides for the two user units |
@@ -71,6 +73,7 @@ than on the host.
 install_root: /opt/posture
 state_dir: /var/lib/posture
 export_dir: /var/lib/posture
+served_map_dir: /var/lib/posture/spine
 system_env_file: /etc/posture/posture.env
 user_env_file: ~/.config/posture/env
 service_account: posture
@@ -88,6 +91,16 @@ these two values, so a threshold that changes in one place and not the other
 is reported at check time rather than discovered on a host that is already
 out of disk. The operator can still override them per host with
 `POSTURE_DISK_WARN_GB` and `POSTURE_DISK_CRIT_GB` in the environment file.
+
+`served_map_dir` is the directory the published map actually lands in: the
+daily job publishes into `export_dir`, and the publish step writes the map
+into a `spine` directory inside it, so this is the directory a web server
+serves and a client pulls. The deployment-line gate checks this key against
+the publish implementation itself, so a contract that names a served
+directory the code does not write to is drift at check time rather than an
+empty directory on the host. The gate also checks that this runbook's
+install layout names the manifest and the shard directory inside it, so
+the verification steps below look at the paths that really exist.
 
 `sign_key` is the path the operator points `POSTURE_SIGN_KEY` at when the
 manifest is signed. The manifest may be left unsigned (the daily job
@@ -225,8 +238,8 @@ shards, and the previous map is gone only because the swap succeeded.
 ```bash
 posture health --db /var/lib/posture/posture.db
 posture catalog --db /var/lib/posture/posture.db --limit 5
-sudo ls -l /var/lib/posture/manifest.json
-sudo ls -l /var/lib/posture/defects
+sudo ls -l /var/lib/posture/spine/manifest.json
+sudo ls -l /var/lib/posture/spine/defects
 ```
 
 A client that pulls the map verifies the manifest's shard digests before it
@@ -332,3 +345,12 @@ deployment line, and makes five kinds of drift loud:
     must set its owner to the contract's served directory owner. A
     contract that moves the key or changes the owner while the runbook
     still builds the old host is drift rather than a host nobody builds.
+11. **Published-map layout** — the host contract declares the directory the
+    published map lands in, and the gate checks that directory against the
+    publish implementation's own layout (the `spine` directory the publish
+    step writes inside the export directory). The install layout must name
+    the manifest and the defect-shard directory inside it, and must not
+    name a published-map file anywhere else: a runbook that tells the
+    operator to check a path the code never writes is a verification step
+    that can never pass, and a map a client is told to pull from a
+    directory that does not exist is a map nobody receives.

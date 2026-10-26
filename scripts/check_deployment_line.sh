@@ -146,6 +146,18 @@
 #         the owner while the runbook still creates the directory as the
 #         old account describes a host the daily job cannot publish into).
 #
+#     4j. Published-map layout — the publish implementation writes the map
+#         into a `spine` directory inside the export directory, so the
+#         manifest and the defect shards a client pulls live at
+#         `<export_dir>/spine/...`. The host contract names that directory
+#         (served_map_dir) and is checked against the publish
+#         implementation's own layout, and the install layout must name
+#         the manifest and the shard directory inside it. A runbook that
+#         documents the published map anywhere else describes a path the
+#         code never writes: the operator's verification step checks a
+#         file that does not exist, and a client told to pull from that
+#         directory gets nothing.
+#
 # Usage: check_deployment_line.sh [FILE ...]
 #   Default: scripts/vps_spine.sh plus every systemd/*.service and
 #   systemd/*.timer unit.
@@ -173,6 +185,7 @@ import sys
 from pathlib import Path
 
 from posture.cli import build_parser
+from posture.export import DEFECTS_DIR, MANIFEST_NAME, SPINE_DIR
 
 # A `posture` invocation at the start of a command line in the script.
 _CALL = re.compile(r"^\s*posture\s+([^\n;&|]*)", re.MULTILINE)
@@ -855,6 +868,7 @@ _CONTRACT_KEYS = (
     "install_root",
     "state_dir",
     "export_dir",
+    "served_map_dir",
     "system_env_file",
     "user_env_file",
     "service_account",
@@ -868,6 +882,7 @@ _CONTRACT_PATH_KEYS = (
     "install_root",
     "state_dir",
     "export_dir",
+    "served_map_dir",
     "system_env_file",
     "user_env_file",
     "sign_key",
@@ -1088,6 +1103,77 @@ def _validate_host_contract(
         failures.append(
             f"{path}: the install layout names `{layout_path}` which no host "
             f"contract path covers")
+
+
+# ---------------------------------------------------------------------------
+# Published-map layout (4j)
+# ---------------------------------------------------------------------------
+
+def _validate_served_map_layout(
+    path: str,
+    text: str,
+    contract: dict[str, str] | None,
+    failures: list[str],
+) -> None:
+    """Check the runbook's published-map layout (dimension 4j).
+
+    The publish implementation writes the map into a spine directory
+    inside the export directory, so the manifest and the defect shards a
+    client pulls live at <export_dir>/spine/.... The host contract
+    names that directory (served_map_dir), and the install layout must
+    name the manifest and the shard directory inside it.
+
+    A runbook that documents the published map anywhere else describes a
+    path the code never writes: the operator's verification step checks a
+    file that does not exist, and a client told to pull from that
+    directory gets nothing. That is drift, and it is loud at check time
+    rather than discovered on the host.
+    """
+    if contract is None:
+        return
+    served = contract.get("served_map_dir", "").strip()
+    if not served:
+        # The missing contract key is reported by the contract check.
+        return
+    served = _normalize_host_path(served)
+    export_dir = _normalize_host_path(contract.get("export_dir", ""))
+    expected = (_normalize_host_path(f"{export_dir}/{SPINE_DIR}")
+                if export_dir else "")
+    if expected and served != expected:
+        failures.append(
+            f"{path}: the host contract's served_map_dir ({served}) is not "
+            f"the directory the publish implementation writes ({expected}: "
+            f"the export directory plus the `{SPINE_DIR}` directory the "
+            f"publish step creates)")
+
+    layout = _layout_table_paths(text)
+    manifest_path = _normalize_host_path(f"{served}/{MANIFEST_NAME}")
+    defects_path = _normalize_host_path(f"{served}/{DEFECTS_DIR}")
+    if manifest_path not in layout:
+        failures.append(
+            f"{path}: the install layout does not name the published map's "
+            f"manifest ({manifest_path}); the publish implementation writes "
+            f"it there, so the operator's verification step would check a "
+            f"path that does not exist")
+    if defects_path not in layout:
+        failures.append(
+            f"{path}: the install layout does not name the published map's "
+            f"defect shards ({defects_path}); the publish implementation "
+            f"writes them there")
+    for layout_path in layout:
+        if _is_under(layout_path, served):
+            continue
+        if layout_path.endswith(f"/{MANIFEST_NAME}"):
+            failures.append(
+                f"{path}: the install layout names the published map's "
+                f"manifest at {layout_path}, but the publish implementation "
+                f"writes it inside the served map directory ({manifest_path})")
+        elif layout_path.endswith(f"/{DEFECTS_DIR}"):
+            failures.append(
+                f"{path}: the install layout names the published map's "
+                f"defect shards at {layout_path}, but the publish "
+                f"implementation writes them inside the served map "
+                f"directory ({defects_path})")
 
 
 # ---------------------------------------------------------------------------
@@ -1749,6 +1835,8 @@ def main(paths: list[str]) -> int:
                 failures)
             _validate_host_contract(
                 path, text, runbook_contracts.get(path), failures)
+            _validate_served_map_layout(
+                path, text, runbook_contracts.get(path), failures)
             checked += _validate_runbook_host_commands(
                 path, text, runbook_contracts.get(path), failures)
 
@@ -1790,6 +1878,8 @@ def main(paths: list[str]) -> int:
         ok_parts.append("every installed unit is removed by the runbook")
         ok_parts.append("the manifest signing key and the served directory "
                         "owner match the contract")
+        ok_parts.append("the published-map layout matches the publish "
+                        "implementation")
     if contract is not None:
         ok_parts.append("the growth-guard thresholds match the contract")
     ok_text = ", ".join(ok_parts)
