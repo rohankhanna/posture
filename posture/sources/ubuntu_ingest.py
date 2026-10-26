@@ -298,6 +298,28 @@ def ubuntu_ingest_tick(conn, releases: list[str] | None = None,
                     stats["error"] = (f"upstream degraded: {total_fail} total failed pages "
                                       f"across tick ({reason}); aborting, last-known-good retained")
                     return stats
+                # The slow-page and budget checks belong here too, not only on
+                # the success branch.  Without them, an intermittent pattern
+                # (bursts of 503s separated by a single slow 200) accumulates
+                # consecutive_slow during the failure pages but the threshold
+                # is not evaluated until the next slow success, so the breaker
+                # fires up to one burst later than it should.  A sequence of
+                # slow-failing pages (each with 3x retry at 300s timeout) can
+                # also exceed the wall-clock budget without the backstop
+                # firing if the budget check is only on the success branch.
+                if consecutive_slow >= MAX_CONSECUTIVE_SLOW:
+                    stats["error"] = (f"upstream degraded: {consecutive_slow} consecutive slow+failed pages "
+                                      f"for {pkg} (last failure: {reason}); "
+                                      f"aborting tick, last-known-good retained")
+                    return stats
+                if total_slow >= MAX_TOTAL_SLOW:
+                    stats["error"] = (f"upstream degraded: {total_slow} total slow+failed pages "
+                                      f"across tick; aborting, last-known-good retained")
+                    return stats
+                if time.monotonic() - tick_start > TICK_MAX_SECONDS:
+                    stats["error"] = (f"upstream degraded: tick exceeded {TICK_MAX_SECONDS}s "
+                                      f"wall-clock budget; aborting, last-known-good retained")
+                    return stats
                 offset += page_size
                 if total and offset >= total:
                     break

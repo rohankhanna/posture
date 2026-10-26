@@ -516,3 +516,117 @@ def test_ubuntu_ingest_wall_clock_budget_no_wipe(conn, monkeypatch):
     assert "wall-clock" in stats["error"]
     assert stats["fetched"] is False
     assert store.ubuntu_fixes_all(conn) == before      # no-wipe
+
+
+def test_ubuntu_ingest_slow_breaker_fires_on_failure_page(conn, monkeypatch):
+    # REGRESSION TEST for the failure-branch check gap: the consecutive_slow
+    # check must fire DURING a failure page, not only on the next slow
+    # success.  Without the failure-branch check, a pattern of all-failures
+    # after the first page accumulates consecutive_slow but the threshold is
+    # never evaluated (the check only ran on the success branch), so the
+    # breaker silently never fires and the tick runs to completion.
+    #
+    # Setup: first page succeeds (slow, so consecutive_slow starts at 1).
+    # Every subsequent page fails (503).  Disable the fail counters so only
+    # the consecutive_slow threshold can fire.  With the fix, the breaker
+    # fires on the failure page where consecutive_slow reaches the threshold.
+    monkeypatch.setattr(_ut, "curl_get", _feed())
+    _ui.ubuntu_ingest_tick(conn, releases=["noble"], packages=["linux"], now="t1")
+    before = store.ubuntu_fixes_all(conn)
+    assert before
+    monkeypatch.setattr(_ui.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(_ui, "MAX_CONSECUTIVE_FAIL", 999)  # disable fail breaker
+    monkeypatch.setattr(_ui, "MAX_TOTAL_FAIL", 999)  # disable
+    monkeypatch.setattr(_ui, "MAX_CONSECUTIVE_SLOW", 5)  # low threshold
+    monkeypatch.setattr(_ui, "MAX_TOTAL_SLOW", 999)  # disable
+    monkeypatch.setattr(_ui, "TICK_MAX_SECONDS", 999)  # disable
+
+    # Clock: first page slow (10s), subsequent failure pages fast (0.1s).
+    fail_clock_state = {"t": 0.0, "call": 0}
+
+    def fail_only_clock():
+        fail_clock_state["call"] += 1
+        is_elapsed = (fail_clock_state["call"] >= 3) and (fail_clock_state["call"] % 2 == 1)
+        if is_elapsed:
+            page_index = (fail_clock_state["call"] - 3) // 2
+            step = 10.0 if page_index == 0 else 0.1
+            fail_clock_state["t"] += step
+        return fail_clock_state["t"]
+    monkeypatch.setattr(_ui.time, "monotonic", fail_only_clock)
+
+    fixture = json.loads(FIXTURE.read_text())
+
+    def first_then_all_fail(url, headers=None, max_time=300, extra=None):
+        qs = parse_qs(urlparse(url).query)
+        offset = int(qs.get("offset", ["0"])[0])
+        if offset == 0:
+            page = dict(fixture)
+            page["cves"] = fixture["cves"][:1]
+            page["total_results"] = 100000
+            return page, 200, ""
+        return None, 503, ""
+    monkeypatch.setattr(_ut, "curl_get", first_then_all_fail)
+    stats = _ui.ubuntu_ingest_tick(
+        conn, releases=["noble"], packages=["linux"], page_size=1, now="t2")
+    assert stats["error"] is not None
+    assert "degraded" in stats["error"]
+    assert "consecutive slow+failed" in stats["error"]
+    assert stats["fetched"] is False
+    assert stats["rows"] == 0
+    assert store.ubuntu_fixes_all(conn) == before      # no-wipe
+
+
+def test_ubuntu_ingest_wall_clock_budget_fires_on_failure_page(conn, monkeypatch):
+    # REGRESSION TEST for the wall-clock budget check in the failure branch:
+    # a sequence of slow-failing pages (each with 3x retry at long timeout)
+    # can exceed the wall-clock budget without the backstop firing if the
+    # budget check only runs on successful pages.
+    #
+    # Setup: first page succeeds.  Every subsequent page fails (503), and each
+    # failure page takes 6s (above SLOW_PAGE_SECONDS).  Disable the slow and
+    # fail counters so only the wall-clock budget can fire.  With the fix, the
+    # budget check runs on each failure page and fires when the budget is
+    # exceeded.
+    monkeypatch.setattr(_ut, "curl_get", _feed())
+    _ui.ubuntu_ingest_tick(conn, releases=["noble"], packages=["linux"], now="t1")
+    before = store.ubuntu_fixes_all(conn)
+    assert before
+    monkeypatch.setattr(_ui.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(_ui, "MAX_CONSECUTIVE_FAIL", 999)  # disable
+    monkeypatch.setattr(_ui, "MAX_TOTAL_FAIL", 999)  # disable
+    monkeypatch.setattr(_ui, "MAX_CONSECUTIVE_SLOW", 999)  # disable
+    monkeypatch.setattr(_ui, "MAX_TOTAL_SLOW", 999)  # disable
+    monkeypatch.setattr(_ui, "TICK_MAX_SECONDS", 10)  # 10-second budget
+
+    # Clock: first page 1s, subsequent failure pages 6s each.
+    wall_fail_state = {"t": 0.0, "call": 0}
+
+    def wall_fail_clock():
+        wall_fail_state["call"] += 1
+        is_elapsed = (wall_fail_state["call"] >= 3) and (wall_fail_state["call"] % 2 == 1)
+        if is_elapsed:
+            page_index = (wall_fail_state["call"] - 3) // 2
+            step = 1.0 if page_index == 0 else 6.0
+            wall_fail_state["t"] += step
+        return wall_fail_state["t"]
+    monkeypatch.setattr(_ui.time, "monotonic", wall_fail_clock)
+
+    fixture = json.loads(FIXTURE.read_text())
+
+    def first_ok_rest_fail(url, headers=None, max_time=300, extra=None):
+        qs = parse_qs(urlparse(url).query)
+        offset = int(qs.get("offset", ["0"])[0])
+        if offset == 0:
+            page = dict(fixture)
+            page["cves"] = fixture["cves"][:1]
+            page["total_results"] = 100000
+            return page, 200, ""
+        return None, 503, ""
+    monkeypatch.setattr(_ut, "curl_get", first_ok_rest_fail)
+    stats = _ui.ubuntu_ingest_tick(
+        conn, releases=["noble"], packages=["linux"], page_size=1, now="t2")
+    assert stats["error"] is not None
+    assert "wall-clock" in stats["error"]
+    assert stats["fetched"] is False
+    assert stats["rows"] == 0
+    assert store.ubuntu_fixes_all(conn) == before      # no-wipe
