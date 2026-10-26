@@ -117,6 +117,15 @@ is reported at check time rather than discovered on a host that is already
 out of disk. The operator can still override them per host with
 `POSTURE_DISK_WARN_GB` and `POSTURE_DISK_CRIT_GB` in the environment file.
 
+When free space falls below the critical threshold, the job first runs an
+emergency purge with a one-year retention instead of the configured one, and
+it stops the build if that still leaves the host short of space. The
+emergency purge applies the same exploitability protection floor as the
+daily purge (`POSTURE_KEEP_EPSS_PERCENTILE`), so it never forgets a defect
+the host's policy protects. A failed emergency purge is loud: the job marks
+the run degraded and exits non-zero, so the operator sees in the journal that
+the disk was not reclaimed, while the map is still published.
+
 `served_map_dir` is the directory the published map actually lands in: the
 daily job publishes into `export_dir`, and the publish step writes the map
 into a `spine` directory inside it, so this is the directory a web server

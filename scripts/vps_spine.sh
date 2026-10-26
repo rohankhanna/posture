@@ -61,9 +61,25 @@ echo "posture-spine: starting daily spine update ($(date -u +%Y-%m-%dT%H:%M:%SZ)
 FREE_GB="$(_free_gb)"
 echo "posture-spine: ${FREE_GB} GB free on ${STATE_DIR}"
 if [ "$FREE_GB" -lt "$DISK_CRIT_GB" ]; then
-  echo "posture-spine: CRITICAL disk space — running aggressive purge (365-day retention)"
-  if ! posture purge --max-age-days 365 --keep-epss-percentile 0.90 --db "$DB_PATH"; then
-    echo "posture-spine: aggressive purge failed"
+  echo "posture-spine: CRITICAL disk space — running aggressive purge (365-day retention, keep EPSS >= ${KEEP_EPSS_PERCENTILE})"
+  # The emergency purge applies the host's own exploitability protection
+  # floor (POSTURE_KEEP_EPSS_PERCENTILE), not a hardcoded one. A hardcoded
+  # floor protects a different set of defects than the operator configured:
+  # a floor above the configured one keeps defects the host's policy says
+  # to forget (so the emergency purge frees less than the policy allows and
+  # may not save the host), and a floor below it forgets defects the policy
+  # says to keep (so the emergency purge discards rows the host is meant to
+  # carry, with no record that it did). Either way the emergency purge must
+  # apply the same policy the daily purge applies.
+  if ! posture purge \
+      --max-age-days 365 \
+      --keep-epss-percentile "$KEEP_EPSS_PERCENTILE" \
+      --db "$DB_PATH"; then
+    # Every degradation is loud: a failed emergency purge means the disk
+    # was not reclaimed, so the run is marked DEGRADED and exits non-zero.
+    # The build continues so the map is still published; the free-space
+    # re-check below aborts the run if the host is still out of space.
+    degrade "aggressive purge failed; the emergency disk purge did not run and the catalog is still growing"
   fi
   FREE_GB="$(_free_gb)"
   if [ "$FREE_GB" -lt "$DISK_CRIT_GB" ]; then

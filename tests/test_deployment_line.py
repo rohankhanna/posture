@@ -410,6 +410,74 @@ def test_daily_script_git_maintenance_disk_trigger_reads_current_free_space():
 
 
 
+def _emergency_purge_logical_lines() -> list[tuple[int, str]]:
+    """The logical lines of the emergency purge in the disk-space guard.
+
+    The emergency purge is the one the disk-space guard (step 0) runs when
+    free space falls below the critical threshold: it purges with a
+    one-year retention instead of the configured one. It is distinguished
+    from the daily bounded-growth purge (step 6) by its hardcoded
+    365-day retention."""
+    text = DAILY_SCRIPT.read_text()
+    out = []
+    for lineno, logical in _join_continuations(text.splitlines()):
+        if "posture purge" in logical and "--max-age-days 365" in logical:
+            out.append((lineno, logical))
+    return out
+
+
+def test_daily_script_emergency_purge_uses_the_configured_retention():
+    # The emergency purge must apply the host's own exploitability
+    # protection floor (POSTURE_KEEP_EPSS_PERCENTILE), the same floor the
+    # daily purge applies. A hardcoded floor applies a different policy
+    # than the operator configured: a floor above the configured one keeps
+    # defects the policy says to forget (the emergency purge frees less
+    # than the policy allows and may not save the host), and a floor below
+    # it forgets defects the policy says to keep (the emergency purge
+    # discards rows the host is meant to carry, with nothing recording
+    # that it did).
+    lines = _emergency_purge_logical_lines()
+    assert lines, "the emergency disk purge was not found in vps_spine.sh"
+    for lineno, logical in lines:
+        assert "$KEEP_EPSS_PERCENTILE" in logical, (
+            f"line {lineno}: the emergency purge does not apply the "
+            f"configured exploitability protection floor: {logical}"
+        )
+        assert "0.90" not in logical, (
+            f"line {lineno}: the emergency purge applies a hardcoded "
+            f"exploitability protection floor instead of the configured "
+            f"one: {logical}"
+        )
+
+
+def test_daily_script_emergency_purge_failure_calls_degrade():
+    # A failed emergency purge means the disk was not reclaimed, so the
+    # run must be marked DEGRADED and exit non-zero: the script's stated
+    # principle is that every degradation is loud. A bare `echo` leaves
+    # the run looking successful to anything watching the exit status,
+    # even though the emergency purge reclaimed nothing.
+    logicals = _join_continuations(DAILY_SCRIPT.read_text().splitlines())
+    emergency_indexes = [
+        i for i, (_, logical) in enumerate(logicals)
+        if "posture purge" in logical and "--max-age-days 365" in logical
+    ]
+    assert emergency_indexes, (
+        "the emergency disk purge was not found in vps_spine.sh"
+    )
+    for index in emergency_indexes:
+        handler = ""
+        for _, candidate in logicals[index + 1:]:
+            stripped = candidate.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            handler = stripped
+            break
+        assert "degrade" in handler, (
+            f"the emergency purge failure handler does not call degrade, so "
+            f"the run is not marked degraded: {handler}"
+        )
+
+
 @pytest.mark.parametrize("command", ["purge", "spine", "ingest"])
 def test_cli_provides_the_commands_the_daily_script_uses(command):
     from posture.cli import build_parser

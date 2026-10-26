@@ -276,7 +276,10 @@ def test_cli_verify_without_verify_sig_is_unchanged(conn, tmp_path, capsys):
 
 def _run_daily_job(tmp_path: Path, fail_on: tuple[str, ...] = (),
                     clone_dirs: bool = False,
-                    git_fail: bool = False
+                    git_fail: bool = False,
+                    fail_patterns: tuple[str, ...] = (),
+                    df_readings: tuple[str, ...] = (),
+                    env_extra: dict[str, str] | None = None,
                     ) -> tuple[list[str], subprocess.CompletedProcess]:
     """Run scripts/vps_spine.sh against a stub `posture` binary and return the
     recorded invocations (one argv line per call, space-joined) plus the
@@ -290,17 +293,38 @@ def _run_daily_job(tmp_path: Path, fail_on: tuple[str, ...] = (),
     weekly git maintenance loop in step 8 actually iterates over a clone.
 
     `git_fail` installs a stub `git` that always exits non-zero, so a test
-    can drive a failed `git gc` / `git remote prune` in step 8."""
+    can drive a failed `git gc` / `git remote prune` in step 8.
+
+    `fail_patterns` lists raw shell glob patterns (matched against the joined
+    argv of each call) whose stub call exits non-zero, so a test can drive
+    the failure of one specific invocation that `fail_on` cannot name
+    precisely.
+
+    `df_readings` lists the free-space readings (whole gigabytes) a stub `df`
+    returns for successive calls, so a test can drive the disk-space guard:
+    the first reading is the step-0 guard, the second is the re-check after
+    the emergency purge. The last reading repeats.
+
+    `env_extra` adds environment variables for the run, so a test can drive
+    the daily job with a non-default retention configuration."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "posture-calls.log"
     stub = bin_dir / "posture"
-    if fail_on:
-        patterns = "|".join(f'"{prefix}"*' for prefix in fail_on)
+    patterns = [f'"{prefix}"*' for prefix in fail_on]
+    for raw in fail_patterns:
+        # a raw glob: the fixed part is quoted so the shell reads it as one
+        # word, and a trailing "*" stays outside the quotes as a wildcard
+        if raw.endswith("*"):
+            patterns.append(f'"{raw[:-1]}"*')
+        else:
+            patterns.append(f'"{raw}"')
+    if patterns:
+        cases = "|".join(patterns)
         stub.write_text(
             "#!/usr/bin/env bash\n"
             f'printf "%s\\n" "$*" >> "{log}"\n'
-            f'case "$*" in {patterns}) exit 3 ;; esac\n'
+            f'case "$*" in {cases}) exit 3 ;; esac\n'
             "exit 0\n"
         )
     else:
@@ -310,6 +334,24 @@ def _run_daily_job(tmp_path: Path, fail_on: tuple[str, ...] = (),
             "exit 0\n"
         )
     stub.chmod(0o755)
+    if df_readings:
+        df_stub = bin_dir / "df"
+        readings = " ".join(f'"{r}G"' for r in df_readings)
+        counter = tmp_path / "df-calls"
+        df_stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'counter="{counter}"\n'
+            "n=0\n"
+            '[ -f "$counter" ] && n=$(cat "$counter")\n'
+            'n=$((n+1)); echo "$n" > "$counter"\n'
+            f'readings=({readings})\n'
+            'idx=$((n-1))\n'
+            'if [ "$idx" -ge "${#readings[@]}" ]; then '
+            'idx=$(( ${#readings[@]} - 1 )); fi\n'
+            'echo "Avail"\n'
+            'echo "${readings[$idx]}"\n'
+        )
+        df_stub.chmod(0o755)
     if git_fail:
         git_stub = bin_dir / "git"
         git_stub.write_text(
@@ -333,6 +375,8 @@ def _run_daily_job(tmp_path: Path, fail_on: tuple[str, ...] = (),
     env["POSTURE_CVELIST_DIR"] = str(state / "cvelist")
     env["POSTURE_GHSA_DIR"] = str(state / "ghsa")
     env["POSTURE_DB_PATH"] = str(state / "posture.db")
+    for name, value in (env_extra or {}).items():
+        env[name] = value
 
     result = subprocess.run(
         ["bash", str(REPO_ROOT / "scripts" / "vps_spine.sh")],
@@ -472,3 +516,64 @@ def test_a_failing_git_gc_includes_the_error_detail(tmp_path):
         f"{result.stdout}"
     )
 
+
+
+# ---------------------------------------------------------------------------
+# the emergency disk purge (the disk-space guard)
+# ---------------------------------------------------------------------------
+
+def test_the_emergency_purge_applies_the_configured_exploitability_retention(
+        tmp_path):
+    # The disk-space guard (step 0) runs an emergency purge when free space
+    # falls below the critical threshold. That emergency purge used a
+    # hardcoded exploitability protection floor (0.90) instead of the
+    # floor the host is configured with (POSTURE_KEEP_EPSS_PERCENTILE), so
+    # it applied a different policy than the daily purge: with a configured
+    # floor above 0.90 the emergency purge protects defects the host's
+    # policy says to forget (it frees less than the policy allows and may
+    # not save the host), and with a configured floor below 0.90 it forgets
+    # defects the policy says to keep (the emergency purge discards rows
+    # the host is meant to carry, with nothing recording that it did).
+    calls, result = _run_daily_job(
+        tmp_path,
+        df_readings=("1", "9"),
+        env_extra={"POSTURE_KEEP_EPSS_PERCENTILE": "0.99"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    purges = [c for c in calls if c.startswith("purge ")]
+    assert purges, calls
+    # every purge the job runs applies the configured floor
+    for purge in purges:
+        assert "--keep-epss-percentile 0.99" in purge, (
+            "a purge applied an exploitability protection floor other than "
+            f"the configured one: {purge}"
+        )
+    # and the emergency purge is among them
+    emergency = [c for c in purges if "--max-age-days 365 " in c]
+    assert emergency, (
+        "the emergency disk purge did not run, so the disk-space guard was "
+        f"not exercised: {calls}"
+    )
+
+
+def test_a_failing_emergency_purge_is_loud(tmp_path):
+    # The script's own header states the principle: "Every degradation is
+    # loud: a step that cannot do its job prints a warning and marks the run
+    # degraded, and the job exits non-zero at the end so the failure is
+    # visible in the journal instead of being swallowed." The emergency
+    # purge printed a bare message and left the run looking successful, so
+    # an emergency purge that reclaimed no disk was invisible to anything
+    # watching the exit status. The failure must mark the run DEGRADED,
+    # while the build still publishes the map.
+    calls, result = _run_daily_job(
+        tmp_path,
+        df_readings=("1", "9"),
+        fail_patterns=("purge --max-age-days 365 *",),
+    )
+    assert "aggressive purge failed" in result.stdout, result.stdout
+    assert "DEGRADED" in result.stdout, result.stdout
+    assert result.returncode == 1, result.stdout + result.stderr
+    # the build still publishes: a failed emergency purge must not take
+    # the served map down with it
+    assert any(c.startswith("spine publish") for c in calls), calls
