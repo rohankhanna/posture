@@ -690,6 +690,36 @@ def _parse_overlay_package_requirements(
     return requirements
 
 
+def _parse_apple_fixes_product_requirements(
+        values: list[str] | None) -> list[tuple[str, int]]:
+    """Parse the --require-apple-fixes-product values into requirements.
+
+    Each value names the Apple product and the minimum number of rows the
+    map must carry for that product: PRODUCT:MIN_ROWS (for example
+    iphone_os:1). A malformed value is a mistake on the command line,
+    so it is refused while the arguments are parsed rather than after the
+    map is read.
+    """
+    requirements: list[tuple[str, int]] = []
+    for value in values or []:
+        parts = str(value).split(":")
+        if len(parts) != 2 or not parts[0].strip():
+            raise ValueError(
+                f"{value!r} is not an Apple product coverage requirement; "
+                f"the form is PRODUCT:MIN_ROWS (for example iphone_os:1)")
+        try:
+            min_rows = int(parts[1])
+        except ValueError:
+            raise ValueError(
+                f"{value!r} does not name a row count; MIN_ROWS must be a "
+                f"whole number") from None
+        if min_rows < 1:
+            raise ValueError(
+                f"{value!r} asks for fewer than one row; the minimum is one")
+        requirements.append((parts[0].strip(), min_rows))
+    return requirements
+
+
 def _cmd_spine(args) -> int:
     # export is read-only over the DB and produces no trust change; it serializes
     # the catalog (the MAP) to sharded JSONL + a manifest that CI cosign-signs.
@@ -863,6 +893,37 @@ def _cmd_spine(args) -> int:
                 return 1
             apple_note = (f", Apple fix coverage OK "
                           f"({apple_coverage['rows']} row(s))")
+        # The Apple fix overlay is ingested per product (a per-product full
+        # refresh, so a product whose feed returned nothing loses its rows),
+        # so the table-level floor cannot see a product that went empty
+        # while the other products keep theirs. The per-product
+        # requirement says which products the host needs and how many rows
+        # each must carry.
+        apple_product_note = ""
+        apple_products = getattr(args, "require_apple_fixes_product", None)
+        apple_product_max_age_days = getattr(
+            args, "require_apple_fixes_product_max_age_days", None)
+        if apple_products or apple_product_max_age_days is not None:
+            try:
+                apple_product_requirements = (
+                    _parse_apple_fixes_product_requirements(apple_products))
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            try:
+                apple_product_coverage = (
+                    _export.verify_apple_fixes_product_coverage(
+                        manifest, apple_product_requirements,
+                        max_age_days=apple_product_max_age_days))
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            if apple_product_coverage:
+                apple_product_note = (
+                    ", per-product Apple fix coverage OK (" + ", ".join(
+                        f"{product} {entry['rows']} row(s)"
+                        for product, entry in apple_product_coverage.items())
+                    + ")")
         # The EPSS overlay scores every published CVE daily with a
         # probability of exploitation. The ingest is a full refresh that is
         # no-wipe on the caller side, so a failed fetch leaves the
@@ -892,6 +953,7 @@ def _cmd_spine(args) -> int:
         ok_line += package_note
         ok_line += kev_note
         ok_line += apple_note
+        ok_line += apple_product_note
         ok_line += epss_note
         print(ok_line)
         return 0
@@ -1563,6 +1625,25 @@ def build_parser() -> argparse.ArgumentParser:
                          "was fetched more than this many days ago (an "
                          "Apple fix overlay that stopped being refreshed "
                          "still satisfies the row floor)")
+    sp.add_argument("--require-apple-fixes-product",
+                    dest="require_apple_fixes_product",
+                    action="append", default=None,
+                    metavar="PRODUCT:MIN_ROWS",
+                    help="verify: fail when the map does not carry at least "
+                         "MIN_ROWS Apple fix rows for a product (repeatable; "
+                         "the Apple fix overlay is ingested per product, so a "
+                         "product whose advisory feed returned nothing loses "
+                         "its rows while the table still holds the other "
+                         "products' rows, which the table-level floor cannot "
+                         "see)")
+    sp.add_argument("--require-apple-fixes-product-max-age-days",
+                    dest="require_apple_fixes_product_max_age_days",
+                    type=float, default=None, metavar="DAYS",
+                    help="verify: fail when the newest Apple fix row of a "
+                         "required product was fetched more than this many "
+                         "days ago (each product is refreshed on its own, so "
+                         "a product that stopped being refreshed still "
+                         "satisfies the per-product row floor)")
     sp.add_argument("--require-epss", dest="require_epss", type=int,
                     default=None, metavar="MIN_ROWS",
                     help="verify: fail when the map carries fewer EPSS "

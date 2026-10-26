@@ -353,6 +353,30 @@ def _tally_kev_coverage(coverage: dict, row: dict) -> None:
             coverage[key] = value or None
 
 
+def _tally_apple_fixes_coverage(coverage: dict, row: dict) -> None:
+    """Fold one Apple fix row into the map's coverage record.
+
+    The Apple fix overlay is ingested per product: the ingest is a
+    per-product full refresh (DELETE WHERE product + INSERT), so a
+    product whose Apple feed returned nothing loses its rows while the
+    other products keep theirs. The table-level count and fetch time
+    therefore hide a per-product loss, so the coverage also states, per
+    product, how many rows the map carries for it and when the newest of
+    them was fetched. Each product is refreshed on its own, so the
+    per-product fetch time is that product's own fetch and not a
+    sibling's timestamp.
+    """
+    product = str(row.get("product") or "").strip()
+    if not product:
+        return
+    entry = coverage.setdefault("products", {}).setdefault(product, {
+        "rows": 0, "newest_fetched_at": None})
+    entry["rows"] += 1
+    fetched_at = str(row.get("fetched_at") or "").strip()
+    if fetched_at and fetched_at > (entry["newest_fetched_at"] or ""):
+        entry["newest_fetched_at"] = fetched_at
+
+
 def _tally_flat_overlay_coverage(coverage: dict, row: dict) -> None:
     """Fold one flat-overlay row into the map's coverage record.
 
@@ -422,7 +446,8 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
         name: {} for name in RELEASE_KEYED_OVERLAY_TABLES}
     kev_coverage: dict = {"rows": 0, "newest_fetched_at": None,
                           "catalog_version": None, "date_released": None}
-    apple_fixes_coverage: dict = {"rows": 0, "newest_fetched_at": None}
+    apple_fixes_coverage: dict = {"rows": 0, "newest_fetched_at": None,
+                                  "products": {}}
     epss_coverage: dict = {"rows": 0, "newest_fetched_at": None}
     for name in FLAT_TABLES:
         # Same size cap as the defect shards: a flat table that outgrows the
@@ -437,6 +462,7 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
                 _tally_kev_coverage(kev_coverage, row)
             elif name == "apple_fixes":
                 _tally_flat_overlay_coverage(apple_fixes_coverage, row)
+                _tally_apple_fixes_coverage(apple_fixes_coverage, row)
             elif name == "epss":
                 _tally_flat_overlay_coverage(epss_coverage, row)
         files.extend(writer.finish())
@@ -1172,6 +1198,123 @@ def verify_apple_fixes_coverage(
     return _check_flat_overlay_rows_and_freshness(
         coverage, "Apple fix", min_rows=min_rows,
         max_age_days=max_age_days, now=now)
+
+
+# ---------------------------------------------------------------------------
+# verify (Apple fix overlay coverage per product -- does the map still
+# carry the Apple fix rows for every product the host requires?)
+# ---------------------------------------------------------------------------
+
+
+def verify_apple_fixes_product_coverage(
+        manifest: dict,
+        requirements: list[tuple[str, int]] | None = None,
+        max_age_days: float | None = None,
+        now: str | None = None,
+) -> dict[str, dict]:
+    """Check that a published map still carries every required Apple product.
+
+    The Apple fix coverage check (:func:`verify_apple_fixes_coverage`) asks
+    whether the apple_fixes table holds rows. That is a per-table question,
+    and a per-table answer hides a per-product failure: the apple_fixes
+    ingest is a per-product full refresh (DELETE WHERE product + INSERT),
+    so a product whose Apple advisory feed returned nothing loses its rows
+    entirely while the other products keep theirs, the table as a whole
+    still holds rows, and the table's row floor and freshness allowance
+    both still pass. The map is then quietly narrow in a direction that
+    matters: the missing product's fix versions are gone, so a patched
+    device of that product is reported as unpatched, which is exactly the
+    false positive the Apple fix overlay exists to clear.
+
+    requirements is a list of (product, min_rows) pairs: the map
+    must carry at least min_rows rows for that product. max_age_days
+    additionally requires every required product to have been fetched
+    within that many days. The per-product fetch time is that product's
+    own fetch (each product is refreshed on its own), so a per-product
+    freshness allowance is honest here in a way a per-package allowance
+    inside a release-keyed overlay is not.
+
+    Returns the per-product coverage that was checked. Raises
+    ValueError when the manifest carries no Apple fix coverage at all
+    (a map published before the manifest recorded it), when a required
+    product is absent, when a required product is below its floor, or when
+    a required product is older than the freshness allowance.
+    """
+    requirements = list(requirements or [])
+    if not requirements and max_age_days is None:
+        return {}
+    for product, min_rows in requirements:
+        if not str(product).strip():
+            raise ValueError(
+                "the Apple fix product coverage requirement names no "
+                "product")
+        if int(min_rows) < 1:
+            raise ValueError(
+                f"the Apple fix product coverage requirement for product "
+                f"{product} asks for {min_rows} row(s); the minimum is one")
+    if max_age_days is not None and max_age_days <= 0:
+        raise ValueError(
+            "the Apple fix per-product freshness allowance must be a "
+            "positive number of days")
+    coverage = manifest.get("apple_fixes_coverage")
+    if not isinstance(coverage, dict):
+        raise ValueError(
+            "the published map's manifest carries no Apple fix coverage, so "
+            "the Apple products the host requires cannot be established (the "
+            "map was published before the manifest recorded it)")
+    products = coverage.get("products")
+    if not isinstance(products, dict):
+        raise ValueError(
+            "the published map's manifest records no per-product Apple fix "
+            "coverage, so the Apple products the host requires cannot be "
+            "established (the map was published before the manifest "
+            "recorded it)")
+    now_dt = _parse_timestamp(now) if now else _dt.datetime.now(_dt.timezone.utc)
+    checked: dict[str, dict] = {}
+    missing: list[str] = []
+    for product, min_rows in requirements:
+        product = str(product).strip()
+        entry = products.get(product)
+        if not isinstance(entry, dict):
+            missing.append(
+                f"{product} (the map carries no Apple fix rows for that "
+                f"product at all)")
+            continue
+        rows = int(entry.get("rows") or 0)
+        if rows < int(min_rows):
+            missing.append(
+                f"{product} (the map carries {rows} Apple fix row(s) for "
+                f"that product, fewer than the {int(min_rows)} the host "
+                f"requires)")
+            continue
+        if max_age_days is not None:
+            newest = _parse_timestamp(entry.get("newest_fetched_at") or "")
+            if newest is None:
+                missing.append(
+                    f"{product} (the map records no fetch time for that "
+                    f"product, so its freshness cannot be established)")
+                continue
+            age_days = (now_dt - newest).total_seconds() / 86400.0
+            if age_days > max_age_days:
+                missing.append(
+                    f"{product} (its newest Apple fix row was fetched "
+                    f"{age_days:.1f} day(s) ago, older than the "
+                    f"{max_age_days:g} day(s) the host allows, so that "
+                    f"product's fix versions stopped being refreshed)")
+                continue
+        checked[product] = {
+            "rows": rows,
+            "newest_fetched_at": entry.get("newest_fetched_at"),
+        }
+    if missing:
+        raise ValueError(
+            "the published map does not carry the per-product Apple fix "
+            "coverage the host requires: " + "; ".join(missing) +
+            " (the Apple fix overlay is what clears NVD's unknown-fix "
+            "false positives on a fully-updated Apple device, so a map "
+            "without a product's rows reports that product's patched "
+            "devices as unpatched)")
+    return checked
 
 
 # ---------------------------------------------------------------------------

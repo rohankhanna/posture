@@ -967,6 +967,9 @@ _CONTRACT_KEYS = (
     "kev_max_age_days",
     "apple_fixes_min_rows",
     "apple_fixes_max_age_days",
+    "apple_fixes_products",
+    "apple_fixes_min_product_rows",
+    "apple_fixes_product_max_age_days",
     "epss_min_rows",
     "epss_max_age_days",
 )
@@ -3152,6 +3155,234 @@ def _validate_flat_overlay_coverage_job(
 
 
 # ---------------------------------------------------------------------------
+# Apple fix coverage per product (4u)
+# ---------------------------------------------------------------------------
+
+
+def _contract_apple_products(contract: dict[str, str]) -> list[str]:
+    """The Apple products the host contract requires the map to carry.
+
+    The contract states them as one comma-separated value; each name is
+    one product of the apple_fixes overlay (iphone_os, ipados, macos).
+    """
+    raw = contract.get("apple_fixes_products", "")
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _validate_apple_product_coverage_contract(
+        path: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the contract's declared per-product Apple coverage (4u).
+
+    The contract names the Apple products the served map must carry, the
+    row floor each product must meet, and the freshness allowance for
+    those rows. A contract that names no product describes a host that
+    never requires a per-product Apple fix row, so a product whose
+    advisory feed returned nothing (the apple_fixes ingest is a
+    per-product full refresh, so that product's rows are deleted and
+    never replaced) is invisible while the table-level floor still
+    passes.
+    """
+    if contract is None:
+        return
+    products = _contract_apple_products(contract)
+    if not products:
+        failures.append(
+            f"{path}: the host contract declares no apple_fixes_products, "
+            f"so the gate cannot require the served map to carry Apple fix "
+            f"rows for any product (the apple_fixes ingest is a per-product "
+            f"full refresh, so a product whose advisory feed returned "
+            f"nothing loses its rows while the table-level floor still "
+            f"passes)")
+    raw_rows = contract.get("apple_fixes_min_product_rows", "").strip()
+    if not raw_rows:
+        failures.append(
+            f"{path}: the host contract declares no "
+            f"apple_fixes_min_product_rows, so the gate cannot require "
+            f"each Apple product's rows to be present (a product whose "
+            f"advisory feed returned nothing leaves that product with no "
+            f"fix versions at all)")
+    else:
+        try:
+            value = int(raw_rows)
+        except ValueError:
+            failures.append(
+                f"{path}: the host contract's apple_fixes_min_product_rows "
+                f"is {raw_rows!r}, which is not a row count")
+        else:
+            if value < 1:
+                failures.append(
+                    f"{path}: the host contract's "
+                    f"apple_fixes_min_product_rows is {value}, which is not "
+                    f"a positive row count")
+    raw_age = contract.get("apple_fixes_product_max_age_days", "").strip()
+    if not raw_age:
+        failures.append(
+            f"{path}: the host contract declares no "
+            f"apple_fixes_product_max_age_days, so the gate cannot require "
+            f"the per-product Apple fix rows to be fresh (each product is "
+            f"refreshed on its own, so a product that stopped being "
+            f"refreshed still satisfies the per-product row floor)")
+    else:
+        try:
+            age = float(raw_age)
+        except ValueError:
+            failures.append(
+                f"{path}: the host contract's "
+                f"apple_fixes_product_max_age_days is {raw_age!r}, which is "
+                f"not a number of days")
+        else:
+            if age <= 0:
+                failures.append(
+                    f"{path}: the host contract's "
+                    f"apple_fixes_product_max_age_days is {age:g}, which is "
+                    f"not a positive number of days")
+
+
+def _validate_apple_product_coverage_verification(
+        path: str,
+        text: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the runbook's per-product Apple coverage (dimension 4u)."""
+    if contract is None:
+        return
+    products = _contract_apple_products(contract)
+    floor = _contract_int_floor(contract, "apple_fixes_min_product_rows")
+    max_age = _contract_float_days(contract, "apple_fixes_product_max_age_days")
+    if not products or (floor is None and max_age is None):
+        return
+    commands = _runbook_spine_verify_commands(text)
+    if not commands:
+        # The missing verification is reported by dimension 4l.
+        return
+    for invocation in commands:
+        stated: dict[str, int] = {}
+        for value in _option_values(invocation, "--require-apple-fixes-product"):
+            product, _, rows = str(value).partition(":")
+            product = product.strip()
+            if not product:
+                continue
+            try:
+                stated[product] = int(rows)
+            except ValueError:
+                failures.append(
+                    f"{path}: the runbook states `--require-apple-fixes-"
+                    f"product {value}`, which does not name a row count")
+        for product in products:
+            if product not in stated:
+                failures.append(
+                    f"{path}: the runbook verifies the served map but does "
+                    f"not require the Apple fix rows of {product}, which the "
+                    f"host contract's apple_fixes_products scope declares "
+                    f"(the command must carry "
+                    f"`--require-apple-fixes-product {product}:{floor}`; the "
+                    f"apple_fixes ingest is a per-product full refresh, so a "
+                    f"product whose advisory feed returned nothing loses its "
+                    f"rows while the table-level floor still passes)")
+            elif floor is not None and stated[product] != floor:
+                failures.append(
+                    f"{path}: the runbook requires {stated[product]} Apple "
+                    f"fix row(s) for {product} where the host contract's "
+                    f"apple_fixes_min_product_rows floor is {floor}")
+        if max_age is not None:
+            stated_age = _stated_float_option(
+                invocation, "--require-apple-fixes-product-max-age-days")
+            if stated_age is None:
+                failures.append(
+                    f"{path}: the runbook verifies the served map but does "
+                    f"not require the per-product Apple fix rows to be fresh "
+                    f"within the host contract's "
+                    f"apple_fixes_product_max_age_days ({max_age:g} day(s)); "
+                    f"the command must carry "
+                    f"`--require-apple-fixes-product-max-age-days "
+                    f"{max_age:g}` (each product is refreshed on its own, so "
+                    f"a product that stopped being refreshed still "
+                    f"satisfies its row floor)")
+            elif stated_age != max_age:
+                failures.append(
+                    f"{path}: the runbook allows {stated_age:g} day(s) for "
+                    f"the per-product Apple fix rows where the host "
+                    f"contract's apple_fixes_product_max_age_days is "
+                    f"{max_age:g}")
+
+
+def _validate_apple_product_coverage_job(
+        path: str,
+        script_text: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the nightly job's per-product Apple coverage (dimension 4u)."""
+    if contract is None or not script_text:
+        return
+    products = _contract_apple_products(contract)
+    floor = _contract_int_floor(contract, "apple_fixes_min_product_rows")
+    max_age = _contract_float_days(contract, "apple_fixes_product_max_age_days")
+    if not products or (floor is None and max_age is None):
+        return
+    commands = [invocation for words, invocation in _invocations(script_text)
+                if words[:2] == ["spine", "verify"]]
+    if not commands:
+        failures.append(
+            f"{path}: the daily job never checks the served map's "
+            f"per-product Apple fix coverage, so a build that publishes a "
+            f"map whose Apple fix rows went missing for a product is a "
+            f"quiet success instead of a degraded run")
+        return
+    for invocation in commands:
+        stated: dict[str, int] = {}
+        for value in _option_values(invocation, "--require-apple-fixes-product"):
+            product, _, rows = str(value).partition(":")
+            product = product.strip()
+            if not product:
+                continue
+            try:
+                stated[product] = int(rows)
+            except ValueError:
+                failures.append(
+                    f"{path}: the daily job states `--require-apple-fixes-"
+                    f"product {value}`, which does not name a row count")
+        for product in products:
+            if product not in stated:
+                failures.append(
+                    f"{path}: the daily job checks the served map but does "
+                    f"not require the Apple fix rows of {product}, which the "
+                    f"host contract's apple_fixes_products scope declares "
+                    f"(the check must carry "
+                    f"`--require-apple-fixes-product {product}:{floor}`; the "
+                    f"apple_fixes ingest is a per-product full refresh, so a "
+                    f"product whose advisory feed returned nothing loses its "
+                    f"rows while the table-level floor still passes)")
+            elif floor is not None and stated[product] != floor:
+                failures.append(
+                    f"{path}: the daily job requires {stated[product]} Apple "
+                    f"fix row(s) for {product} where the host contract's "
+                    f"apple_fixes_min_product_rows floor is {floor}")
+        if max_age is not None:
+            stated_age = _stated_float_option(
+                invocation, "--require-apple-fixes-product-max-age-days")
+            if stated_age is None:
+                failures.append(
+                    f"{path}: the daily job checks the served map but does "
+                    f"not require the per-product Apple fix rows to be fresh "
+                    f"within the host contract's "
+                    f"apple_fixes_product_max_age_days ({max_age:g} day(s)); "
+                    f"the check must carry "
+                    f"`--require-apple-fixes-product-max-age-days "
+                    f"{max_age:g}`")
+            elif stated_age != max_age:
+                failures.append(
+                    f"{path}: the daily job allows {stated_age:g} day(s) for "
+                    f"the per-product Apple fix rows where the host "
+                    f"contract's apple_fixes_product_max_age_days is "
+                    f"{max_age:g}")
+
+
+# ---------------------------------------------------------------------------
 # Host command contract (4g)
 # ---------------------------------------------------------------------------
 
@@ -4030,6 +4261,10 @@ def main(paths: list[str]) -> int:
             _validate_flat_overlay_coverage_contract(
                 path, runbook_contracts.get(path), failures,
                 "epss_min_rows", "epss_max_age_days", "EPSS")
+            _validate_apple_product_coverage_contract(
+                path, runbook_contracts.get(path), failures)
+            _validate_apple_product_coverage_verification(
+                path, text, runbook_contracts.get(path), failures)
             _validate_flat_overlay_coverage_verification(
                 path, text, runbook_contracts.get(path), failures,
                 "epss_min_rows", "epss_max_age_days",
@@ -4095,6 +4330,17 @@ def main(paths: list[str]) -> int:
             "scripts/vps_spine.sh", daily_script_text, contract, failures,
             "epss_min_rows", "epss_max_age_days",
             "--require-epss", "--require-epss-max-age-days", "EPSS")
+
+    # 4u (job side). The nightly job's per-product Apple fix coverage must
+    #     be the one the contract declares, so a product whose Apple
+    #     advisory feed returned nothing (the apple_fixes ingest is a
+    #     per-product full refresh, so that product's rows are deleted and
+    #     never replaced) is loud at check time instead of a quiet nightly
+    #     success against a table that still holds the other products'
+    #     rows.
+    if daily_script_text and contract is not None:
+        _validate_apple_product_coverage_job(
+            "scripts/vps_spine.sh", daily_script_text, contract, failures)
 
     for failure in failures:
         print(f"check_deployment_line: FAIL — {failure}")

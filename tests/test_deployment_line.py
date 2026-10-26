@@ -768,6 +768,9 @@ kev_min_rows: 1000
 kev_max_age_days: 3
 apple_fixes_min_rows: 1
 apple_fixes_max_age_days: 7
+apple_fixes_products: iphone_os,ipados,macos
+apple_fixes_min_product_rows: 1
+apple_fixes_product_max_age_days: 7
 epss_min_rows: 100000
 epss_max_age_days: 3
 ```
@@ -881,6 +884,10 @@ def _baseline_runbook(extra: str = "") -> str:
                  "--require-overlay-max-age-days 2 "
                  "--require-kev 1000 --require-kev-max-age-days 3 "
                  "--require-apple-fixes 1 --require-apple-fixes-max-age-days 7 "
+                 "--require-apple-fixes-product iphone_os:1 "
+                 "--require-apple-fixes-product ipados:1 "
+                 "--require-apple-fixes-product macos:1 "
+                 "--require-apple-fixes-product-max-age-days 7 "
                  "--require-epss 100000 --require-epss-max-age-days 3")
     lines.append("```")
     if extra:
@@ -2916,6 +2923,124 @@ def test_gate_rejects_a_daily_job_that_drops_the_apple_fix_floor(
     assert result.returncode == 1
     assert "the daily job requires 1 Apple fix row(s)" in result.stdout
     assert "apple_fixes_min_rows floor is 50" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Per-product Apple fix coverage of the served map (dimension 4u)
+# ---------------------------------------------------------------------------
+
+
+def test_the_host_contract_declares_the_apple_product_coverage():
+    body = RUNBOOK.read_text()
+    assert "apple_fixes_products: iphone_os,ipados,macos" in body, (
+        "the host contract does not declare the Apple product scope")
+    assert "apple_fixes_min_product_rows: 1" in body, (
+        "the host contract does not declare the per-product row floor")
+    assert "apple_fixes_product_max_age_days: 7" in body, (
+        "the host contract does not declare the per-product freshness "
+        "allowance")
+
+
+def test_the_runbook_requires_the_apple_product_coverage():
+    body = RUNBOOK.read_text()
+    for product in ("iphone_os", "ipados", "macos"):
+        assert f"--require-apple-fixes-product {product}:1" in body, (
+            f"the runbook does not require the Apple fix rows of {product}")
+    assert "--require-apple-fixes-product-max-age-days 7" in body, (
+        "the runbook does not require the per-product Apple fix rows to be "
+        "fresh")
+
+
+def test_the_daily_job_requires_the_apple_product_coverage():
+    text = DAILY_SCRIPT.read_text()
+    for product in ("iphone_os", "ipados", "macos"):
+        assert f"--require-apple-fixes-product {product}:1" in text, (
+            f"the daily job does not require the Apple fix rows of {product}")
+    assert "--require-apple-fixes-product-max-age-days 7" in text, (
+        "the daily job does not require the per-product Apple fix rows to be "
+        "fresh")
+
+
+def test_gate_rejects_a_contract_with_no_apple_product_scope(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "apple_fixes_products: iphone_os,ipados,macos\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "declares no apple_fixes_products" in result.stdout
+
+
+def test_gate_rejects_a_contract_with_no_apple_per_product_floor(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "apple_fixes_min_product_rows: 1\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "declares no apple_fixes_min_product_rows" in result.stdout
+
+
+def test_gate_rejects_a_contract_with_no_apple_per_product_freshness(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "apple_fixes_product_max_age_days: 7\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "declares no apple_fixes_product_max_age_days" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_drops_an_apple_product_requirement(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        " --require-apple-fixes-product ipados:1", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "does not require the Apple fix rows of ipados" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_uses_a_different_apple_product_floor(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "--require-apple-fixes-product macos:1",
+        "--require-apple-fixes-product macos:5")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "apple_fixes_min_product_rows floor is 1" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_drops_the_apple_product_freshness(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        " --require-apple-fixes-product-max-age-days 7", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "per-product Apple fix rows to be fresh" in result.stdout
+
+
+def test_gate_rejects_a_daily_job_that_drops_an_apple_product_requirement(
+        tmp_path):
+    # The nightly job must make the same check the runbook shows. Declare a
+    # product the real daily job does not require, so the job-side
+    # validator fires (the gate always checks the repository's own daily
+    # script against the runbook's contract).
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "apple_fixes_products: iphone_os,ipados,macos",
+        "apple_fixes_products: iphone_os,ipados,macos,watchos")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "the daily job checks the served map but does not require the "
+    assert "watchos" in result.stdout
 
 
 # ---------------------------------------------------------------------------

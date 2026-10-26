@@ -198,6 +198,12 @@ posture spine publish --db "$DB_PATH" --out "$EXPORT_DIR" ${SIGN_KEY:+--sign-key
 #     that the set stopped being refreshed. The row floor catches a map
 #     that carries too few known-exploited entries; the freshness
 #     allowance catches a set that is present but no longer refreshed.
+#     The Apple fix overlay is checked per product as well as per table:
+#     the apple_fixes ingest is a per-product full refresh, so a product
+#     whose advisory feed returned nothing loses its rows entirely while
+#     the other products keep theirs and the table-level row floor still
+#     passes. Each product is refreshed on its own, so the per-product
+#     freshness allowance is honest: it is that product's own fetch time.
 posture spine verify --from "$EXPORT_DIR" \
   --require-overlay ubuntu_fixes --require-overlay debian_fixes \
   --require-overlay-release ubuntu_fixes:resolute:1 \
@@ -221,9 +227,13 @@ posture spine verify --from "$EXPORT_DIR" \
   --require-kev-max-age-days 3 \
   --require-apple-fixes 1 \
   --require-apple-fixes-max-age-days 7 \
+  --require-apple-fixes-product iphone_os:1 \
+  --require-apple-fixes-product ipados:1 \
+  --require-apple-fixes-product macos:1 \
+  --require-apple-fixes-product-max-age-days 7 \
   --require-epss 100000 \
   --require-epss-max-age-days 3 \
-  || degrade "the published map does not carry the coverage the host contract requires (the vendor fix-status overlay rows, a fresh known-exploited set, the Apple fix overlay, or the EPSS exploitability-probability overlay)"
+  || degrade "the published map does not carry the coverage the host contract requires (the vendor fix-status overlay rows, a fresh known-exploited set, the Apple fix overlay or one of its products, or the EPSS exploitability-probability overlay)"
 
 # 8) Periodic git clone maintenance. The advisory-database and cvelistV5
 #    clones accumulate pack objects from every fetch; a weekly gc + remote
