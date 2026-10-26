@@ -1084,6 +1084,7 @@ _USERADD_RE = re.compile(r"\b(useradd|adduser)\b")
 # The owner and group a command names.
 _OWNER_RE = re.compile(r"(?:^|\s)(?:-o|--owner)\s+(\S+)")
 _GROUP_RE = re.compile(r"(?:^|\s)(?:-g|--group)\s+(\S+)")
+_RM_RE = re.compile(r"^(sudo\s+)?rm\b")
 
 
 def _fenced_shell_blocks(text: str) -> list[str]:
@@ -1198,9 +1199,11 @@ def _validate_runbook_host_commands(
     creates must be the contract's service account with the contract's
     state directory as its home, an owner or group a command names must
     be the contract's account or root, a writable directory the runbook
-    creates must be owned by the service account, and every unit this
-    tree ships must be installed into the unit directory its kind belongs
-    in.
+    creates must be owned by the service account, every unit this tree
+    ships must be installed into the unit directory its kind belongs in,
+    and every unit the runbook installs must also be removed by a
+    command so a unit added to the tree but never torn down is reported
+    as drift rather than left stale on the host after teardown.
 
     Returns the number of host commands checked.
     """
@@ -1216,6 +1219,7 @@ def _validate_runbook_host_commands(
     standard = list(_SYSTEMD_UNIT_DIRS) + list(_SYSTEM_PATHS)
     shipped_units = {u.name for u in _shipped_unit_files()}
     installed: dict[str, str] = {}
+    removed: set[str] = set()
     checked = 0
 
     for block in blocks:
@@ -1306,6 +1310,16 @@ def _validate_runbook_host_commands(
                 if name in shipped_units:
                     installed[name] = destination.rsplit("/", 1)[0]
 
+            # (e) Every unit the runbook installs must also be removed by
+            #     a command, so a unit added to the tree but never torn
+            #     down is reported as drift rather than left stale on the
+            #     host after teardown.
+            if _RM_RE.match(stripped):
+                for token in path_tokens:
+                    rm_name = token.rsplit("/", 1)[-1]
+                    if rm_name in shipped_units:
+                        removed.add(rm_name)
+
     for name in sorted(shipped_units):
         if name not in installed:
             failures.append(
@@ -1323,6 +1337,13 @@ def _validate_runbook_host_commands(
                 f"({expected}) (a unit installed into the wrong directory "
                 f"runs with the wrong identity and the wrong environment "
                 f"file)")
+
+    for name in sorted(shipped_units):
+        if name in installed and name not in removed:
+            failures.append(
+                f"{path}: the runbook installs `{name}` but never removes "
+                f"it with a command (a unit the runbook puts on the host "
+                f"but never tears down leaves stale files after removal)")
 
     return checked
 
@@ -1591,6 +1612,7 @@ def main(paths: list[str]) -> int:
         ok_parts.append("the host contract and the install layout agree")
     if runbook_paths and contract is not None:
         ok_parts.append("every runbook host command matches the contract")
+        ok_parts.append("every installed unit is removed by the runbook")
     ok_text = ", ".join(ok_parts)
     print(f"check_deployment_line: OK — {ok_text} ({checked} invocation(s) "
           f"checked, {coverage})")

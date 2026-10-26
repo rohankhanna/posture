@@ -272,9 +272,11 @@ deployment line, and makes five kinds of drift loud:
    path), the account the runbook creates must be the contract's service
    account with the contract's state directory as its home, an owner or
    group a command names must be that account or root, a directory the
-   daily job writes into must be owned by the service account, and every
+   daily job writes into must be owned by the service account, every
    unit this tree ships must be installed by a command into the unit
    directory its kind belongs in — a system unit in
-   `/etc/systemd/system`, a user unit in `~/.config/systemd/user`. A
-   contract that changes while the commands do not describes a host
-   nobody builds.
+   `/etc/systemd/system`, a user unit in `~/.config/systemd/user` — and
+   every unit the runbook installs must also be removed by a command, so
+   a unit added to the tree but never torn down is reported as drift
+   rather than left stale on the host after teardown. A contract that
+   changes while the commands do not describes a host nobody builds.

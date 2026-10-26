@@ -786,6 +786,16 @@ def _unit_install_commands() -> list[str]:
     return commands
 
 
+def _unit_removal_commands() -> list[str]:
+    """The removal command for every shipped unit, from its own directory."""
+    commands = []
+    for name in _shipped_unit_names():
+        directory = ("/etc/systemd/system" if _unit_is_system_unit(name)
+                     else "~/.config/systemd/user")
+        commands.append(f"rm -f {directory}/{name}")
+    return commands
+
+
 def _baseline_runbook(extra: str = "") -> str:
     """A runbook that satisfies every runbook check, plus an extra line.
 
@@ -806,6 +816,10 @@ def _baseline_runbook(extra: str = "") -> str:
     lines.append(_HOST_LAYOUT_TABLE)
     lines.append("```bash")
     lines.extend(_unit_install_commands())
+    lines.append("```")
+    lines.append("")
+    lines.append("```bash")
+    lines.extend(_unit_removal_commands())
     lines.append("```")
     if extra:
         lines.append(extra)
@@ -1241,3 +1255,67 @@ def test_runbook_installing_a_system_unit_into_the_user_directory_is_rejected(
     assert result.returncode == 1
     assert system_unit in result.stdout
     assert "unit directory" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Removal coverage (dimension 4g-e): every installed unit must be removed
+# ---------------------------------------------------------------------------
+
+
+def test_gate_reports_the_removal_dimension_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "every installed unit is removed by the runbook" in result.stdout
+
+
+def test_the_shipped_runbook_removes_every_unit_it_installs():
+    # Every unit the runbook installs must also be removed by a command,
+    # so teardown leaves no stale files on the host.
+    text = RUNBOOK.read_text()
+    for name in _shipped_unit_names():
+        directory = ("/etc/systemd/system" if _unit_is_system_unit(name)
+                     else "~/.config/systemd/user")
+        assert f"{directory}/{name}" in text, (
+            f"the runbook does not remove {name} from {directory}")
+
+
+def test_runbook_that_never_removes_an_installed_unit_is_rejected(tmp_path):
+    # A unit the runbook installs but never removes leaves stale files
+    # after teardown.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook()
+    removed_unit = _shipped_unit_names()[0]
+    body = "\n".join(
+        line for line in body.splitlines()
+        if not (line.strip().startswith("rm -f")
+                and removed_unit in line))
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert removed_unit in result.stdout
+    assert "never removes" in result.stdout
+
+
+def test_runbook_that_removes_every_installed_unit_passes(tmp_path):
+    # The baseline runbook installs and removes every shipped unit, so
+    # the removal-coverage dimension passes alongside the install one.
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook())
+    result = _run_gate_on([runbook])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "every installed unit is removed by the runbook" in result.stdout
+
+
+def test_runbook_that_removes_with_sudo_rm_passes(tmp_path):
+    # A system unit removed with `sudo rm -f` is still a removal the gate
+    # recognizes.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook()
+    system_unit = next(name for name in _shipped_unit_names()
+                       if _unit_is_system_unit(name))
+    body = body.replace(
+        f"rm -f /etc/systemd/system/{system_unit}",
+        f"sudo rm -f /etc/systemd/system/{system_unit}")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 0, result.stdout + result.stderr
