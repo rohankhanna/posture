@@ -750,6 +750,7 @@ service_account: posture
 disk_warn_gb: 5
 disk_crit_gb: 2
 sign_key: /etc/posture/signing_key.pem
+sign_pub_key: /etc/posture/signing_pub.pem
 served_dir_owner: posture
 ```
 """
@@ -763,6 +764,7 @@ _HOST_LAYOUT_TABLE = """"| Path | Holds |
 | `/var/lib/posture/spine/defects` | the published defect shards |
 | `/etc/posture/posture.env` | the environment overrides for the system units |
 | `/etc/posture/signing_key.pem` | the manifest signing key, when the manifest is signed |
+| `/etc/posture/signing_pub.pem` | the manifest signature verification key (the ed25519 public key) |
 | `~/.config/posture/env` | the environment overrides for the two user units |
 """
 
@@ -827,6 +829,8 @@ def _baseline_runbook(extra: str = "") -> str:
     lines.append("```bash")
     lines.append("sudo install -m 0640 -o root -g posture /dev/null "
                  "/etc/posture/signing_key.pem")
+    lines.append("sudo install -m 0644 -o root -g root /dev/null "
+                 "/etc/posture/signing_pub.pem")
     lines.append("```")
     lines.append("")
     lines.append("```bash")
@@ -982,6 +986,7 @@ HOST_CONTRACT_KEYS = (
     "disk_warn_gb",
     "disk_crit_gb",
     "sign_key",
+    "sign_pub_key",
     "served_dir_owner",
 )
 
@@ -1844,3 +1849,88 @@ def test_gate_rejects_a_verification_that_does_not_say_which_directory(
     result = _run_gate_on([runbook])
     assert result.returncode == 1
     assert "does not say which directory it verifies" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Published-map signature verification (dimension 4l-b)
+# ---------------------------------------------------------------------------
+
+def test_the_shipped_runbook_verifies_the_published_map_signature():
+    # When the manifest is signed, the operator's verification must also
+    # check the signature against the contract's public key, the same
+    # trust check a client makes before it imports.
+    body = RUNBOOK.read_text()
+    assert ("posture spine verify --from /var/lib/posture --verify-sig "
+            "--signature-key /etc/posture/signing_pub.pem") in body, (
+        "the runbook does not verify the published map's signature against "
+        "the contract's sign_pub_key path")
+
+
+def test_gate_accepts_a_signature_verification_against_the_contract_public_key(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "posture spine verify --from /var/lib/posture",
+        "posture spine verify --from /var/lib/posture --verify-sig "
+        "--signature-key /etc/posture/signing_pub.pem")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_rejects_a_signature_verification_without_a_signature_key(
+        tmp_path):
+    # --verify-sig without --signature-key cannot verify the signature, so
+    # the runbook describes a verification it cannot perform.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "posture spine verify --from /var/lib/posture",
+        "posture spine verify --from /var/lib/posture --verify-sig")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "--signature-key" in result.stdout
+    assert "sign_pub_key" in result.stdout
+
+
+def test_gate_rejects_a_signature_verification_against_the_wrong_key(
+        tmp_path):
+    # A runbook that verifies the signature against a key path the contract
+    # does not declare describes a host whose trust anchor the contract does
+    # not build.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "posture spine verify --from /var/lib/posture",
+        "posture spine verify --from /var/lib/posture --verify-sig "
+        "--signature-key /etc/posture/wrong_pub.pem")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "sign_pub_key" in result.stdout
+    assert "/etc/posture/wrong_pub.pem" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_never_references_the_sign_pub_key_path(
+        tmp_path):
+    # The contract declares where the public key lives, so a runbook that
+    # never names that path does not build the public key location the
+    # contract describes.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "sudo install -m 0644 -o root -g root /dev/null "
+        "/etc/posture/signing_pub.pem\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "sign_pub_key" in result.stdout
+    assert "signature verification key" in result.stdout
+
+
+def test_gate_rejects_a_contract_without_the_sign_pub_key(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(
+        _baseline_runbook().replace(
+            "sign_pub_key: /etc/posture/signing_pub.pem\n", ""))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "sign_pub_key" in result.stdout

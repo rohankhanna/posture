@@ -51,7 +51,8 @@ units will point at paths that do not exist.
 | `/var/lib/posture/spine/manifest.json` | the published map's manifest: shard digests and row counts |
 | `/var/lib/posture/spine/defects` | the published defect shards, one file per published month |
 | `/etc/posture/posture.env` | the environment overrides for the system units |
-| `/etc/posture/signing_key.pem` | the manifest signing key, when the manifest is signed (readable by the posture group) |
+| `/etc/posture/signing_key.pem` | the manifest signing key (the ed25519 private key), when the manifest is signed (readable by the posture group) |
+| `/etc/posture/signing_pub.pem` | the manifest signature verification key (the ed25519 public key) the operator's verification and every client use to check `state.sig` |
 | `~/.config/posture/env` | the environment overrides for the two user units |
 
 ### The host contract
@@ -80,6 +81,7 @@ service_account: posture
 disk_warn_gb: 5
 disk_crit_gb: 2
 sign_key: /etc/posture/signing_key.pem
+sign_pub_key: /etc/posture/signing_pub.pem
 served_dir_owner: posture
 ```
 
@@ -195,6 +197,20 @@ sudo install -m 0640 -o root -g posture /dev/null /etc/posture/signing_key.pem
 sudoedit /etc/posture/signing_key.pem
 ```
 
+Place the matching public key at the contract's `sign_pub_key` path. This is
+the key the operator's verification step (and every client) uses to check the
+served manifest's signature, so it must live inside the layout this runbook
+builds, not at an arbitrary path. It is world-readable (a public key is not a
+secret) and root-owned, so only the operator can replace it:
+
+```bash
+sudo install -m 0644 -o root -g root /dev/null /etc/posture/signing_pub.pem
+sudoedit /etc/posture/signing_pub.pem
+```
+
+Write the private half of the keypair to `sign_key` and the public half to
+`sign_pub_key`.
+
 The variables the daily job reads:
 
 | Variable | Meaning | Default |
@@ -263,6 +279,21 @@ last good one.
 
 A client that pulls the map verifies the manifest's shard digests before it
 imports anything, so a half-written map is refused rather than believed.
+
+If you sign the manifest, also verify the served map's signature against the
+contract's `sign_pub_key` public key. `posture spine verify` re-checks the
+map's internal consistency (the manifest's shard digests); adding `--verify-sig`
+with `--signature-key` re-checks the manifest's ed25519 signature first, which
+is the cryptographic trust check a client runs before it imports anything. A
+failure here means the served manifest was tampered with after the daily job
+signed it, or was signed by a different key than the one the contract builds:
+read the last run's journal before doing anything else, and leave the served
+map alone. The map that is up is still the last good one the daily job
+published and signed.
+
+```bash
+posture spine verify --from /var/lib/posture --verify-sig --signature-key /etc/posture/signing_pub.pem
+```
 
 ## Step 8 — check the tree before you deploy it
 
@@ -358,12 +389,14 @@ deployment line, and makes these kinds of drift loud:
    value describes a host that warns later than the operator believes it
    does.
 10. **Manifest signing key and served-directory ownership** — the host
-    contract declares where the manifest signing key lives and who owns
-    the served directory. A runbook command must reference the contract's
-    signing key path, and the command that creates the served directory
-    must set its owner to the contract's served directory owner. A
-    contract that moves the key or changes the owner while the runbook
-    still builds the old host is drift rather than a host nobody builds.
+    contract declares where the manifest signing key lives, where the
+    matching signature verification key lives, and who owns the served
+    directory. A runbook command must reference the contract's signing
+    key path and its public key path, and the command that creates the
+    served directory must set its owner to the contract's served
+    directory owner. A contract that moves either key or changes the
+    owner while the runbook still builds the old host is drift rather
+    than a host nobody builds.
 11. **Published-map layout** — the host contract declares the directory the
     published map lands in, and the gate checks that directory against the
     publish implementation's own layout (the `spine` directory the publish
@@ -387,4 +420,8 @@ deployment line, and makes these kinds of drift loud:
     which is a weaker confirmation than the one every client makes, and
     one that cannot see a truncated or tampered shard. The verification
     step must point at the map the host serves, not at a directory that
-    happens to hold a copy.
+    happens to hold a copy. When the verification also checks the
+    manifest signature (`--verify-sig`), it must carry `--signature-key`
+    naming the public key path the contract declares (`sign_pub_key`), so
+    a runbook that verifies the signature against a key the contract does
+    not build is drift at check time.

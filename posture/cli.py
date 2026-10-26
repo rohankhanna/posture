@@ -632,14 +632,32 @@ def _cmd_spine(args) -> int:
     # verify re-checks a spine directory against its own manifest (every shard's
     # sha256 + row count). It is the gate the deployment line runs before it
     # publishes a new map, and the same check a client can run on a pulled map.
+    # When the operator passes --verify-sig, the manifest's ed25519 signature
+    # (state.sig) is verified against the supplied public key after the
+    # internal consistency check passes, so the operator's confirmation of the
+    # served map is the same trust check a client makes before it imports.
     if args.sub == "verify":
         try:
             manifest = _export.verify_spine(args.from_dir)
         except (ValueError, OSError) as exc:
             print(f"spine verify: FAILED — {exc}")
             return 1
-        print(f"spine verify: OK — {len(manifest['files'])} shard(s), "
-              f"{manifest['counts']}")
+        if getattr(args, "verify_sig", False):
+            signature_key = getattr(args, "signature_key", None)
+            if not signature_key:
+                print("spine verify: FAILED --verify-sig requires "
+                      "--signature-key (the ed25519 public key PEM)")
+                return 1
+            try:
+                _export.verify_manifest_signature(args.from_dir, signature_key)
+            except (ValueError, OSError) as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            print(f"spine verify: OK — {len(manifest['files'])} shard(s), "
+                  f"{manifest['counts']}, signature verified")
+        else:
+            print(f"spine verify: OK — {len(manifest['files'])} shard(s), "
+                  f"{manifest['counts']}")
         return 0
     # publish is the deployment line's serving path: export into a staging
     # directory, verify it, and swap it into the served directory in one step.
@@ -1220,9 +1238,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--sign-key", dest="sign_key", default=None,
                     help="export: sign manifest.json with this ed25519 private key (PEM) -> state.sig")
     sp.add_argument("--verify-sig", dest="verify_sig", action="store_true",
-                    help="import: verify state.sig before importing")
+                    help="verify/import: verify the manifest's ed25519 signature (state.sig) before trusting the map")
     sp.add_argument("--signature-key", dest="signature_key", default=None,
-                    help="import: ed25519 public key (PEM) for --verify-sig")
+                    help="verify/import: ed25519 public key (PEM) for --verify-sig")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_spine)
 
     # -- ingestion: CVE stream + incremental refresh + catalog ---------------

@@ -493,6 +493,10 @@ posture spine publish --db posture.db --out /var/lib/posture --sign-key signing_
 
 # Check a map that is already on disk (what a client can run on a pulled map):
 posture spine verify --from /var/lib/posture
+
+# When the manifest is signed, also check its signature against the public key
+# (the same trust check a client makes before it imports):
+posture spine verify --from /var/lib/posture --verify-sig --signature-key signing_pub.pem
 ```
 
 A failed export or a failed verification leaves the previously published map

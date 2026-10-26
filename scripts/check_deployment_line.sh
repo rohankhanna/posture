@@ -165,7 +165,11 @@
 #         runbook that only lists the manifest file tells the operator
 #         that a file exists, which is a weaker confirmation than the one
 #         every client makes, and one that cannot see a truncated or
-#         tampered shard.
+#         tampered shard. When the verification also checks the manifest
+#         signature (`--verify-sig`), it must carry `--signature-key`
+#         naming the public key path the contract declares (sign_pub_key),
+#         so a runbook that verifies the signature against a key the
+#         contract does not build is drift at check time.
 #
 #     4k. Documented environment defaults — the runbook's environment table
 #         states a default for every knob the daily job reads: the state
@@ -897,6 +901,7 @@ _CONTRACT_KEYS = (
     "disk_warn_gb",
     "disk_crit_gb",
     "sign_key",
+    "sign_pub_key",
     "served_dir_owner",
 )
 # The contract keys that name a path on the host.
@@ -908,6 +913,7 @@ _CONTRACT_PATH_KEYS = (
     "system_env_file",
     "user_env_file",
     "sign_key",
+    "sign_pub_key",
 )
 def _host_contract(blocks: list[str]) -> dict[str, str] | None:
     """The host contract a runbook declares, or None.
@@ -1251,6 +1257,13 @@ def _validate_published_map_verification(
     (`posture spine verify`), and it is the same check every client runs
     after it pulls the map, so the runbook must show it, pointed at the
     directory that holds the served map the host contract declares.
+
+    When the runbook's verification also checks the manifest's signature
+    (`--verify-sig`), it must carry `--signature-key` naming the public key
+    path the host contract declares (`sign_pub_key`). A runbook that
+    verifies the signature against a key path the contract does not name
+    describes a host whose trust anchor the contract does not build, so the
+    operator's confirmation and the contract drift apart silently.
     """
     if contract is None:
         return
@@ -1258,6 +1271,7 @@ def _validate_published_map_verification(
     if not served or served == "/":
         # The missing contract key is reported by the contract check.
         return
+    sign_pub_key = _normalize_host_path(contract.get("sign_pub_key", ""))
     expected: set[str] = set()
     export_dir = _normalize_host_path(contract.get("export_dir", ""))
     if export_dir and export_dir != "/":
@@ -1290,6 +1304,29 @@ def _validate_published_map_verification(
                 f"served map the host contract declares "
                 f"({', '.join(sorted(expected))}); the verification must "
                 f"check the map the host actually serves")
+        # (4l-b) When the verification also checks the manifest signature,
+        #        it must name the public key the contract declares, so a
+        #        contract that moves the public key while the runbook still
+        #        verifies against the old path is loud at check time.
+        if "--verify-sig" in invocation:
+            sig_key = _option_value(invocation, "--signature-key")
+            if sig_key is None:
+                failures.append(
+                    f"{path}: the runbook verifies the published map's "
+                    f"signature with `--verify-sig` but does not name the "
+                    f"public key to verify against; the command must carry "
+                    f"`--signature-key` naming the contract's sign_pub_key "
+                    f"path ({sign_pub_key})")
+            elif sign_pub_key and _normalize_host_path(sig_key) != sign_pub_key:
+                failures.append(
+                    f"{path}: the runbook verifies the published map's "
+                    f"signature against {_normalize_host_path(sig_key)}, "
+                    f"which is not the public key the host contract "
+                    f"declares at its sign_pub_key location ({sign_pub_key}); "
+                    f"the signature verification must use the key the "
+                    f"contract builds, so a contract that moves the key "
+                    f"while the runbook verifies against the old path is "
+                    f"drift at check time")
 
 # ---------------------------------------------------------------------------
 # Host command contract (4g)
@@ -1456,8 +1493,10 @@ def _validate_runbook_host_commands(
     removed: set[str] = set()
     checked = 0
     sign_key = _normalize_host_path(contract.get("sign_key", ""))
+    sign_pub_key = _normalize_host_path(contract.get("sign_pub_key", ""))
     served_dir_owner = contract.get("served_dir_owner", "").strip()
     referenced_sign_key = False
+    referenced_sign_pub_key = False
 
     for block in blocks:
         for line in block.splitlines():
@@ -1468,12 +1507,15 @@ def _validate_runbook_host_commands(
             path_tokens = _command_path_tokens(stripped)
 
             # (4i-a) Track whether any operator command references the
-            #        contract's manifest signing key path. A contract
-            #        that declares where the key lives but a runbook
-            #        that never names that path does not build the key
-            #        location the contract describes.
+            #        contract's manifest signing key path, and the public
+            #        key path the operator's verification uses. A contract
+            #        that declares where a key lives but a runbook that
+            #        never names that path does not build the key location
+            #        the contract describes.
             if sign_key and sign_key in path_tokens:
                 referenced_sign_key = True
+            if sign_pub_key and sign_pub_key in path_tokens:
+                referenced_sign_pub_key = True
 
             # (a) Every path a command names must be governed by the
             #     contract or be a standard system path.
@@ -1620,6 +1662,14 @@ def _validate_runbook_host_commands(
             f"declares where the key lives but no operator command names that "
             f"path, so the runbook does not build the key location the "
             f"contract describes)")
+    if sign_pub_key and not referenced_sign_pub_key:
+        failures.append(
+            f"{path}: the runbook never references the manifest signature "
+            f"verification key at the contract's sign_pub_key location "
+            f"({sign_pub_key}) (the contract declares where the public key "
+            f"lives but no operator command names that path, so the runbook "
+            f"does not build the public key location the contract describes, "
+            f"and the operator's signature verification cannot point at it)")
 
     return checked
 
@@ -2158,7 +2208,8 @@ def main(paths: list[str]) -> int:
                         "owner match the contract")
         ok_parts.append("the published-map layout matches the publish "
                         "implementation")
-        ok_parts.append("the published map is verified by the runbook")
+        ok_parts.append("the published map is verified by the runbook "
+                        "(including the signature check when it is signed)")
     if contract is not None:
         ok_parts.append("the growth-guard thresholds match the contract")
     if runbook_paths and daily_script_text:
