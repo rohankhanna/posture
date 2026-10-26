@@ -1653,6 +1653,39 @@ def replace_ubuntu_fixes(conn, release: str, package: str, rows: list[dict],
     return n
 
 
+def upsert_ubuntu_fixes(conn, release: str, package: str, rows: list[dict],
+                        fetched_at: str) -> int:
+    """Merge rows into the ubuntu_fixes overlay for (release, package)
+    WITHOUT deleting anything (INSERT OR REPLACE per row). Returns the number
+    of rows written.
+
+    This is the write path for a package whose upstream fetch was INCOMPLETE
+    (one or more pages could not be fetched). A full refresh
+    (:func:`replace_ubuntu_fixes`) on an incomplete fetch would DELETE the
+    last-known-good rows for every CVE that lived on a failed page — the
+    public map would silently lose those status words, and the ubuntu_tracker
+    observer would stop being able to clear NVD's "unpatched" false positive
+    for them. A merge keeps the last-known-good row for every CVE the
+    incomplete fetch did not re-observe, and refreshes (timestamp included) the
+    rows it did observe. The cost is that a CVE genuinely aged off the release
+    sheet keeps its row until a COMPLETE fetch of that package happens; that
+    is the conservative direction — a stale extra row does not invent a fix
+    status that was not there, whereas a dropped row invents an absence.
+    No-wipe: touches ONLY ubuntu_fixes — never defects / verdicts /
+    territory."""
+    n = 0
+    for r in rows:
+        conn.execute(
+            """INSERT OR REPLACE INTO ubuntu_fixes
+                 (cve_id, release, package, status, fixed_in, fetched_at)
+               VALUES (?,?,?,?,?,?)""",
+            (r["cve_id"], release, package, r.get("status"),
+             r.get("fixed_in"), fetched_at),
+        )
+        n += 1
+    return n
+
+
 def ubuntu_fixes_iter(conn) -> Iterator[dict]:
     """Streaming variant of :func:`ubuntu_fixes_all` (no fetchall)."""
     for r in conn.execute(

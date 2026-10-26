@@ -1209,6 +1209,15 @@ def _cmd_ingest_ubuntu(args) -> int:
           f"{stats['sheets']} sheet(s) "
           f"({len(stats['releases'])} release(s) x {len(stats['packages'])} "
           f"package(s)) · fetched={stats['fetched']} · source={src_label}")
+    partial = stats.get("partial_packages") or []
+    if partial:
+        # The fetch of these packages was INCOMPLETE (a page could not be
+        # fetched), so their sheets were MERGED rather than fully refreshed:
+        # the last-known-good rows of the CVEs on the skipped pages survive.
+        # Loud, because the overlay is not fully refreshed in this run.
+        print(f"  warning: incomplete fetch for package(s) "
+              f"{', '.join(partial)}; sheets merged, last-known-good rows "
+              f"preserved")
     line = _attr.attribution_for("ubuntu_tracker")
     if line:
         print(f"  {line}")

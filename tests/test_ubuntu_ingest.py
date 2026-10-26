@@ -630,3 +630,108 @@ def test_ubuntu_ingest_wall_clock_budget_fires_on_failure_page(conn, monkeypatch
     assert stats["fetched"] is False
     assert stats["rows"] == 0
     assert store.ubuntu_fixes_all(conn) == before      # no-wipe
+
+
+def _failing_page_feed(fail_offsets=(1,), clamp_limit=None):
+    """Serve the fixture page by page, failing the given offsets with a
+    transient 503 (the intermittent-degradation shape the breaker exists for).
+    clamp_limit models an upstream that returns fewer rows than requested
+    (the API is documented to clamp the page size)."""
+    fixture = json.loads(FIXTURE.read_text())
+
+    def fake_curl_get(url, headers=None, max_time=300, extra=None):
+        qs = parse_qs(urlparse(url).query)
+        offset = int(qs.get("offset", ["0"])[0])
+        limit = int(qs.get("limit", ["500"])[0])
+        if clamp_limit is not None:
+            limit = clamp_limit
+        if offset in fail_offsets:
+            return None, 503, ""
+        page = dict(fixture)
+        page["cves"] = fixture["cves"][offset:offset + limit]
+        return page, 200, ""
+    return fake_curl_get
+
+
+def test_ubuntu_ingest_skipped_page_preserves_last_known_good_rows(conn, monkeypatch):
+    # A page that cannot be fetched, but a degradation that stays below every
+    # breaker threshold, leaves the tick SUCCESSFUL with an INCOMPLETE fetch.
+    # The sheet is written per (release, package) as a FULL refresh (DELETE +
+    # INSERT), so before the fix the CVEs whose statuses lived on the skipped
+    # page were silently dropped from the published overlay — the map lost
+    # their status words, and the ubuntu_tracker observer could no longer
+    # clear NVD's "unpatched" false positive for them. The skipped package's
+    # sheet is now MERGED, so the last-known-good rows survive.
+    monkeypatch.setattr(_ut, "curl_get", _feed(paginate=True))
+    _ui.ubuntu_ingest_tick(
+        conn, releases=["noble"], packages=["linux"], page_size=1, now="t1")
+    before = {r["cve_id"]: dict(r) for r in
+              store.ubuntu_fixes_for_release_package(conn, "noble", "linux")}
+    assert set(before) == {"CVE-2026-99901", "CVE-2026-99902", "CVE-2026-99903"}
+
+    monkeypatch.setattr(_ui.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(_ut, "curl_get", _failing_page_feed(fail_offsets=(1,)))
+    stats = _ui.ubuntu_ingest_tick(
+        conn, releases=["noble"], packages=["linux"], page_size=1, now="t2")
+    assert stats["error"] is None
+    assert stats["fetched"] is True
+    assert stats["partial_packages"] == ["linux"]
+
+    after = {r["cve_id"]: dict(r) for r in
+             store.ubuntu_fixes_for_release_package(conn, "noble", "linux")}
+    assert set(after) == set(before)          # nothing dropped
+    # the CVE on the skipped page keeps its last-known-good row and timestamp
+    assert after["CVE-2026-99902"]["status"] == before["CVE-2026-99902"]["status"]
+    assert after["CVE-2026-99902"]["fixed_in"] == before["CVE-2026-99902"]["fixed_in"]
+    assert after["CVE-2026-99902"]["fetched_at"] == "t1"
+    # the re-observed rows carry the new fetch time
+    assert after["CVE-2026-99901"]["fetched_at"] == "t2"
+
+
+def test_ubuntu_ingest_complete_fetch_reports_no_partial_packages(conn, monkeypatch):
+    # A complete fetch is still a full refresh (aged-off CVEs leave no stale
+    # rows) and is reported as NOT partial.
+    monkeypatch.setattr(_ut, "curl_get", _feed(paginate=True))
+    stats = _ui.ubuntu_ingest_tick(
+        conn, releases=["noble"], packages=["linux"], page_size=1, now="t1")
+    assert stats["error"] is None
+    assert stats["partial_packages"] == []
+
+
+def test_ubuntu_ingest_skipped_page_does_not_skip_rows_on_a_clamped_feed(conn, monkeypatch):
+    # The upstream may clamp the requested page size. The pager advances by the
+    # number of rows a page ACTUALLY returned, so the failure branch must
+    # advance by the same count — otherwise it jumps a whole requested page
+    # and the rows in between are lost for good.
+    monkeypatch.setattr(_ui.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(_ut, "curl_get", _failing_page_feed(
+        fail_offsets=(1,), clamp_limit=1))
+    stats = _ui.ubuntu_ingest_tick(
+        conn, releases=["noble"], packages=["linux"], page_size=20, now="t1")
+    assert stats["error"] is None
+    rows = {r["cve_id"] for r in
+            store.ubuntu_fixes_for_release_package(conn, "noble", "linux")}
+    # the page AFTER the failed one is still fetched (offset advanced by the
+    # clamped page size, not by the requested one)
+    assert "CVE-2026-99903" in rows
+    assert "CVE-2026-99901" in rows
+
+
+def test_upsert_ubuntu_fixes_merges_without_deleting(conn):
+    # The store-level primitive behind the merge: it writes the rows it is
+    # given and deletes nothing.
+    store.replace_ubuntu_fixes(conn, "noble", "linux", [
+        {"cve_id": "CVE-1", "status": "released", "fixed_in": "1.2"},
+        {"cve_id": "CVE-2", "status": "needed", "fixed_in": None},
+    ], "t1")
+    n = store.upsert_ubuntu_fixes(conn, "noble", "linux", [
+        {"cve_id": "CVE-2", "status": "released", "fixed_in": "2.0"},
+        {"cve_id": "CVE-3", "status": "needed", "fixed_in": None},
+    ], "t2")
+    assert n == 2
+    rows = {r["cve_id"]: dict(r) for r in
+            store.ubuntu_fixes_for_release_package(conn, "noble", "linux")}
+    assert set(rows) == {"CVE-1", "CVE-2", "CVE-3"}   # CVE-1 survives the merge
+    assert rows["CVE-2"]["status"] == "released"      # observed row refreshed
+    assert rows["CVE-2"]["fetched_at"] == "t2"
+    assert rows["CVE-1"]["fetched_at"] == "t1"        # unobserved row untouched

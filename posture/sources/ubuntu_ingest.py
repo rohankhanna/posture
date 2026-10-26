@@ -233,9 +233,21 @@ def ubuntu_ingest_tick(conn, releases: list[str] | None = None,
     sheet leave no stale rows. Writes ONLY the ubuntu_fixes overlay — never
     defects / verdicts / territory.
 
+    ONE EXCEPTION to the full refresh, and it is the important one: a package
+    whose fetch was INCOMPLETE (a page could not be fetched, but the
+    degradation stayed below the breaker's thresholds) is written with a MERGE
+    (store.upsert_ubuntu_fixes, no DELETE) instead of a full refresh. A
+    full refresh on an incomplete fetch would delete the last-known-good row
+    of every CVE that lived on a skipped page, silently dropping its status
+    word from the published map and letting NVD's "unpatched" false positive
+    back in for a patched host. The merge keeps those rows; such packages are
+    reported in stats["partial_packages"].
+
     Stats keys: releases (list), packages (list), sheets (int —
     release x package pairs written), rows (int — total overlay rows
-    inserted), fetched (bool), error (str|None).
+    written), fetched (bool), error (str|None), partial_packages
+    (list — packages whose fetch was incomplete and whose sheets were merged
+    rather than fully refreshed).
     """
     from .. import store as _store
 
@@ -243,7 +255,8 @@ def ubuntu_ingest_tick(conn, releases: list[str] | None = None,
     releases = [r for r in (releases or []) if r]
     packages = [p for p in (packages or []) if p]
     stats = {"releases": releases, "packages": packages, "sheets": 0,
-             "rows": 0, "fetched": False, "error": None}
+             "rows": 0, "fetched": False, "error": None,
+             "partial_packages": []}
 
     if not releases or not packages:
         stats["error"] = ("no scope: pass --release and --package "
@@ -263,6 +276,10 @@ def ubuntu_ingest_tick(conn, releases: list[str] | None = None,
     consecutive_slow = 0
     total_slow = 0
     tick_start = time.monotonic()
+    # packages whose upstream fetch was INCOMPLETE (at least one page could
+    # not be fetched). Their sheets are MERGED, not fully refreshed, so the
+    # last-known-good rows for the CVEs on the skipped pages survive.
+    pkg_skipped: set[str] = set()
     pkg_data: dict[str, dict[str, dict[str, tuple[str, str | None]]]] = {}
     for pkg in packages:
         per_release: dict[str, dict[str, tuple[str, str | None]]] = {
@@ -270,6 +287,13 @@ def ubuntu_ingest_tick(conn, releases: list[str] | None = None,
         offset = 0
         skipped = 0
         total = 0
+        # The number of rows the last SUCCESSFUL page actually returned. The
+        # API may clamp the requested page size, so the pager advances by the
+        # count actually returned (the success branch does this). The failure
+        # branch must advance by the SAME count, or a failure on a clamped
+        # feed skips the rows between the returned count and the requested
+        # count — CVEs that are then missing from the sheet for good.
+        last_len = page_size
         while True:
             t0 = time.monotonic()
             data, reason = _fetch_page(pkg, offset, page_size)
@@ -320,7 +344,7 @@ def ubuntu_ingest_tick(conn, releases: list[str] | None = None,
                     stats["error"] = (f"upstream degraded: tick exceeded {TICK_MAX_SECONDS}s "
                                       f"wall-clock budget; aborting, last-known-good retained")
                     return stats
-                offset += page_size
+                offset += last_len
                 if total and offset >= total:
                     break
                 continue
@@ -350,6 +374,8 @@ def ubuntu_ingest_tick(conn, releases: list[str] | None = None,
                                   f"wall-clock budget; aborting, last-known-good retained")
                 return stats
             page = data.get("cves") or []
+            if page:
+                last_len = len(page)
             for release in releases:
                 per_release[release].update(
                     extract_release(page, release, pkg))
@@ -358,16 +384,29 @@ def ubuntu_ingest_tick(conn, releases: list[str] | None = None,
             if not page or offset >= total:
                 break
         if skipped > 0:
-            print(f"ingest ubuntu: {skipped} page(s) skipped for {pkg}; partial data written", flush=True)
+            pkg_skipped.add(pkg)
+            print(f"ingest ubuntu: {skipped} page(s) skipped for {pkg}; sheet "
+                  f"merged, last-known-good rows preserved", flush=True)
         pkg_data[pkg] = per_release
     stats["fetched"] = True
+    stats["partial_packages"] = sorted(pkg_skipped)
 
     for pkg in packages:
+        partial = pkg in pkg_skipped
         for release in releases:
             sheet = pkg_data[pkg][release]
             rows = [{"cve_id": cid, "status": st, "fixed_in": fi}
                     for cid, (st, fi) in sheet.items()]
-            n = _store.replace_ubuntu_fixes(conn, release, pkg, rows, fetched_at)
+            if partial:
+                # The fetch of this package was INCOMPLETE, so the sheet is
+                # MERGED rather than fully refreshed: a full refresh would
+                # DELETE the last-known-good rows of every CVE that lived on
+                # a skipped page, silently dropping their status words from
+                # the public overlay and letting NVD's "unpatched" false
+                # positive back in. A merge keeps those rows.
+                n = _store.upsert_ubuntu_fixes(conn, release, pkg, rows, fetched_at)
+            else:
+                n = _store.replace_ubuntu_fixes(conn, release, pkg, rows, fetched_at)
             stats["sheets"] += 1
             stats["rows"] += n
     return stats
