@@ -111,6 +111,18 @@
 #         covered by the contract. The two describe the same host, so
 #         neither may drift away from the other.
 #
+#     4g. Host command contract — the runbook's own operator commands are
+#         bound to the host contract, not only the units. Every path a
+#         command names must be governed by the contract (or be a
+#         standard system path); the account the runbook creates must be
+#         the contract's service account, with the contract's state
+#         directory as its home; an owner or group a command names must
+#         be the contract's account or root; a directory the daily job
+#         writes into must be owned by the service account; and every
+#         unit this tree ships must be installed by a command into the
+#         unit directory its kind belongs in. A contract that changes
+#         while the commands do not describes a host nobody builds.
+#
 # Usage: check_deployment_line.sh [FILE ...]
 #   Default: scripts/vps_spine.sh plus every systemd/*.service and
 #   systemd/*.timer unit.
@@ -1051,6 +1063,271 @@ def _validate_host_contract(
 
 
 # ---------------------------------------------------------------------------
+# Host command contract (4g)
+# ---------------------------------------------------------------------------
+
+# The standard systemd unit directories. A runbook installs the system
+# units in the system directory and the user units in the operator's own
+# directory. These are systemd's own conventions rather than this
+# repository's choices, so they are fixed here instead of being declared
+# in the host contract.
+_SYSTEMD_UNIT_DIRS = ("/etc/systemd/system", "~/.config/systemd/user")
+# The standard system paths a runbook command may name without the host
+# contract governing them: device nodes, process information, temporary
+# files, the system binaries, and the system log.
+_SYSTEM_PATHS = ("/dev", "/proc", "/sys", "/tmp", "/var/tmp", "/usr",
+                 "/var/log")
+# A command that creates or installs something on the host.
+_INSTALL_COMMAND_RE = re.compile(r"^(sudo\s+)?install\b")
+# A command that creates a system account.
+_USERADD_RE = re.compile(r"\b(useradd|adduser)\b")
+# The owner and group a command names.
+_OWNER_RE = re.compile(r"(?:^|\s)(?:-o|--owner)\s+(\S+)")
+_GROUP_RE = re.compile(r"(?:^|\s)(?:-g|--group)\s+(\S+)")
+
+
+def _fenced_shell_blocks(text: str) -> list[str]:
+    """Every fenced shell block in a markdown document.
+
+    A runbook's operator commands live in fenced blocks; the blocks that
+    declare data (the host contract is a YAML block) are not commands and
+    are not read here.
+    """
+    blocks: list[str] = []
+    in_block = False
+    language = ""
+    current: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if in_block:
+                if language in ("", "bash", "sh", "shell", "console"):
+                    blocks.append("\n".join(current))
+                current = []
+                language = ""
+            else:
+                info = stripped[3:].strip()
+                language = info.split()[0] if info else ""
+            in_block = not in_block
+            continue
+        if in_block:
+            current.append(line)
+    return blocks
+
+
+def _command_path_tokens(line: str) -> list[str]:
+    """The absolute and home-relative paths a command line names.
+
+    A token that carries a shell expansion is skipped: its value is not
+    visible statically, the same way the gate treats shell expansions
+    elsewhere.
+    """
+    tokens: list[str] = []
+    for raw in line.split():
+        token = raw.strip("\"'").rstrip(",;:")
+        if not token or "..." in token or "$" in token:
+            continue
+        if token.startswith("/") or token.startswith("~/"):
+            tokens.append(_normalize_host_path(token))
+    return tokens
+
+
+def _contract_governed_roots(contract: dict[str, str]) -> list[str]:
+    """The host paths the contract governs, as directory roots.
+
+    The install root, the state and export directories, and the two
+    directories the environment files live in. A path the operator's
+    commands name must live under one of these, or be a standard system
+    path, or the contract does not describe the host the commands build.
+    """
+    roots: list[str] = []
+    for key in ("install_root", "state_dir", "export_dir"):
+        if key in contract:
+            roots.append(_normalize_host_path(contract[key]))
+    for key in ("system_env_file", "user_env_file"):
+        if key in contract:
+            value = _normalize_host_path(contract[key])
+            parent = value.rsplit("/", 1)[0] if "/" in value else value
+            if parent:
+                roots.append(parent)
+    return roots
+
+
+def _unit_is_system_unit(name: str) -> bool:
+    """True when a shipped unit belongs in the system unit directory.
+
+    A service that names a `User=` runs as that account on the host and
+    is installed in the system unit directory; a service that does not
+    runs as the operator and is installed in the user's own unit
+    directory. A timer takes the kind of the service it schedules, so a
+    timer and the service it fires are always installed together.
+    """
+    unit = Path("systemd") / name
+    try:
+        text = unit.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True
+    sections = _unit_sections(text)
+    if _directive_value(sections, "Service", "User") is not None:
+        return True
+    if name.endswith(".timer"):
+        scheduled = _directive_value(sections, "Timer", "Unit")
+        if scheduled:
+            scheduled = scheduled.strip()
+            if scheduled in {u.name for u in _shipped_unit_files()}:
+                return _unit_is_system_unit(scheduled)
+        return True
+    return False
+
+
+def _validate_runbook_host_commands(
+    path: str,
+    text: str,
+    contract: dict[str, str] | None,
+    failures: list[str],
+) -> int:
+    """Validate the runbook's host commands against the contract (4g).
+
+    The host contract binds the units to the runbook, but the runbook's
+    own operator commands were still unbound text: the directories they
+    create, the account they create, the ownership they set, and the
+    directory they install each unit into. A contract that changes while
+    the commands do not describes a host nobody builds. This dimension
+    binds them: every path a command names must be governed by the
+    contract or be a standard system path, the account the runbook
+    creates must be the contract's service account with the contract's
+    state directory as its home, an owner or group a command names must
+    be the contract's account or root, a writable directory the runbook
+    creates must be owned by the service account, and every unit this
+    tree ships must be installed into the unit directory its kind belongs
+    in.
+
+    Returns the number of host commands checked.
+    """
+    blocks = _fenced_shell_blocks(text)
+    if not blocks or contract is None:
+        return 0
+
+    account = contract.get("service_account", "").strip()
+    state_dir = _normalize_host_path(contract.get("state_dir", ""))
+    export_dir = _normalize_host_path(contract.get("export_dir", ""))
+    roots = _contract_governed_roots(contract)
+    writable_roots = [d for d in (state_dir, export_dir) if d]
+    standard = list(_SYSTEMD_UNIT_DIRS) + list(_SYSTEM_PATHS)
+    shipped_units = {u.name for u in _shipped_unit_files()}
+    installed: dict[str, str] = {}
+    checked = 0
+
+    for block in blocks:
+        for line in block.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            checked += 1
+            path_tokens = _command_path_tokens(stripped)
+
+            # (a) Every path a command names must be governed by the
+            #     contract or be a standard system path.
+            for token in path_tokens:
+                if any(_is_under(token, root) for root in roots):
+                    continue
+                if any(token == root for root in roots):
+                    continue
+                if any(_is_under(token, root) or token == root
+                       for root in standard):
+                    continue
+                failures.append(
+                    f"{path}: the command `{stripped}` names `{token}`, which "
+                    f"the host contract does not govern (the contract's "
+                    f"paths are {', '.join(roots)}; a command that builds a "
+                    f"path the contract does not describe builds a different "
+                    f"host)")
+
+            # (b) The account the runbook creates must be the contract's
+            #     service account, with the contract's state directory as
+            #     its home.
+            if _USERADD_RE.search(stripped):
+                home = re.search(r"--home-dir\s+(\S+)", stripped)
+                if home is not None and state_dir:
+                    if _normalize_host_path(home.group(1)) != state_dir:
+                        failures.append(
+                            f"{path}: the command `{stripped}` creates the "
+                            f"service account with home "
+                            f"{_normalize_host_path(home.group(1))}, which is "
+                            f"not the contract's state directory "
+                            f"({state_dir})")
+                words = stripped.split()
+                if words and not words[-1].startswith("-"):
+                    if account and words[-1] != account:
+                        failures.append(
+                            f"{path}: the command `{stripped}` creates the "
+                            f"account `{words[-1]}`, which is not the "
+                            f"contract's service account ({account})")
+
+            # (c) The owner and group a command names must be the contract's
+            #     service account or root.
+            for match in _OWNER_RE.finditer(stripped):
+                owner = match.group(1).strip("\"'")
+                if account and owner not in ("root", account):
+                    failures.append(
+                        f"{path}: the command `{stripped}` sets the owner "
+                        f"`{owner}`, which is neither the contract's service "
+                        f"account ({account}) nor root")
+            for match in _GROUP_RE.finditer(stripped):
+                group = match.group(1).strip("\"'")
+                if account and group not in ("root", account):
+                    failures.append(
+                        f"{path}: the command `{stripped}` sets the group "
+                        f"`{group}`, which is neither the contract's service "
+                        f"account ({account}) nor root")
+
+            # (c) A directory the daily job writes into must be owned by
+            #     the service account, or the job cannot write to it.
+            if _INSTALL_COMMAND_RE.match(stripped) and writable_roots:
+                destination = path_tokens[-1] if path_tokens else None
+                if destination and any(_is_under(destination, root)
+                                       for root in writable_roots):
+                    owners = [m.group(1).strip("\"'")
+                              for m in _OWNER_RE.finditer(stripped)]
+                    if account and account not in owners:
+                        failures.append(
+                            f"{path}: the command `{stripped}` creates "
+                            f"`{destination}` without giving it to the "
+                            f"contract's service account ({account}) (the "
+                            f"daily job cannot write to a directory it does "
+                            f"not own)")
+
+            # (d) Every unit this tree ships must be installed by a
+            #     runbook command, into the unit directory its kind
+            #     belongs in.
+            if _INSTALL_COMMAND_RE.match(stripped) and path_tokens:
+                destination = path_tokens[-1]
+                name = destination.rsplit("/", 1)[-1]
+                if name in shipped_units:
+                    installed[name] = destination.rsplit("/", 1)[0]
+
+    for name in sorted(shipped_units):
+        if name not in installed:
+            failures.append(
+                f"{path}: the runbook never installs `{name}` with a "
+                f"command (a unit the runbook only names in prose is a unit "
+                f"the operator never puts on the host)")
+            continue
+        expected = ("/etc/systemd/system" if _unit_is_system_unit(name)
+                    else "~/.config/systemd/user")
+        if _normalize_host_path(installed[name]) != expected:
+            kind = "system" if _unit_is_system_unit(name) else "user"
+            failures.append(
+                f"{path}: the runbook installs `{name}` into "
+                f"{installed[name]}, which is not the {kind} unit directory "
+                f"({expected}) (a unit installed into the wrong directory "
+                f"runs with the wrong identity and the wrong environment "
+                f"file)")
+
+    return checked
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1276,6 +1553,8 @@ def main(paths: list[str]) -> int:
                 failures)
             _validate_host_contract(
                 path, text, runbook_contracts.get(path), failures)
+            checked += _validate_runbook_host_commands(
+                path, text, runbook_contracts.get(path), failures)
 
     for failure in failures:
         print(f"check_deployment_line: FAIL — {failure}")
@@ -1310,6 +1589,8 @@ def main(paths: list[str]) -> int:
         ok_parts.append("every unit matches the host contract")
     if runbook_paths and contract is not None:
         ok_parts.append("the host contract and the install layout agree")
+    if runbook_paths and contract is not None:
+        ok_parts.append("every runbook host command matches the contract")
     ok_text = ", ".join(ok_parts)
     print(f"check_deployment_line: OK — {ok_text} ({checked} invocation(s) "
           f"checked, {coverage})")

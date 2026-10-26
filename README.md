@@ -540,7 +540,11 @@ gate covers the systemd units and the deployment runbook, including the
 runbook's **host contract** — the install root, the state and export
 directories, the environment files and the service account the units are
 written against — so a unit that drifts away from the documented host
-layout fails loudly instead of quietly at 03:07 UTC.
+layout fails loudly instead of quietly at 03:07 UTC. The runbook's own
+operator commands are bound to that contract too: the directories they
+create, the account they create, the ownership they set and the directory
+each unit is installed into are all checked against it, so a contract that
+changes without its commands describes a host nobody builds.
 
 ## Data sources and ingestion
 

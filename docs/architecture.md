@@ -179,6 +179,18 @@ contract is what maps a unit's absolute script path back into this tree),
 and checks the contract against the runbook's install layout table, so the
 two never disagree about where the tree lives on the host.
 
+The contract also governs the runbook's own operator commands. Every path
+a runbook command names must be governed by the contract or be a standard
+system path; the account the runbook creates must be the contract's
+service account, with the contract's state directory as its home; an
+owner or group a command names must be that account or root; a directory
+the daily job writes into must be owned by the service account; and every
+unit the tree ships must be installed by a command into the unit directory
+its kind belongs in (a system unit in `/etc/systemd/system`, a user unit
+in `~/.config/systemd/user`). One block therefore describes the whole
+host the operator builds: where the tree lives, who runs it, and what the
+operator's commands create.
+
 The spine is **data-only**. It serializes these MAP tables:
 
 | Table | Content |

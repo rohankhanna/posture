@@ -757,13 +757,43 @@ _HOST_LAYOUT_TABLE = """"| Path | Holds |
 """
 
 
+def _unit_is_system_unit(name: str) -> bool:
+    """True when a shipped unit belongs in the system unit directory.
+
+    A service that names a `User=` runs as that account and is installed
+    in the system unit directory; a timer takes the kind of the service
+    it schedules.
+    """
+    if name.endswith(".timer"):
+        text = (REPO_ROOT / "systemd" / name).read_text()
+        for line in text.splitlines():
+            if line.strip().startswith("Unit="):
+                scheduled = line.split("=", 1)[1].strip()
+                return _unit_is_system_unit(scheduled)
+        return True
+    text = (REPO_ROOT / "systemd" / name).read_text()
+    return any(line.strip().startswith("User=") for line in text.splitlines())
+
+
+def _unit_install_commands() -> list[str]:
+    """The install command for every shipped unit, into its own directory."""
+    commands = []
+    for name in _shipped_unit_names():
+        directory = ("/etc/systemd/system" if _unit_is_system_unit(name)
+                     else "~/.config/systemd/user")
+        commands.append(
+            f"install -m 0644 /opt/posture/systemd/{name} {directory}/{name}")
+    return commands
+
+
 def _baseline_runbook(extra: str = "") -> str:
     """A runbook that satisfies every runbook check, plus an extra line.
 
-    The baseline names every shipped unit, documents every environment
-    variable a shipped unit sets, and declares the host contract and the
-    install layout that agree with it, so a test that adds one defect sees
-    only that defect.
+    The baseline names every shipped unit, installs every shipped unit
+    with a command into the unit directory its kind belongs in, documents
+    every environment variable a shipped unit sets, and declares the host
+    contract and the install layout that agree with it, so a test that
+    adds one defect sees only that defect.
     """
     lines = ["# Deployment runbook", ""]
     for name in _shipped_unit_names():
@@ -774,6 +804,9 @@ def _baseline_runbook(extra: str = "") -> str:
         lines.append("")
     lines.append(_HOST_CONTRACT_BLOCK)
     lines.append(_HOST_LAYOUT_TABLE)
+    lines.append("```bash")
+    lines.extend(_unit_install_commands())
+    lines.append("```")
     if extra:
         lines.append(extra)
     return "\n".join(lines)
@@ -804,15 +837,19 @@ def test_runbook_names_every_shipped_unit():
 
 
 def test_runbook_that_omits_a_unit_is_rejected(tmp_path):
+    # A unit the runbook neither names nor installs is a unit the operator
+    # never puts on the host.
     runbook = tmp_path / "deployment.md"
     body = _baseline_runbook()
     omitted = _shipped_unit_names()[0]
     body = body.replace(f"Install `{omitted}`.", "Install the service.")
+    body = "\n".join(line for line in body.splitlines()
+                     if f"/systemd/{omitted}" not in line)
     runbook.write_text(body)
     result = _run_gate_on([runbook])
     assert result.returncode == 1
     assert omitted in result.stdout
-    assert "does not name" in result.stdout
+    assert "never installs" in result.stdout
 
 
 def test_runbook_pointing_at_a_missing_tree_path_is_rejected(tmp_path):
@@ -1035,3 +1072,172 @@ def test_the_shipped_units_match_the_host_contract():
     assert units, "the tree ships no service units"
     result = _run_gate_on([*units, RUNBOOK])
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ---------------------------------------------------------------------------
+# The host command contract (dimension 4g)
+# ---------------------------------------------------------------------------
+
+
+def _runbook_with_commands(tmp_path, commands: list[str]) -> Path:
+    """A runbook that installs every unit and then runs the given commands."""
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook()
+    body += "\n```bash\n" + "\n".join(commands) + "\n```\n"
+    runbook.write_text(body)
+    return runbook
+
+
+def test_gate_reports_the_host_command_dimension_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "every runbook host command matches the contract" in result.stdout
+
+
+def test_the_shipped_runbook_installs_every_unit_in_its_own_directory():
+    # Every unit this tree ships must be installed by a command into the
+    # unit directory its kind belongs in: a system unit in the system
+    # directory, a user unit in the operator's own directory.
+    text = RUNBOOK.read_text()
+    for name in _shipped_unit_names():
+        directory = ("/etc/systemd/system" if _unit_is_system_unit(name)
+                     else "~/.config/systemd/user")
+        assert f"{directory}/{name}" in text, (
+            f"the runbook does not install {name} into {directory}")
+
+
+def test_runbook_command_naming_a_path_the_contract_does_not_govern_is_rejected(
+        tmp_path):
+    # A command that builds a path the contract does not describe builds a
+    # different host than the one the contract declares.
+    runbook = _runbook_with_commands(
+        tmp_path, ["sudo install -d -o posture -g posture /srv/posture"])
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "/srv/posture" in result.stdout
+    assert "does not govern" in result.stdout
+
+
+def test_runbook_command_naming_a_standard_system_path_passes(tmp_path):
+    # The standard system paths are not the contract's business, so a
+    # command that uses one is not drift.
+    runbook = _runbook_with_commands(
+        tmp_path, ["posture health --db /var/lib/posture/posture.db",
+                   "sudo install -d /tmp/posture-check"])
+    result = _run_gate_on([runbook])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_runbook_creating_another_service_account_is_rejected(tmp_path):
+    # The account the units run as is the contract's account; a runbook
+    # that creates a different one leaves the units running as an account
+    # that does not exist.
+    runbook = _runbook_with_commands(
+        tmp_path, ["sudo useradd --system --home-dir /var/lib/posture "
+                   "--shell /usr/sbin/nologin spine"])
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "spine" in result.stdout
+    assert "service account" in result.stdout
+
+
+def test_runbook_creating_the_account_with_another_home_is_rejected(
+        tmp_path):
+    # The service account's home directory is the contract's state
+    # directory, so the account and the state live together.
+    runbook = _runbook_with_commands(
+        tmp_path, ["sudo useradd --system --home-dir /srv/posture "
+                   "--shell /usr/sbin/nologin posture"])
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "/srv/posture" in result.stdout
+    assert "state directory" in result.stdout
+
+
+def test_runbook_setting_an_unknown_owner_is_rejected(tmp_path):
+    runbook = _runbook_with_commands(
+        tmp_path, ["sudo install -d -o nobody -g posture /var/lib/posture"])
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "nobody" in result.stdout
+    assert "owner" in result.stdout
+
+
+def test_runbook_setting_an_unknown_group_is_rejected(tmp_path):
+    runbook = _runbook_with_commands(
+        tmp_path, ["sudo install -d -o posture -g wheel /var/lib/posture"])
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "wheel" in result.stdout
+    assert "group" in result.stdout
+
+
+def test_runbook_creating_a_writable_directory_without_the_service_account_is_rejected(
+        tmp_path):
+    # The daily job writes into the state directory; a directory it does
+    # not own is a directory the job cannot write into.
+    runbook = _runbook_with_commands(
+        tmp_path, ["sudo install -d /var/lib/posture"])
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "/var/lib/posture" in result.stdout
+    assert "service account" in result.stdout
+
+
+def test_runbook_creating_a_writable_directory_for_the_service_account_passes(
+        tmp_path):
+    runbook = _runbook_with_commands(
+        tmp_path, ["sudo install -d -o posture -g posture "
+                   "/var/lib/posture/cvelist"])
+    result = _run_gate_on([runbook])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_runbook_that_never_installs_a_unit_is_rejected(tmp_path):
+    # A unit the runbook only names in prose is a unit the operator never
+    # puts on the host.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook()
+    omitted = _shipped_unit_names()[0]
+    body = "\n".join(line for line in body.splitlines()
+                     if f"/systemd/{omitted}" not in line)
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert omitted in result.stdout
+    assert "never installs" in result.stdout
+
+
+def test_runbook_installing_a_user_unit_into_the_system_directory_is_rejected(
+        tmp_path):
+    # A user unit installed into the system unit directory runs as the
+    # system service account and loads the system environment file, which
+    # is not what the unit was written for.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook()
+    user_unit = next(name for name in _shipped_unit_names()
+                     if not _unit_is_system_unit(name))
+    body = body.replace(
+        f"~/.config/systemd/user/{user_unit}",
+        f"/etc/systemd/system/{user_unit}")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert user_unit in result.stdout
+    assert "unit directory" in result.stdout
+
+
+def test_runbook_installing_a_system_unit_into_the_user_directory_is_rejected(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook()
+    system_unit = next(name for name in _shipped_unit_names()
+                       if _unit_is_system_unit(name))
+    body = body.replace(
+        f"/etc/systemd/system/{system_unit}",
+        f"~/.config/systemd/user/{system_unit}")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert system_unit in result.stdout
+    assert "unit directory" in result.stdout

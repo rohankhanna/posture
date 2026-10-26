@@ -59,7 +59,12 @@ units against it: a unit whose `WorkingDirectory`, service account, state
 directory, catalog paths or environment file no longer match this block is
 reported as drift at check time, instead of pointing at a path that does not
 exist at 03:07 UTC. The paths here must stay in step with the install layout
-table above; the gate checks that too.
+table above; the gate checks that too. The contract governs the commands
+in this runbook as well: the directories they create, the account they
+create, the ownership they set, and the directory each unit is installed
+into. The gate checks those against the contract, so a change to the
+contract that is not carried into the commands is reported here rather
+than on the host.
 
 ```yaml
 install_root: /opt/posture
@@ -261,3 +266,15 @@ deployment line, and makes five kinds of drift loud:
    must be covered by the host contract, and every path in the host
    contract must appear in that table, so the two never disagree about
    where the tree lives on the host.
+8. **Host command contract** — the commands in this runbook are bound to
+   the host contract as well, not only the units. Every path a command
+   names must be governed by the contract (or be a standard system
+   path), the account the runbook creates must be the contract's service
+   account with the contract's state directory as its home, an owner or
+   group a command names must be that account or root, a directory the
+   daily job writes into must be owned by the service account, and every
+   unit this tree ships must be installed by a command into the unit
+   directory its kind belongs in — a system unit in
+   `/etc/systemd/system`, a user unit in `~/.config/systemd/user`. A
+   contract that changes while the commands do not describes a host
+   nobody builds.
