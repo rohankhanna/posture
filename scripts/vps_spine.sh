@@ -221,7 +221,16 @@ fi
 #    a hidden sibling of the served directory (same filesystem, so the swap is a
 #    rename, not a copy) and is removed once the map is published.
 SIGN_KEY="${POSTURE_SIGN_KEY:-}"
-posture spine publish --db "$DB_PATH" --out "$EXPORT_DIR" ${SIGN_KEY:+--sign-key "$SIGN_KEY"}
+# Best-effort: the publish is an atomic swap (staging directory -> rename),
+# so a failed publish leaves the previously published map serving. A
+# transient failure (disk full mid-staging-write, a locked database, an
+# inaccessible signing key, a rename across filesystems) must NOT abort the
+# daily build: the verify step still checks the served map (the old one,
+# which is intact), the git maintenance still runs, and the run is marked
+# DEGRADED so the failure is visible in the journal instead of being
+# swallowed by a bare set -e exit that prints no structured message.
+posture spine publish --db "$DB_PATH" --out "$EXPORT_DIR" ${SIGN_KEY:+--sign-key "$SIGN_KEY"} || \
+  degrade "spine publish failed; the previously published map is still serving, spine continues"
 
 # 7b) The published map must still carry the vendor fix-status overlay rows.
 #     The publish is atomic, so a build that produced a map without those

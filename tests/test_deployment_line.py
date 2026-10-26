@@ -410,6 +410,83 @@ def test_daily_script_git_maintenance_disk_trigger_reads_current_free_space():
 
 
 
+def test_daily_script_publish_command_has_fault_tolerance():
+    # The script runs under `set -euo pipefail`, so any `posture` command
+    # that returns non-zero aborts the entire daily spine build.  Every
+    # other posture command in the script is now fault-tolerant (stream,
+    # backfill, ingests, refresh, maintenance, purge, verify), but the
+    # spine publish command (step 7) was the last unguarded one.  The
+    # publish is an atomic swap (staging directory -> rename), so a failed
+    # publish leaves the previously published map serving -- a publish
+    # failure is a degraded run, not an abort.  An unguarded publish line
+    # is a defect: a single transient failure (disk full mid-staging-write,
+    # a locked database, an inaccessible signing key) silently kills the
+    # verify step, the git maintenance step, and the structured DEGRADED
+    # exit message, contradicting the script's "every degradation is loud"
+    # principle.
+    text = DAILY_SCRIPT.read_text()
+    lines = text.splitlines()
+    logicals = _join_continuations(lines)
+    in_plus_e = False
+    unguarded = []
+    for lineno, logical in logicals:
+        stripped = logical.strip()
+        if stripped == "set +e":
+            in_plus_e = True
+            continue
+        if stripped == "set -e":
+            in_plus_e = False
+            continue
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "posture spine publish" not in stripped:
+            continue
+        if in_plus_e:
+            continue
+        if "||" in stripped:
+            continue
+        unguarded.append((lineno, stripped))
+    assert not unguarded, (
+        "unguarded `posture spine publish` line(s) in vps_spine.sh would "
+        "abort the entire daily spine build on a transient failure, "
+        "bypassing the verify step, the git maintenance step, and the "
+        "structured DEGRADED exit message: "
+        + "; ".join(f"line {n}: {s}" for n, s in unguarded)
+    )
+
+
+def test_daily_script_publish_command_failure_calls_degrade():
+    # The publish command's failure handler must call `degrade` (not a bare
+    # `echo`) so the run is marked DEGRADED and exits non-zero at the end,
+    # making the failure visible in the journal.  This is the script's
+    # stated principle: "Every degradation is loud."  A bare `set -e` exit
+    # is non-zero but prints no structured message and skips every
+    # subsequent step (verify, git maintenance, the final DEGRADED line).
+    text = DAILY_SCRIPT.read_text()
+    lines = text.splitlines()
+    logicals = _join_continuations(lines)
+    found = False
+    for _, logical in logicals:
+        stripped = logical.strip()
+        if "posture spine publish" not in stripped:
+            continue
+        if "||" not in stripped:
+            continue
+        found = True
+        assert "degrade" in logical, (
+            f"publish command failure handler does not call degrade: "
+            f"{stripped}"
+        )
+        assert "::warning::" not in logical, (
+            f"publish command failure handler uses ::warning:: instead of "
+            f"degrade: {stripped}"
+        )
+    assert found, (
+        "no fault-tolerant `posture spine publish` line found in "
+        "vps_spine.sh"
+    )
+
+
 def _emergency_purge_logical_lines() -> list[tuple[int, str]]:
     """The logical lines of the emergency purge in the disk-space guard.
 
