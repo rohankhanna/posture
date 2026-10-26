@@ -943,6 +943,40 @@ def _cmd_spine(args) -> int:
                 return 1
             epss_note = (f", EPSS coverage OK "
                          f"({epss_coverage['rows']} row(s))")
+        # The EPSS overlay scores every CVE with an exploitation likelihood
+        # and a percentile. The table-level coverage check above asks whether
+        # the overlay holds rows; a per-table answer hides a distribution
+        # failure: a map that holds 270k rows passes the floor while quietly
+        # losing every CVE in the top percentile bands if the model shifted
+        # or a partial fetch narrowed the set. The per-band requirement
+        # names the percentile thresholds the host needs populated.
+        epss_band_note = ""
+        epss_band_reqs = getattr(args, "require_epss_score_band", None)
+        if epss_band_reqs:
+            band_requirements: list[tuple[float, int]] = []
+            for value in epss_band_reqs:
+                percentile_str, _, rows_str = str(value).partition(":")
+                try:
+                    band_percentile = float(percentile_str)
+                    band_min_rows = int(rows_str)
+                except ValueError:
+                    print(f"spine verify: FAILED — "
+                          f"--require-epss-score-band {value} does not "
+                          f"name a percentile and a row count "
+                          f"(expected PERCENTILE:MIN_ROWS)")
+                    return 1
+                band_requirements.append((band_percentile, band_min_rows))
+            try:
+                epss_band_coverage = _export.verify_epss_score_band_coverage(
+                    manifest, requirements=band_requirements)
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            epss_band_note = (
+                ", per-band EPSS coverage OK (" + ", ".join(
+                    f"p>={band} {entry['rows']} row(s)"
+                    for band, entry in epss_band_coverage.items())
+                + ")")
         ok_line = f"spine verify: OK — {len(manifest['files'])} shard(s), "
         ok_line += f"{manifest['counts']}"
         if signature_note:
@@ -955,6 +989,7 @@ def _cmd_spine(args) -> int:
         ok_line += apple_note
         ok_line += apple_product_note
         ok_line += epss_note
+        ok_line += epss_band_note
         print(ok_line)
         return 0
     # publish is the deployment line's serving path: export into a staging
@@ -1659,6 +1694,19 @@ def build_parser() -> argparse.ArgumentParser:
                          "fetched more than this many days ago (an EPSS "
                          "overlay that stopped being refreshed still "
                          "satisfies the row floor)")
+    sp.add_argument("--require-epss-score-band",
+                    dest="require_epss_score_band",
+                    action="append", default=None,
+                    metavar="PERCENTILE:MIN_ROWS",
+                    help="verify: fail when the map does not carry at "
+                         "least MIN_ROWS EPSS entries with a percentile "
+                         "at or above PERCENTILE (repeatable; the EPSS "
+                         "overlay scores every CVE with an exploitation "
+                         "likelihood, and the high-percentile bands are "
+                         "the ones an operator triages first, so a map "
+                         "that lost them passes the table-level floor "
+                         "while the prioritization surface is silently "
+                         "narrowed)")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_spine)
 
     # -- ingestion: CVE stream + incremental refresh + catalog ---------------

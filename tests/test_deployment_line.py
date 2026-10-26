@@ -773,6 +773,8 @@ apple_fixes_min_product_rows: 1
 apple_fixes_product_max_age_days: 7
 epss_min_rows: 100000
 epss_max_age_days: 3
+epss_score_bands: 0.9,0.95,0.99
+epss_min_score_band_rows: 100
 ```
 """
 
@@ -888,7 +890,10 @@ def _baseline_runbook(extra: str = "") -> str:
                  "--require-apple-fixes-product ipados:1 "
                  "--require-apple-fixes-product macos:1 "
                  "--require-apple-fixes-product-max-age-days 7 "
-                 "--require-epss 100000 --require-epss-max-age-days 3")
+                 "--require-epss 100000 --require-epss-max-age-days 3 "
+                 "--require-epss-score-band 0.9:100 "
+                 "--require-epss-score-band 0.95:100 "
+                 "--require-epss-score-band 0.99:100")
     lines.append("```")
     if extra:
         lines.append(extra)
@@ -3133,3 +3138,100 @@ def test_gate_rejects_a_daily_job_that_drops_the_epss_floor(
     assert result.returncode == 1
     assert "the daily job requires 100000 EPSS row(s)" in result.stdout
     assert "epss_min_rows floor is 500000" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Per-EPSS-score-band coverage of the served map (dimension 4v)
+# ---------------------------------------------------------------------------
+
+
+def test_the_host_contract_declares_the_epss_score_band_coverage():
+    body = RUNBOOK.read_text()
+    assert "epss_score_bands: 0.9,0.95,0.99" in body, (
+        "the host contract does not declare the EPSS percentile band scope")
+    assert "epss_min_score_band_rows: 100" in body, (
+        "the host contract does not declare the per-band EPSS row floor")
+
+
+def test_the_runbook_requires_the_epss_score_band_coverage():
+    body = RUNBOOK.read_text()
+    assert "--require-epss-score-band 0.9:100" in body, (
+        "the runbook does not require the 0.9 percentile band")
+    assert "--require-epss-score-band 0.95:100" in body, (
+        "the runbook does not require the 0.95 percentile band")
+    assert "--require-epss-score-band 0.99:100" in body, (
+        "the runbook does not require the 0.99 percentile band")
+
+
+def test_the_daily_job_requires_the_epss_score_band_coverage():
+    text = DAILY_SCRIPT.read_text()
+    assert "--require-epss-score-band 0.9:100" in text, (
+        "the daily job does not require the 0.9 percentile band")
+    assert "--require-epss-score-band 0.95:100" in text, (
+        "the daily job does not require the 0.95 percentile band")
+    assert "--require-epss-score-band 0.99:100" in text, (
+        "the daily job does not require the 0.99 percentile band")
+
+
+def test_gate_rejects_a_contract_with_no_epss_score_band_scope(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "epss_score_bands: 0.9,0.95,0.99\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "declares no epss_score_bands" in result.stdout
+
+
+def test_gate_rejects_a_contract_with_no_epss_score_band_floor(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "epss_min_score_band_rows: 100\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "declares no epss_min_score_band_rows" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_drops_an_epss_score_band(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        " --require-epss-score-band 0.95:100", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "does not require the EPSS percentile band 0.95" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_uses_a_different_band_floor(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "--require-epss-score-band 0.9:100",
+        "--require-epss-score-band 0.9:500")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "epss_min_score_band_rows floor is 100" in result.stdout
+
+
+def test_gate_rejects_a_daily_job_that_drops_an_epss_score_band(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "epss_score_bands: 0.9,0.95,0.99",
+        "epss_score_bands: 0.9,0.95,0.99,0.999")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "the daily job checks the served map but does not require "
+    assert "0.999" in result.stdout
+
+
+def test_gate_rejects_a_contract_with_an_out_of_range_band(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "epss_score_bands: 0.9,0.95,0.99",
+        "epss_score_bands: 0.9,1.5,0.99")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "outside the 0..1 range" in result.stdout

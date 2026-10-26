@@ -972,6 +972,8 @@ _CONTRACT_KEYS = (
     "apple_fixes_product_max_age_days",
     "epss_min_rows",
     "epss_max_age_days",
+    "epss_score_bands",
+    "epss_min_score_band_rows",
 )
 # The contract keys that name a path on the host.
 _CONTRACT_PATH_KEYS = (
@@ -3383,6 +3385,228 @@ def _validate_apple_product_coverage_job(
 
 
 # ---------------------------------------------------------------------------
+# EPSS coverage per score band (4v)
+# ---------------------------------------------------------------------------
+
+
+def _contract_epss_score_bands(
+        contract: dict[str, str]) -> list[float]:
+    """The EPSS percentile thresholds the host contract requires the map
+    to carry per band.
+
+    The contract states them as one comma-separated value; each item is a
+    float in 0..1 (the EPSS percentile at or above which the band counts
+    CVEs). A threshold of 0.9 is the top 10 percent most likely to be
+    exploited.
+    """
+    raw = contract.get("epss_score_bands", "")
+    bands: list[float] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            bands.append(float(item))
+        except ValueError:
+            pass  # reported by the contract-level check
+    return bands
+
+
+def _validate_epss_score_band_coverage_contract(
+        path: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the contract's declared per-band EPSS coverage (4v).
+
+    The contract names the EPSS percentile thresholds the served map must
+    carry per band, and the row floor each band must meet. A contract that
+    names no band describes a host that never requires a per-band EPSS
+    count, so a map that quietly lost every high-severity CVE (the ones in
+    the top percentile bands the prioritization surface depends on) is
+    invisible while the table-level floor still passes.
+    """
+    if contract is None:
+        return
+    raw_bands = contract.get("epss_score_bands", "").strip()
+    if not raw_bands:
+        failures.append(
+            f"{path}: the host contract declares no epss_score_bands, so "
+            f"the gate cannot require the served map to carry EPSS rows "
+            f"in any percentile band (the EPSS overlay scores every CVE "
+            f"with a percentile, so a map that holds 270k rows passes the "
+            f"table-level floor while quietly losing every high-severity "
+            f"CVE if the model distribution shifted or a partial fetch "
+            f"narrowed the set)")
+    else:
+        for item in raw_bands.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            try:
+                value = float(item)
+            except ValueError:
+                failures.append(
+                    f"{path}: the host contract's epss_score_bands "
+                    f"contains {item!r}, which is not a percentile "
+                    f"threshold")
+                continue
+            if value < 0 or value > 1:
+                failures.append(
+                    f"{path}: the host contract's epss_score_bands "
+                    f"contains {value:g}, which is outside the 0..1 "
+                    f"range EPSS percentiles occupy")
+    raw_rows = contract.get("epss_min_score_band_rows", "").strip()
+    if not raw_rows:
+        failures.append(
+            f"{path}: the host contract declares no "
+            f"epss_min_score_band_rows, so the gate cannot require each "
+            f"EPSS percentile band to be populated (a band that quietly "
+            f"went empty still passes the table-level row floor)")
+    else:
+        try:
+            value = int(raw_rows)
+        except ValueError:
+            failures.append(
+                f"{path}: the host contract's "
+                f"epss_min_score_band_rows is {raw_rows!r}, which is "
+                f"not a row count")
+        else:
+            if value < 1:
+                failures.append(
+                    f"{path}: the host contract's "
+                    f"epss_min_score_band_rows is {value}, which is not "
+                    f"a positive row count")
+
+
+def _validate_epss_score_band_coverage_verification(
+        path: str,
+        text: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the runbook's per-band EPSS coverage (dimension 4v)."""
+    if contract is None:
+        return
+    bands = _contract_epss_score_bands(contract)
+    floor = _contract_int_floor(contract, "epss_min_score_band_rows")
+    if not bands or floor is None:
+        return
+    commands = _runbook_spine_verify_commands(text)
+    if not commands:
+        # The missing verification is reported by dimension 4l.
+        return
+    for invocation in commands:
+        stated: dict[str, int] = {}
+        for value in _option_values(
+                invocation, "--require-epss-score-band"):
+            percentile_str, _, rows_str = str(value).partition(":")
+            percentile_str = percentile_str.strip()
+            if not percentile_str:
+                continue
+            try:
+                pval = float(percentile_str)
+            except ValueError:
+                failures.append(
+                    f"{path}: the runbook states "
+                    f"`--require-epss-score-band {value}`, which does not "
+                    f"name a percentile threshold")
+                continue
+            try:
+                stated[str(pval)] = int(rows_str)
+            except ValueError:
+                failures.append(
+                    f"{path}: the runbook states "
+                    f"`--require-epss-score-band {value}`, which does not "
+                    f"name a row count")
+        for band in bands:
+            key = str(band)
+            if key not in stated:
+                failures.append(
+                    f"{path}: the runbook verifies the served map but "
+                    f"does not require the EPSS percentile band {key}, "
+                    f"which the host contract's epss_score_bands scope "
+                    f"declares (the command must carry "
+                    f"`--require-epss-score-band {key}:{floor}`; the EPSS "
+                    f"overlay scores every CVE with a percentile, so a "
+                    f"map that holds 270k rows passes the table-level "
+                    f"floor while quietly losing every high-severity CVE "
+                    f"in that band)")
+            elif stated[key] != floor:
+                failures.append(
+                    f"{path}: the runbook requires {stated[key]} EPSS "
+                    f"row(s) for percentile band {key} where the host "
+                    f"contract's epss_min_score_band_rows floor is "
+                    f"{floor}")
+
+
+def _validate_epss_score_band_coverage_job(
+        path: str,
+        script_text: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the nightly job's per-band EPSS coverage (dimension 4v)."""
+    if contract is None or not script_text:
+        return
+    bands = _contract_epss_score_bands(contract)
+    floor = _contract_int_floor(contract, "epss_min_score_band_rows")
+    if not bands or floor is None:
+        return
+    commands = [invocation for words, invocation in _invocations(script_text)
+                if words[:2] == ["spine", "verify"]]
+    if not commands:
+        failures.append(
+            f"{path}: the daily job never checks the served map's "
+            f"per-band EPSS coverage, so a build that publishes a map "
+            f"whose high-severity percentile bands went empty is a quiet "
+            f"success instead of a degraded run")
+        return
+    for invocation in commands:
+        stated: dict[str, int] = {}
+        for value in _option_values(
+                invocation, "--require-epss-score-band"):
+            percentile_str, _, rows_str = str(value).partition(":")
+            percentile_str = percentile_str.strip()
+            if not percentile_str:
+                continue
+            try:
+                pval = float(percentile_str)
+            except ValueError:
+                failures.append(
+                    f"{path}: the daily job states "
+                    f"`--require-epss-score-band {value}`, which does not "
+                    f"name a percentile threshold")
+                continue
+            try:
+                stated[str(pval)] = int(rows_str)
+            except ValueError:
+                failures.append(
+                    f"{path}: the daily job states "
+                    f"`--require-epss-score-band {value}`, which does not "
+                    f"name a row count")
+        for band in bands:
+            key = str(band)
+            if key not in stated:
+                failures.append(
+                    f"{path}: the daily job checks the served map but "
+                    f"does not require the EPSS percentile band {key}, "
+                    f"which the host contract's epss_score_bands scope "
+                    f"declares (the check must carry "
+                    f"`--require-epss-score-band {key}:{floor}`; the EPSS "
+                    f"overlay scores every CVE with a percentile, so a "
+                    f"map that holds 270k rows passes the table-level "
+                    f"floor while quietly losing every high-severity CVE "
+                    f"in that band)")
+            elif stated[key] != floor:
+                failures.append(
+                    f"{path}: the daily job requires {stated[key]} EPSS "
+                    f"row(s) for percentile band {key} where the host "
+                    f"contract's epss_min_score_band_rows floor is "
+                    f"{floor}")
+
+
+# ---------------------------------------------------------------------------
 # Host command contract (4g)
 # ---------------------------------------------------------------------------
 
@@ -4265,6 +4489,10 @@ def main(paths: list[str]) -> int:
                 path, runbook_contracts.get(path), failures)
             _validate_apple_product_coverage_verification(
                 path, text, runbook_contracts.get(path), failures)
+            _validate_epss_score_band_coverage_contract(
+                path, runbook_contracts.get(path), failures)
+            _validate_epss_score_band_coverage_verification(
+                path, text, runbook_contracts.get(path), failures)
             _validate_flat_overlay_coverage_verification(
                 path, text, runbook_contracts.get(path), failures,
                 "epss_min_rows", "epss_max_age_days",
@@ -4342,6 +4570,16 @@ def main(paths: list[str]) -> int:
         _validate_apple_product_coverage_job(
             "scripts/vps_spine.sh", daily_script_text, contract, failures)
 
+    # 4v (job side). The nightly job's per-band EPSS coverage must be the
+    #     one the contract declares, so a map that quietly lost every
+    #     high-severity CVE in a percentile band (the ones the
+    #     prioritization surface depends on) is loud at check time
+    #     instead of a quiet nightly success against a table that still
+    #     holds 270k low-percentile rows.
+    if daily_script_text and contract is not None:
+        _validate_epss_score_band_coverage_job(
+            "scripts/vps_spine.sh", daily_script_text, contract, failures)
+
     for failure in failures:
         print(f"check_deployment_line: FAIL — {failure}")
     if failures:
@@ -4406,6 +4644,12 @@ def main(paths: list[str]) -> int:
         ok_parts.append("the served map's Apple fix and EPSS overlay "
                         "coverage is checked against the contract's row "
                         "floors and freshness allowances")
+        ok_parts.append("the served map's per-product Apple fix coverage "
+                        "is checked against the contract's product scope "
+                        "and per-product row floor")
+        ok_parts.append("the served map's per-band EPSS coverage is "
+                        "checked against the contract's percentile band "
+                        "scope and per-band row floor")
     if contract is not None:
         ok_parts.append("the growth-guard thresholds match the contract")
     if runbook_paths and daily_script_text:

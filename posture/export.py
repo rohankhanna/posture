@@ -115,6 +115,18 @@ OVERLAY_TABLES = ("kev", "apple_fixes", "debian_fixes", "ubuntu_fixes")
 # most recent of them was fetched.
 RELEASE_KEYED_OVERLAY_TABLES = ("ubuntu_fixes", "debian_fixes")
 
+# The standard EPSS percentile thresholds the manifest records per-band row
+# counts for. Each threshold T counts the CVEs whose EPSS percentile is at
+# or above T — the top (1-T)*100 percent most likely to be exploited. The
+# thresholds cover the bands an operator triages by: 0.9 (the top 10 percent),
+# 0.95 (the top 5 percent) and 0.99 (the top 1 percent). The purge already
+# keeps CVEs at or above 0.90 (DEFAULT_KEEP_EPSS_PERCENTILE), so 0.9 is the
+# band the growth guard never forgets; the finer thresholds let the operator
+# see whether the map still carries the severest CVEs the prioritization
+# surface depends on. The manifest records all three so the operator's verify
+# command can require any subset without re-exporting.
+EPSS_SCORE_BAND_THRESHOLDS = (0.9, 0.95, 0.99)
+
 
 def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
@@ -394,6 +406,32 @@ def _tally_flat_overlay_coverage(coverage: dict, row: dict) -> None:
     if fetched_at and fetched_at > (coverage.get("newest_fetched_at") or ""):
         coverage["newest_fetched_at"] = fetched_at
 
+
+def _tally_epss_score_band_coverage(coverage: dict, row: dict) -> None:
+    """Fold one EPSS row into the per-percentile-band coverage record.
+
+    EPSS scores every published CVE with a 0..1 probability of exploitation
+    and a 0..1 percentile (the proportion of scored CVEs at or below this
+    score). The per-band coverage records, for each standard threshold in
+    :data:`EPSS_SCORE_BAND_THRESHOLDS`, how many CVEs the map carries with a
+    percentile at or above that threshold. A map that holds 270 thousand
+    EPSS rows passes the table-level floor while quietly losing every CVE in
+    the top percentile bands if the model distribution shifted or a partial
+    fetch narrowed the set; the per-band counts make that loss loud.
+    """
+    bands = coverage.setdefault("score_bands", {})
+    if not bands:
+        for threshold in EPSS_SCORE_BAND_THRESHOLDS:
+            bands[str(threshold)] = 0
+    try:
+        percentile = float(row.get("percentile") or 0)
+    except (ValueError, TypeError):
+        percentile = 0.0
+    for threshold in EPSS_SCORE_BAND_THRESHOLDS:
+        if percentile >= threshold:
+            key = str(threshold)
+            bands[key] = int(bands.get(key) or 0) + 1
+
 def export_spine(conn, out_dir: os.PathLike | str = ".",
                  policy_version: str = "",
                  source_version: dict | None = None,
@@ -448,7 +486,9 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
                           "catalog_version": None, "date_released": None}
     apple_fixes_coverage: dict = {"rows": 0, "newest_fetched_at": None,
                                   "products": {}}
-    epss_coverage: dict = {"rows": 0, "newest_fetched_at": None}
+    epss_coverage: dict = {"rows": 0, "newest_fetched_at": None,
+                                  "score_bands": {str(t): 0
+                                                  for t in EPSS_SCORE_BAND_THRESHOLDS}}
     for name in FLAT_TABLES:
         # Same size cap as the defect shards: a flat table that outgrows the
         # cap becomes numbered parts instead of one unbounded file, so no
@@ -465,6 +505,7 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
                 _tally_apple_fixes_coverage(apple_fixes_coverage, row)
             elif name == "epss":
                 _tally_flat_overlay_coverage(epss_coverage, row)
+                _tally_epss_score_band_coverage(epss_coverage, row)
         files.extend(writer.finish())
         counts[name] = writer.total
 
@@ -1358,6 +1399,100 @@ def verify_epss_coverage(
     return _check_flat_overlay_rows_and_freshness(
         coverage, "EPSS (exploitability-probability)", min_rows=min_rows,
         max_age_days=max_age_days, now=now)
+
+
+# ---------------------------------------------------------------------------
+# verify (EPSS overlay coverage per score band -- does the map still carry
+# the high-severity CVEs the prioritization surface depends on?)
+# ---------------------------------------------------------------------------
+
+
+def verify_epss_score_band_coverage(
+        manifest: dict,
+        requirements: list[tuple[float, int]] | None = None,
+        now: str | None = None,
+) -> dict[str, dict]:
+    """Check that a published map still carries every required EPSS score band.
+
+    The EPSS coverage check (:func:`verify_epss_coverage`) asks whether the
+    epss table holds rows. That is a per-table question, and a per-table
+    answer hides a distribution failure: the EPSS ingest scores every
+    published CVE with a probability of exploitation and a percentile, so a
+    map that holds 270 thousand rows passes the table-level floor while
+    quietly losing every CVE in the top percentile bands if the model
+    distribution shifted or a partial fetch narrowed the set. The map is
+    then quietly blind in the direction that matters most: the high-severity
+    CVEs — the ones an operator triages first — are gone, so the
+    prioritization surface the EPSS overlay exists to provide is silently
+    narrowed while every other check on the served map still passes.
+
+    requirements is a list of (percentile, min_rows) pairs: the map
+    must carry at least min_rows CVEs with an EPSS percentile at or
+    above percentile. The percentile is the proportion of scored CVEs
+    at or below this score, so a threshold of 0.9 is the top 10 percent
+    most likely to be exploited.
+
+    Returns the per-band coverage that was checked. Raises ValueError
+    when the manifest carries no EPSS coverage at all, when the manifest
+    records no per-band coverage, when a required band is absent from the
+    manifest's recorded bands, or when a required band is below its floor.
+    """
+    requirements = list(requirements or [])
+    if not requirements:
+        return {}
+    for percentile, min_rows in requirements:
+        if float(percentile) < 0 or float(percentile) > 1:
+            raise ValueError(
+                f"the EPSS score-band coverage requirement for percentile "
+                f"{percentile} is outside the 0..1 range EPSS percentiles "
+                f"occupy")
+        if int(min_rows) < 1:
+            raise ValueError(
+                f"the EPSS score-band coverage requirement for percentile "
+                f"{percentile} asks for {min_rows} row(s); the minimum is "
+                f"one")
+    coverage = manifest.get("epss_coverage")
+    if not isinstance(coverage, dict):
+        raise ValueError(
+            "the published map's manifest carries no EPSS coverage, so "
+            "the score bands the host requires cannot be established (the "
+            "map was published before the manifest recorded it)")
+    bands = coverage.get("score_bands")
+    if not isinstance(bands, dict):
+        raise ValueError(
+            "the published map's manifest records no per-band EPSS "
+            "coverage, so the score bands the host requires cannot be "
+            "established (the map was published before the manifest "
+            "recorded it)")
+    checked: dict[str, dict] = {}
+    missing: list[str] = []
+    for percentile, min_rows in requirements:
+        key = str(float(percentile))
+        entry = bands.get(key)
+        if not isinstance(entry, (int, float)):
+            missing.append(
+                f"percentile {key} (the map records no count for that "
+                f"band; it was published before the manifest recorded it, "
+                f"or the threshold is not one the manifest states)")
+            continue
+        rows = int(entry)
+        if rows < int(min_rows):
+            missing.append(
+                f"percentile {key} (the map carries {rows} EPSS row(s) at "
+                f"or above that percentile, fewer than the {int(min_rows)} "
+                f"the host requires, so the high-severity CVEs the "
+                f"prioritization surface depends on are narrowed)")
+            continue
+        checked[key] = {"rows": rows}
+    if missing:
+        raise ValueError(
+            "the published map does not carry the per-band EPSS coverage "
+            "the host requires: " + "; ".join(missing) +
+            " (the EPSS overlay is what scores every CVE with an "
+            "exploitation likelihood, and the high-percentile bands are "
+            "the ones an operator triages first, so a map that lost them "
+            "is silently blind in the direction that matters most)")
+    return checked
 
 
 # ---------------------------------------------------------------------------

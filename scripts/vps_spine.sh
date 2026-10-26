@@ -204,6 +204,12 @@ posture spine publish --db "$DB_PATH" --out "$EXPORT_DIR" ${SIGN_KEY:+--sign-key
 #     the other products keep theirs and the table-level row floor still
 #     passes. Each product is refreshed on its own, so the per-product
 #     freshness allowance is honest: it is that product's own fetch time.
+#     The EPSS overlay is checked per score band as well as per table:
+#     the EPSS ingest scores every CVE with a percentile, so a map that
+#     holds 270k rows passes the table-level floor while quietly losing
+#     every CVE in the top percentile bands if the model distribution
+#     shifted or a partial fetch narrowed the set; the per-band counts
+#     make that loss loud.
 posture spine verify --from "$EXPORT_DIR" \
   --require-overlay ubuntu_fixes --require-overlay debian_fixes \
   --require-overlay-release ubuntu_fixes:resolute:1 \
@@ -233,7 +239,10 @@ posture spine verify --from "$EXPORT_DIR" \
   --require-apple-fixes-product-max-age-days 7 \
   --require-epss 100000 \
   --require-epss-max-age-days 3 \
-  || degrade "the published map does not carry the coverage the host contract requires (the vendor fix-status overlay rows, a fresh known-exploited set, the Apple fix overlay or one of its products, or the EPSS exploitability-probability overlay)"
+  --require-epss-score-band 0.9:100 \
+  --require-epss-score-band 0.95:100 \
+  --require-epss-score-band 0.99:100 \
+  || degrade "the published map does not carry the coverage the host contract requires (the vendor fix-status overlay rows, a fresh known-exploited set, the Apple fix overlay or one of its products, the EPSS exploitability-probability overlay, or its high-severity percentile bands)"
 
 # 8) Periodic git clone maintenance. The advisory-database and cvelistV5
 #    clones accumulate pack objects from every fetch; a weekly gc + remote
