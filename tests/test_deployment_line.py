@@ -3753,3 +3753,155 @@ def test_reconcile_service_monitor_run_has_ignore_failure_prefix():
         f"the monitor run ExecStart in posture-reconcile.service must carry "
         f"a '-' (ignore-exit-status) prefix so a vocab scan failure does "
         f"not silently skip the reconcile step; found: {monitor_line}")
+
+
+# ---------------------------------------------------------------------------
+# Verify command fault tolerance (step 7b)
+# ---------------------------------------------------------------------------
+
+def test_daily_script_verify_command_has_fault_tolerance():
+    # The script runs under `set -euo pipefail`, so any `posture` command
+    # that returns non-zero aborts the entire daily spine build.  Every
+    # other posture command is now fault-tolerant (stream, backfill,
+    # ingests, refresh, maintenance, purge, publish), and the spine verify
+    # command (step 7b) must be too.  The verify runs AFTER the publish:
+    # if the publish failed, the verify checks the previously published
+    # map (which is intact), and if the verify itself fails (a coverage
+    # requirement the served map no longer meets), the run must be marked
+    # DEGRADED so the failure is visible in the journal — the git
+    # maintenance step still runs and the structured exit message still
+    # prints.  An unguarded verify line is a defect: a single transient
+    # coverage failure (stale overlays after a multi-day ingest outage)
+    # silently kills the git maintenance step and the DEGRADED exit
+    # message, contradicting the script's "every degradation is loud"
+    # principle.
+    text = DAILY_SCRIPT.read_text()
+    lines = text.splitlines()
+    logicals = _join_continuations(lines)
+    in_plus_e = False
+    unguarded = []
+    for lineno, logical in logicals:
+        stripped = logical.strip()
+        if stripped == "set +e":
+            in_plus_e = True
+            continue
+        if stripped == "set -e":
+            in_plus_e = False
+            continue
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "posture spine verify" not in stripped:
+            continue
+        if in_plus_e:
+            continue
+        if "||" in stripped:
+            continue
+        unguarded.append((lineno, stripped))
+    assert not unguarded, (
+        "unguarded `posture spine verify` line(s) in vps_spine.sh would "
+        "abort the entire daily spine build on a coverage-check failure, "
+        "bypassing the git maintenance step and the structured DEGRADED "
+        "exit message: "
+        + "; ".join(f"line {n}: {s}" for n, s in unguarded)
+    )
+
+
+def test_daily_script_verify_command_failure_calls_degrade():
+    # The verify command's failure handler must call `degrade` (not a bare
+    # `echo`) so the run is marked DEGRADED and exits non-zero at the end,
+    # making the failure visible in the journal.  This is the script's
+    # stated principle: "Every degradation is loud."  A bare `set -e` exit
+    # is non-zero but prints no structured message and skips every
+    # subsequent step (git maintenance, the final DEGRADED line).
+    text = DAILY_SCRIPT.read_text()
+    lines = text.splitlines()
+    logicals = _join_continuations(lines)
+    found = False
+    for _, logical in logicals:
+        stripped = logical.strip()
+        if "posture spine verify" not in stripped:
+            continue
+        if "||" not in stripped:
+            continue
+        found = True
+        assert "degrade" in logical, (
+            f"verify command failure handler does not call degrade: "
+            f"{stripped}"
+        )
+        assert "::warning::" not in logical, (
+            f"verify command failure handler uses ::warning:: instead of "
+            f"degrade: {stripped}"
+        )
+    assert found, (
+        "no fault-tolerant `posture spine verify` line found in "
+        "vps_spine.sh"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Daily bounded-growth purge fault tolerance (step 6)
+# ---------------------------------------------------------------------------
+
+def _daily_purge_logical_lines() -> list[tuple[int, str]]:
+    """The logical lines of the daily bounded-growth purge in step 6.
+
+    The daily purge is distinguished from the emergency purge (step 0) by
+    using the configured $PURGE_AGE_DAYS retention instead of the
+    hardcoded 365-day emergency retention."""
+    text = DAILY_SCRIPT.read_text()
+    out = []
+    for lineno, logical in _join_continuations(text.splitlines()):
+        if "posture purge" in logical and "$PURGE_AGE_DAYS" in logical:
+            out.append((lineno, logical))
+    return out
+
+
+def test_daily_script_daily_purge_has_fault_tolerance():
+    # The script runs under `set -euo pipefail`, so any `posture` command
+    # that returns non-zero aborts the entire daily spine build.  The
+    # emergency purge (step 0) is already fault-tolerant, and the daily
+    # bounded-growth purge (step 6) must be too.  The purge runs BEFORE
+    # the publish, so a purge failure means the catalog is still growing
+    # but the map is still published and served — a degraded run, not an
+    # abort.  An unguarded daily purge is a defect: a single transient
+    # database failure (a locked file, a corrupt index) silently kills
+    # the publish, the verify, the git maintenance, and the DEGRADED exit
+    # message.
+    lines = _daily_purge_logical_lines()
+    assert lines, "the daily bounded-growth purge was not found in vps_spine.sh"
+    for lineno, logical in lines:
+        stripped = logical.strip()
+        has_if_not = stripped.startswith("if !") or "if !" in stripped
+        has_or = "||" in stripped
+        assert has_if_not or has_or, (
+            f"line {lineno}: the daily purge is not fault-tolerant (no "
+            f"`if !` wrapper or `||` guard): {stripped}"
+        )
+
+
+def test_daily_script_daily_purge_failure_calls_degrade():
+    # A failed daily purge means the catalog is still growing, so the run
+    # must be marked DEGRADED and exit non-zero: the script's stated
+    # principle is that every degradation is loud.  A bare `echo` or a
+    # bare `set -e` exit leaves the run looking successful (or aborts
+    # silently) instead of being visible in the journal.
+    logicals = _join_continuations(DAILY_SCRIPT.read_text().splitlines())
+    daily_indexes = [
+        i for i, (_, logical) in enumerate(logicals)
+        if "posture purge" in logical and "$PURGE_AGE_DAYS" in logical
+    ]
+    assert daily_indexes, (
+        "the daily bounded-growth purge was not found in vps_spine.sh"
+    )
+    for index in daily_indexes:
+        handler = ""
+        for _, candidate in logicals[index + 1:]:
+            stripped = candidate.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            handler = stripped
+            break
+        assert "degrade" in handler, (
+            f"the daily purge failure handler does not call degrade, so "
+            f"the run is not marked degraded: {handler}"
+        )
