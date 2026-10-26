@@ -836,6 +836,9 @@ def _baseline_runbook(extra: str = "") -> str:
     lines.append("```bash")
     lines.extend(_unit_removal_commands())
     lines.append("```")
+    lines.append("```bash")
+    lines.append("posture spine verify --from /var/lib/posture")
+    lines.append("```")
     if extra:
         lines.append(extra)
     return "\n".join(lines)
@@ -1784,3 +1787,60 @@ def test_gate_reports_the_documented_defaults_dimension_in_its_summary():
     assert result.returncode == 0, result.stdout + result.stderr
     assert ("every documented environment default matches the daily job's "
             "own default") in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Published-map verification (4l)
+# ---------------------------------------------------------------------------
+
+
+def test_the_shipped_runbook_verifies_the_published_map():
+    # The operator's confirmation that the host serves the map it is
+    # supposed to serve must be the same check every client makes.
+    body = RUNBOOK.read_text()
+    assert "posture spine verify --from /var/lib/posture" in body, (
+        "the runbook does not verify the published map with the command the "
+        "tree ships")
+
+
+def test_gate_reports_the_published_map_verification_dimension_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "the published map is verified by the runbook" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_only_lists_the_published_map(tmp_path):
+    # Listing the manifest file shows that a file exists; it cannot see a
+    # truncated or tampered shard, so it is not a verification.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "posture spine verify --from /var/lib/posture\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "does not verify the published map" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_verifies_the_wrong_directory(tmp_path):
+    # The verification must point at the map the host serves, not at some
+    # other directory that happens to hold a copy.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "posture spine verify --from /var/lib/posture",
+        "posture spine verify --from /tmp/somewhere-else")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "not the directory that holds the served map" in result.stdout
+
+
+def test_gate_rejects_a_verification_that_does_not_say_which_directory(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "posture spine verify --from /var/lib/posture",
+        "posture spine verify")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "does not say which directory it verifies" in result.stdout

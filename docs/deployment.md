@@ -246,9 +246,20 @@ shards, and the previous map is gone only because the swap succeeded.
 ```bash
 posture health --db /var/lib/posture/posture.db
 posture catalog --db /var/lib/posture/posture.db --limit 5
+posture spine verify --from /var/lib/posture
 sudo ls -l /var/lib/posture/spine/manifest.json
 sudo ls -l /var/lib/posture/spine/defects
 ```
+
+`posture spine verify` re-reads the served map's own manifest and recomputes
+every shard's sha256 and row count. That is the same check a client performs
+after it pulls the map, so the operator's confirmation of the published map
+is the confirmation the client will make, and not the weaker one that only
+looks at the file listing. A failure here means the served directory does
+not hold the map its manifest describes: read the last run's journal before
+doing anything else, and leave the served map alone. A failed build leaves
+the previously published map serving, so the map that is up is still the
+last good one.
 
 A client that pulls the map verifies the manifest's shard digests before it
 imports anything, so a half-written map is refused rather than believed.
@@ -368,3 +379,12 @@ deployment line, and makes these kinds of drift loud:
     threshold the job no longer uses tells the operator to size the host
     against numbers that are not in effect, and the drift is invisible
     until the nightly job behaves differently from the runbook.
+13. **Published-map verification** — the runbook's verification of the
+    published map must actually verify it: it must show a
+    `posture spine verify` command whose `--from` directory is the one
+    that holds the served map the host contract declares. A runbook that
+    only lists the manifest file tells the operator that a file exists,
+    which is a weaker confirmation than the one every client makes, and
+    one that cannot see a truncated or tampered shard. The verification
+    step must point at the map the host serves, not at a directory that
+    happens to hold a copy.

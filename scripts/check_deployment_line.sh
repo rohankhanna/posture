@@ -158,6 +158,15 @@
 #         file that does not exist, and a client told to pull from that
 #         directory gets nothing.
 #
+#     4l. Published-map verification — the runbook's verification of the
+#         published map must actually verify it: it must show a
+#         `posture spine verify` command whose `--from` directory is the
+#         one that holds the served map the host contract declares. A
+#         runbook that only lists the manifest file tells the operator
+#         that a file exists, which is a weaker confirmation than the one
+#         every client makes, and one that cannot see a truncated or
+#         tampered shard.
+#
 #     4k. Documented environment defaults — the runbook's environment table
 #         states a default for every knob the daily job reads: the state
 #         and export directories, the catalog and clone paths, the
@@ -1190,6 +1199,99 @@ def _validate_served_map_layout(
 
 
 # ---------------------------------------------------------------------------
+# Published-map verification (4l)
+# ---------------------------------------------------------------------------
+
+
+def _option_value(invocation_text: str, option: str) -> str | None:
+    """The value an option carries in an invocation string.
+
+    Returns None when the option is not present at all, and an empty
+    string when the option is present without a value.
+    """
+    tokens = invocation_text.split()
+    for index, token in enumerate(tokens):
+        token = token.strip("\"'")
+        if token == option:
+            if index + 1 < len(tokens):
+                return tokens[index + 1].strip("\"'")
+            return ""
+        if token.startswith(option + "="):
+            return token[len(option) + 1:].strip("\"'")
+    return None
+
+
+def _runbook_spine_verify_commands(text: str) -> list[str]:
+    """Every `posture spine verify` command a runbook shows.
+
+    Only the fenced code blocks are read: a block is a command the
+    operator copies and runs, while an inline mention in the prose is a
+    description of the check rather than the check itself.
+    """
+    commands: list[str] = []
+    for block in _code_blocks(text):
+        for words, invocation_text in _invocations(block):
+            if words[:2] == ["spine", "verify"]:
+                commands.append(invocation_text)
+    return commands
+
+
+def _validate_published_map_verification(
+    path: str,
+    text: str,
+    contract: dict[str, str] | None,
+    failures: list[str],
+) -> None:
+    """Check the runbook's verification of the published map (dimension 4l).
+
+    The runbook's operator-facing verification step is how the operator
+    confirms that the host serves the map it is supposed to serve. Listing
+    the manifest file only shows that a file exists; it cannot see a
+    truncated or tampered shard. The tree ships the real check
+    (`posture spine verify`), and it is the same check every client runs
+    after it pulls the map, so the runbook must show it, pointed at the
+    directory that holds the served map the host contract declares.
+    """
+    if contract is None:
+        return
+    served = _normalize_host_path(contract.get("served_map_dir", ""))
+    if not served or served == "/":
+        # The missing contract key is reported by the contract check.
+        return
+    expected: set[str] = set()
+    export_dir = _normalize_host_path(contract.get("export_dir", ""))
+    if export_dir and export_dir != "/":
+        expected.add(export_dir)
+    expected.add(str(Path(served).parent))
+
+    commands = _runbook_spine_verify_commands(text)
+    if not commands:
+        failures.append(
+            f"{path}: the runbook does not verify the published map; it "
+            f"must show `posture spine verify --from "
+            f"{', '.join(sorted(expected))}` (listing the manifest file is "
+            f"not a verification: a truncated or tampered shard still "
+            f"lists)")
+        return
+    for invocation in commands:
+        value = _option_value(invocation, "--from")
+        if value is None:
+            failures.append(
+                f"{path}: the runbook verifies the published map with "
+                f"`posture spine verify` but does not say which directory it "
+                f"verifies; the command must carry `--from` naming the "
+                f"directory that holds the served map")
+            continue
+        normalized = _normalize_host_path(value)
+        if normalized not in expected:
+            failures.append(
+                f"{path}: the runbook verifies the published map at "
+                f"{normalized}, which is not the directory that holds the "
+                f"served map the host contract declares "
+                f"({', '.join(sorted(expected))}); the verification must "
+                f"check the map the host actually serves")
+
+# ---------------------------------------------------------------------------
 # Host command contract (4g)
 # ---------------------------------------------------------------------------
 
@@ -2008,6 +2110,8 @@ def main(paths: list[str]) -> int:
                 path, text, runbook_contracts.get(path), failures)
             _validate_served_map_layout(
                 path, text, runbook_contracts.get(path), failures)
+            _validate_published_map_verification(
+                path, text, runbook_contracts.get(path), failures)
             checked += _validate_runbook_host_commands(
                 path, text, runbook_contracts.get(path), failures)
             if daily_script_text:
@@ -2054,6 +2158,7 @@ def main(paths: list[str]) -> int:
                         "owner match the contract")
         ok_parts.append("the published-map layout matches the publish "
                         "implementation")
+        ok_parts.append("the published map is verified by the runbook")
     if contract is not None:
         ok_parts.append("the growth-guard thresholds match the contract")
     if runbook_paths and daily_script_text:
