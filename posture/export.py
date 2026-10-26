@@ -334,6 +334,25 @@ def _tally_release_coverage(coverage: dict, row: dict) -> None:
         entry["newest_fetched_at"] = fetched_at
 
 
+def _tally_kev_coverage(coverage: dict, row: dict) -> None:
+    """Fold one known-exploited row into the map's known-exploited coverage.
+
+    The coverage states three things: how many known-exploited entries the
+    map carries, when the newest of them was fetched, and which catalog
+    version that fetch published. The fetch time is what tells a refreshed
+    set from a retained one: the CISA KEV ingest is a no-wipe full refresh,
+    so a fetch that fails leaves the last-known-good rows in place and the
+    map keeps serving a known-exploited set that stopped being refreshed.
+    """
+    coverage["rows"] = int(coverage.get("rows") or 0) + 1
+    fetched_at = str(row.get("fetched_at") or "").strip()
+    if fetched_at and fetched_at > (coverage.get("newest_fetched_at") or ""):
+        coverage["newest_fetched_at"] = fetched_at
+        for key in ("catalog_version", "date_released"):
+            value = str(row.get(key) or "").strip()
+            coverage[key] = value or None
+
+
 def export_spine(conn, out_dir: os.PathLike | str = ".",
                  policy_version: str = "",
                  source_version: dict | None = None,
@@ -384,6 +403,8 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
     }
     release_coverage: dict[str, dict] = {
         name: {} for name in RELEASE_KEYED_OVERLAY_TABLES}
+    kev_coverage: dict = {"rows": 0, "newest_fetched_at": None,
+                          "catalog_version": None, "date_released": None}
     for name in FLAT_TABLES:
         # Same size cap as the defect shards: a flat table that outgrows the
         # cap becomes numbered parts instead of one unbounded file, so no
@@ -393,6 +414,8 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
             writer.write(row)
             if name in release_coverage:
                 _tally_release_coverage(release_coverage[name], row)
+            if name == "kev":
+                _tally_kev_coverage(kev_coverage, row)
         files.extend(writer.finish())
         counts[name] = writer.total
 
@@ -426,6 +449,7 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
         "counts": counts,
         "files": files,
         "release_coverage": release_coverage,
+        "kev_coverage": kev_coverage,
     }
     (root / MANIFEST_NAME).write_text(
         json.dumps(manifest, sort_keys=True, indent=2) + "\n"
@@ -933,6 +957,94 @@ def verify_overlay_package_coverage(
             "unknown-fix false positives on a fully-updated host, so a map "
             "without a package's rows reports patched packages of that "
             "source as unpatched)")
+    return checked
+
+
+# ---------------------------------------------------------------------------
+# verify (known-exploited coverage — does the map still carry the
+# known-exploited set, and is that set fresh?)
+# ---------------------------------------------------------------------------
+
+
+def verify_kev_coverage(
+        manifest: dict,
+        min_rows: int | None = None,
+        max_age_days: float | None = None,
+        now: str | None = None,
+) -> dict:
+    """Check that a published map still carries the known-exploited set.
+
+    The overlay coverage check (:func:`verify_overlay_coverage`) asks
+    whether the vendor fix-status overlays hold rows. The known-exploited
+    set is a different kind of overlay: CISA's KEV catalog is the map's
+    statement about what is being exploited in the wild, and it is what
+    the threat axis reads. The KEV ingest is a no-wipe full refresh, so a
+    fetch that fails leaves the last-known-good rows in place: the served
+    map stays intact, signed, fresh and consistent with its own manifest,
+    every other check still passes, and the only thing that shows the
+    known-exploited set stopped being refreshed is the age of its rows.
+
+    min_rows is the number of known-exploited entries the map must
+    carry (at least one, by default). max_age_days additionally
+    requires the newest of those entries to have been fetched within that
+    many days, which is what catches the retained-set direction: a map
+    whose rows are all from an older catalog still satisfies the row
+    floor.
+
+    Returns the known-exploited coverage that was checked. Raises
+    ValueError when the manifest carries no known-exploited coverage
+    at all (a map published before the manifest recorded it), when the map
+    carries fewer rows than the host requires, or when the newest row is
+    older than the freshness allowance.
+    """
+    floor = 1 if min_rows is None else int(min_rows)
+    if floor < 1:
+        raise ValueError(
+            f"the known-exploited coverage requirement asks for {floor} "
+            f"row(s); the minimum is one")
+    if max_age_days is not None and max_age_days <= 0:
+        raise ValueError(
+            "the known-exploited freshness allowance must be a positive "
+            "number of days")
+    coverage = manifest.get("kev_coverage")
+    if not isinstance(coverage, dict):
+        raise ValueError(
+            "the published map's manifest carries no known-exploited "
+            "coverage, so the known-exploited set the host requires cannot "
+            "be established (the map was published before the manifest "
+            "recorded it)")
+    rows = int(coverage.get("rows") or 0)
+    if rows < floor:
+        raise ValueError(
+            f"the published map carries {rows} known-exploited row(s), "
+            f"fewer than the {floor} the host requires (the known-exploited "
+            f"set is the map's statement about what is being exploited in "
+            f"the wild; without it the threat axis is blind rather than "
+            f"clean)")
+    checked = {
+        "rows": rows,
+        "newest_fetched_at": coverage.get("newest_fetched_at"),
+        "catalog_version": coverage.get("catalog_version"),
+        "date_released": coverage.get("date_released"),
+    }
+    if max_age_days is not None:
+        newest = _parse_timestamp(coverage.get("newest_fetched_at") or "")
+        if newest is None:
+            raise ValueError(
+                "the published map records no fetch time for its "
+                "known-exploited rows, so their freshness cannot be "
+                "established")
+        now_dt = _parse_timestamp(now) if now else _dt.datetime.now(
+            _dt.timezone.utc)
+        age_days = (now_dt - newest).total_seconds() / 86400.0
+        if age_days > max_age_days:
+            raise ValueError(
+                f"the published map's newest known-exploited row was fetched "
+                f"{age_days:.1f} day(s) ago, older than the "
+                f"{max_age_days:g} day(s) the host allows, so the "
+                f"known-exploited set stopped being refreshed (the ingest "
+                f"is a no-wipe refresh, so a failed fetch leaves the last "
+                f"known-good rows serving)")
     return checked
 
 

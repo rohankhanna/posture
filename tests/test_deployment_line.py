@@ -764,6 +764,8 @@ overlay_debian_min_rows: 1
 overlay_max_age_days: 2
 overlay_ubuntu_min_package_rows: 1
 overlay_debian_min_package_rows: 1
+kev_min_rows: 1000
+kev_max_age_days: 3
 ```
 """
 
@@ -872,7 +874,8 @@ def _baseline_runbook(extra: str = "") -> str:
                  "--require-overlay-package ubuntu_fixes:focal:linux-nvidia:1 "
                  "--require-overlay-package debian_fixes:trixie:linux:1 "
                  "--require-overlay-package debian_fixes:bookworm:linux:1 "
-                 "--require-overlay-max-age-days 2")
+                 "--require-overlay-max-age-days 2 "
+                 "--require-kev 1000 --require-kev-max-age-days 3")
     lines.append("```")
     if extra:
         lines.append(extra)
@@ -2697,3 +2700,113 @@ def test_gate_rejects_a_daily_job_that_drops_a_package_requirement(tmp_path):
     assert "the daily job checks the served map but does not require" in (
         result.stdout)
     assert "package ghost" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Known-exploited coverage of the served map (dimension 4s)
+# ---------------------------------------------------------------------------
+
+
+def test_the_host_contract_declares_the_known_exploited_coverage():
+    # The contract states a row floor and a freshness allowance for the
+    # known-exploited set, so the gate can require the served map to carry
+    # it: the KEV ingest is a no-wipe refresh, so a failed fetch leaves the
+    # last-known-good rows serving and every other check still passes.
+    body = RUNBOOK.read_text()
+    assert "kev_min_rows: 1000" in body, (
+        "the host contract does not declare the known-exploited row floor")
+    assert "kev_max_age_days: 3" in body, (
+        "the host contract does not declare the known-exploited freshness "
+        "allowance")
+
+
+def test_the_runbook_requires_the_known_exploited_coverage():
+    body = RUNBOOK.read_text()
+    assert "--require-kev 1000" in body, (
+        "the runbook does not require the known-exploited rows")
+    assert "--require-kev-max-age-days 3" in body, (
+        "the runbook does not require the known-exploited rows to be fresh")
+
+
+def test_the_daily_job_requires_the_known_exploited_coverage():
+    # The nightly job builds the map; it must make the same check the
+    # runbook shows, right after it publishes.
+    text = DAILY_SCRIPT.read_text()
+    assert "--require-kev 1000" in text, (
+        "the daily job does not require the known-exploited rows")
+    assert "--require-kev-max-age-days 3" in text, (
+        "the daily job does not require the known-exploited rows to be "
+        "fresh")
+
+
+def test_gate_reports_the_known_exploited_coverage_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "known-exploited coverage is checked" in result.stdout
+
+
+def test_gate_rejects_a_contract_with_no_known_exploited_row_floor(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace("kev_min_rows: 1000\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "declares no kev_min_rows" in result.stdout
+
+
+def test_gate_rejects_a_contract_with_no_known_exploited_freshness_allowance(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace("kev_max_age_days: 3\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "declares no kev_max_age_days" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_drops_the_known_exploited_requirement(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(" --require-kev 1000", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "does not require the known-exploited rows" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_uses_a_different_known_exploited_floor(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace("--require-kev 1000",
+                                       "--require-kev 5")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "kev_min_rows floor is 1000" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_drops_the_known_exploited_freshness(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(" --require-kev-max-age-days 3", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "known-exploited rows to be fresh" in result.stdout
+
+
+def test_gate_rejects_a_daily_job_that_drops_the_known_exploited_floor(
+        tmp_path):
+    # The nightly job must make the same check the runbook shows. Declare a
+    # floor the real daily job does not require, so the job-side validator
+    # fires (the gate always checks the repository's own daily script
+    # against the runbook's contract).
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace("kev_min_rows: 1000",
+                                       "kev_min_rows: 2000")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "the daily job requires 1000 known-exploited row(s)" in (
+        result.stdout), result.stdout
+    assert "kev_min_rows floor is 2000" in result.stdout, result.stdout

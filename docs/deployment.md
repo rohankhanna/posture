@@ -95,6 +95,8 @@ overlay_debian_min_rows: 1
 overlay_max_age_days: 2
 overlay_ubuntu_min_package_rows: 1
 overlay_debian_min_package_rows: 1
+kev_min_rows: 1000
+kev_max_age_days: 3
 ```
 
 The last two keys are the free-space thresholds the daily job applies to the
@@ -173,6 +175,28 @@ overlays the contract declares.
 `overlay_ubuntu_min_rows` and `overlay_debian_min_rows` are the row floors the served map must meet for every release of that overlay's declared scope, and `overlay_max_age_days` is how old those rows may be. The two checks above are per-table: they say that the `ubuntu_fixes` table holds rows, not that it holds the rows of every release the host requires. The per-(release, package) refresh deletes the rows it is about to replace, so a release whose tracker feed returned nothing ends up with no rows at all while the table as a whole still holds the other releases' rows — the presence check still passes, the map is still intact, signed and fresh, and the missing release reports patched packages as unpatched, which is exactly the false positive the overlay exists to clear. The published map therefore states, per release, how many rows it carries and when the most recent of them was fetched, and the verification step below requires every declared release to meet the floor and to be fresher than the allowance. The shipped floor of one row is the conservative "this release is present and populated" expectation; raise it to the row count actually observed on the host once it is known. The freshness allowance catches the other silent direction: a release the nightly job stops ingesting keeps its last-known-good rows, so only the age of those rows shows that they stopped being refreshed. The deployment-line gate checks that the contract declares a floor and an allowance for every required distro-tracker overlay, and that the runbook and the nightly job require exactly the releases and the floor the contract declares.
 
 `overlay_ubuntu_min_package_rows` and `overlay_debian_min_package_rows` are the row floors the served map must meet for every source package of every release of that overlay's declared scope. The per-release floor above is a per-release question, and a per-release answer hides a per-package failure: the nightly job ingests each distro-tracker overlay per release and per source package, and the per-(release, package) refresh deletes the rows it is about to replace, so a source package whose tracker feed returned nothing ends up with no rows at all while the release as a whole still holds the other packages' rows and the per-release floor still passes — the missing package's fix-status rows are gone, and a patched package of that source on that release is reported as unpatched, which is exactly the false positive the overlay exists to clear. The published map already states, per release, which source packages contributed rows and how many, so the verification step below requires every (release, package) pair the contract's ingest scope declares to meet the per-package floor. The shipped floor of one row is the conservative "this package of this release is present and populated" expectation; raise it to the count observed on the host once it is known. The deployment-line gate checks that the contract declares a per-package floor for every required distro-tracker overlay, and that the runbook and the nightly job require exactly the (release, package) pairs and the floor the contract declares.
+
+`kev_min_rows` and `kev_max_age_days` are the row floor and the freshness
+allowance for the known-exploited set the served map must carry. CISA's
+Known Exploited Vulnerabilities catalog is the map's statement about what
+is being exploited in the wild, and it is what the threat axis reads, so a
+map without it is not merely a less-informed map: it is a map whose
+threat axis is blind. The KEV ingest is a no-wipe full refresh of a static
+file, so a fetch that fails leaves the last-known-good rows in place: the
+served map stays intact, signed, fresh and consistent with its own
+manifest, every other check on it still passes, and the only thing that
+shows the known-exploited set stopped being refreshed is the age of its
+rows. The published map therefore states how many known-exploited entries
+it carries and when the newest of them was fetched, and the verification
+step below requires that count to meet the floor and that newest row to be
+within the allowance. The shipped floor of one thousand rows is the
+conservative "the known-exploited set is present and populated"
+expectation for a catalog of this size; raise it to the count observed on
+the host once it is known. The allowance of three days is the daily
+refresh plus a margin for a missed run. The deployment-line gate checks
+that the contract declares both values, and that the runbook and the
+nightly job require exactly the floor and the allowance the contract
+declares.
 
 The environment table below states a default for every knob the daily job
 reads. Those defaults live in the job itself, as the values it falls back
@@ -335,7 +359,9 @@ posture spine verify --from /var/lib/posture --max-age-days 2 --require-overlay 
   --require-overlay-package ubuntu_fixes:focal:linux-nvidia:1 \
   --require-overlay-package debian_fixes:trixie:linux:1 \
   --require-overlay-package debian_fixes:bookworm:linux:1 \
-  --require-overlay-max-age-days 2
+  --require-overlay-max-age-days 2 \
+  --require-kev 1000 \
+  --require-kev-max-age-days 3
 sudo ls -l /var/lib/posture/spine/manifest.json
 sudo ls -l /var/lib/posture/spine/defects
 ```
@@ -387,6 +413,19 @@ check after every publish and reports the same failure as a degraded run.
 
 `--require-overlay-package <table>:<release>:<package>:<rows>` are the contract's per-package expectations: every source package of every release of the contract's overlay scope must carry at least the stated number of rows in the served map. The map's manifest already states, per release, which source packages contributed rows and how many, so this check reads the map's own per-package counts. A failure here is a map that is quietly narrow in the narrowest direction: a source package whose tracker feed returned nothing has no rows while its release still looks populated and passes the per-release floor, so the missing package's fix-status rows are gone and a patched package of that source on that release is reported as unpatched. When this check fails, read the last run's journal: the nightly job makes the same check after every publish and reports the same failure as a degraded run.
 
+`--require-kev 1000` and `--require-kev-max-age-days 3` are the contract's
+expectations for the known-exploited set. The check reads the map's own
+manifest, which states how many known-exploited entries the map carries
+and when the newest of them was fetched. A failure here is a map whose
+threat axis is blind or stale: the CISA KEV ingest is a no-wipe refresh,
+so a fetch that failed leaves the last-known-good rows in place, and the
+map keeps serving them as if they were current. The row floor catches a
+map that carries too few known-exploited entries, and the freshness
+allowance catches a set that is present but has stopped being refreshed.
+When this check fails, read the last run's journal: the nightly job makes
+the same check after every publish and reports the same failure as a
+degraded run.
+
 A client that pulls the map verifies the manifest's shard digests before it
 imports anything, so a half-written map is refused rather than believed.
 
@@ -419,7 +458,9 @@ posture spine verify --from /var/lib/posture --verify-sig --signature-key /etc/p
   --require-overlay-package ubuntu_fixes:focal:linux-nvidia:1 \
   --require-overlay-package debian_fixes:trixie:linux:1 \
   --require-overlay-package debian_fixes:bookworm:linux:1 \
-  --require-overlay-max-age-days 2
+  --require-overlay-max-age-days 2 \
+  --require-kev 1000 \
+  --require-kev-max-age-days 3
 ```
 
 ## Step 8 — check the tree before you deploy it
@@ -591,3 +632,4 @@ deployment line, and makes these kinds of drift loud:
 18. **Per-release overlay coverage of the served map** — the host contract declares a row floor for every distro-tracker overlay it requires (`overlay_ubuntu_min_rows`, `overlay_debian_min_rows`) and a freshness allowance for the overlay rows (`overlay_max_age_days`), and the gate checks that every `posture spine verify` command the runbook shows, and the check the nightly job runs after its publish, requires exactly the releases the contract's overlay scope declares, at the floor the contract declares, with the freshness allowance the contract declares. The overlay coverage check (item 16) is a per-table question, and a per-table answer hides a per-release failure: the per-(release, package) refresh deletes the rows it is about to replace, so a release whose tracker feed returned nothing ends up with no rows at all while the table as a whole still holds the other releases' rows, and the presence check still passes. The published map therefore states, per release, how many rows it carries and when the most recent of them was fetched, so the check can require the declared releases to be present, populated and fresh. A contract with no floor or no allowance for a required overlay, a runbook that requires the tables but not the releases inside them, and a nightly job that never checks the per-release coverage are all drift at check time, because the operator's question — does the map this host serves still say which packages are patched, on every release it claims to cover? — would otherwise have no answer.
 
 19. **Per-package overlay coverage of the served map** — the host contract declares a row floor for every source package of every release of the distro-tracker overlays it requires (`overlay_ubuntu_min_package_rows`, `overlay_debian_min_package_rows`), and the gate checks that every `posture spine verify` command the runbook shows, and the check the nightly job runs after its publish, requires exactly the (release, package) pairs the contract's overlay scope declares, at the per-package floor the contract declares. The per-release coverage check (item 18) is a per-release question, and a per-release answer hides a per-package failure: the nightly job ingests each distro-tracker overlay per release and per source package, and the per-(release, package) refresh deletes the rows it is about to replace, so a source package whose tracker feed returned nothing ends up with no rows at all while the release as a whole still holds the other packages' rows and the per-release floor still passes. The published map already states, per release, which source packages contributed rows and how many, so the check can require the declared (release, package) pairs to be present and populated. A contract with no per-package floor for a required overlay, a runbook that requires the releases but not the packages inside them, and a nightly job that never checks the per-package coverage are all drift at check time, because the operator's question — does the map this host serves still carry, for every source package it claims to cover, the fix-status rows that clear NVD's unknown-fix false positives? — would otherwise have no answer.
+20. **Known-exploited coverage of the served map** — the host contract declares a row floor and a freshness allowance for the known-exploited set the served map must carry (`kev_min_rows`, `kev_max_age_days`), and the gate checks that every `posture spine verify` command the runbook shows, and the check the nightly job runs after its publish, requires exactly the floor and the allowance the contract declares. The overlay coverage checks above (items 16 to 19) bind the vendor fix-status overlays; none of them binds the known-exploited set, which is what the map says about what is being exploited in the wild and what the threat axis reads. The KEV ingest is a no-wipe full refresh of a static file, so a fetch that fails leaves the last-known-good rows in place: the served map stays intact, signed, fresh and consistent with its own manifest, every other check on it still passes, and the only thing that shows the known-exploited set stopped being refreshed is the age of its rows. The published map therefore states how many known-exploited entries it carries and when the newest of them was fetched, so the check can require the set to be present and fresh. A contract with no floor or no allowance, a runbook that checks the fix-status overlays but not the known-exploited set, and a nightly job that never checks it are all drift at check time, because the operator's question — does the map this host serves still say what is being exploited right now? — would otherwise have no answer.

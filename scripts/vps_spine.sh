@@ -188,6 +188,16 @@ posture spine publish --db "$DB_PATH" --out "$EXPORT_DIR" ${SIGN_KEY:+--sign-key
 #     empty while the release still looks populated and passes the
 #     per-release floor, so the missing package's fix-status rows are
 #     gone and a patched package of that source is reported as unpatched.
+#     The known-exploited set is checked in the same command: CISA's Known
+#     Exploited Vulnerabilities catalog is the map's statement about what
+#     is being exploited in the wild, and it is what the threat axis
+#     reads. The KEV ingest is a no-wipe full refresh of a static file, so
+#     a fetch that fails leaves the last-known-good rows in place: the
+#     served map stays intact, signed and fresh, every other check on it
+#     still passes, and only the age of the known-exploited rows shows
+#     that the set stopped being refreshed. The row floor catches a map
+#     that carries too few known-exploited entries; the freshness
+#     allowance catches a set that is present but no longer refreshed.
 posture spine verify --from "$EXPORT_DIR" \
   --require-overlay ubuntu_fixes --require-overlay debian_fixes \
   --require-overlay-release ubuntu_fixes:resolute:1 \
@@ -207,7 +217,9 @@ posture spine verify --from "$EXPORT_DIR" \
   --require-overlay-package debian_fixes:trixie:linux:1 \
   --require-overlay-package debian_fixes:bookworm:linux:1 \
   --require-overlay-max-age-days 2 \
-  || degrade "the published map does not carry the vendor fix-status overlay rows"
+  --require-kev 1000 \
+  --require-kev-max-age-days 3 \
+  || degrade "the published map does not carry the coverage the host contract requires (the vendor fix-status overlay rows, or a fresh known-exploited set)"
 
 # 8) Periodic git clone maintenance. The advisory-database and cvelistV5
 #    clones accumulate pack objects from every fetch; a weekly gc + remote

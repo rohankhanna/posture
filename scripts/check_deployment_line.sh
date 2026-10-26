@@ -963,6 +963,8 @@ _CONTRACT_KEYS = (
     "overlay_max_age_days",
     "overlay_ubuntu_min_package_rows",
     "overlay_debian_min_package_rows",
+    "kev_min_rows",
+    "kev_max_age_days",
 )
 # The contract keys that name a path on the host.
 _CONTRACT_PATH_KEYS = (
@@ -2690,6 +2692,237 @@ def _validate_overlay_package_coverage_job(
 
 
 # ---------------------------------------------------------------------------
+# Known-exploited coverage of the served map (4s)
+# ---------------------------------------------------------------------------
+
+
+def _contract_kev_min_rows(contract: dict[str, str]) -> int | None:
+    """The row floor the contract declares for the known-exploited set."""
+    raw = contract.get("kev_min_rows", "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None  # reported by the contract-level check
+
+
+def _contract_kev_max_age_days(contract: dict[str, str]) -> float | None:
+    """The freshness allowance the contract declares for the known-exploited
+    rows."""
+    raw = contract.get("kev_max_age_days", "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None  # reported by the contract-level check
+
+
+def _stated_kev_requirement(invocation: str) -> int | None:
+    """The known-exploited row floor an invocation states."""
+    values = _option_values(invocation, "--require-kev")
+    if not values:
+        return None
+    try:
+        return int(values[0])
+    except ValueError:
+        return None
+
+
+def _stated_kev_max_age_days(invocation: str) -> float | None:
+    """The known-exploited freshness allowance an invocation states."""
+    values = _option_values(invocation, "--require-kev-max-age-days")
+    if not values:
+        return None
+    try:
+        return float(values[0])
+    except ValueError:
+        return None
+
+
+def _validate_kev_coverage_contract(
+        path: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the contract's declared known-exploited coverage (4s).
+
+    The contract declares which overlay tables the map must carry (4o),
+    the distro-tracker overlays' scope (4p), and their per-release (4q) and
+    per-package (4r) row floors. None of them binds the known-exploited
+    set: CISA's KEV catalog is what the map says about what is being
+    exploited in the wild, and its ingest is a no-wipe full refresh, so a
+    fetch that fails leaves the last-known-good rows in place. The served
+    map then stays intact, signed, fresh and consistent with its own
+    manifest, every other check still passes, and only the age of the
+    known-exploited rows shows that the set stopped being refreshed. The
+    contract therefore declares a row floor and a freshness allowance for
+    the known-exploited set.
+    """
+    if contract is None:
+        return
+    raw_rows = contract.get("kev_min_rows", "").strip()
+    if not raw_rows:
+        failures.append(
+            f"{path}: the host contract declares no kev_min_rows, so the "
+            f"gate cannot require the served map to carry the known-exploited "
+            f"set at all (the CISA KEV ingest is a no-wipe refresh, so a "
+            f"failed fetch leaves the last-known-good rows serving and the "
+            f"map keeps passing every other check while the threat axis "
+            f"reads a set that stopped being refreshed)")
+    else:
+        try:
+            value = int(raw_rows)
+        except ValueError:
+            failures.append(
+                f"{path}: the host contract's kev_min_rows is {raw_rows!r}, "
+                f"which is not a row count")
+        else:
+            if value < 1:
+                failures.append(
+                    f"{path}: the host contract's kev_min_rows is {value}, "
+                    f"which is not a positive row count")
+    raw_age = contract.get("kev_max_age_days", "").strip()
+    if not raw_age:
+        failures.append(
+            f"{path}: the host contract declares no kev_max_age_days, so the "
+            f"gate cannot require the known-exploited rows to be fresh (the "
+            f"ingest is a no-wipe refresh, so a known-exploited set that "
+            f"stopped being refreshed still satisfies the row floor)")
+    else:
+        try:
+            age = float(raw_age)
+        except ValueError:
+            failures.append(
+                f"{path}: the host contract's kev_max_age_days is "
+                f"{raw_age!r}, which is not a number of days")
+        else:
+            if age <= 0:
+                failures.append(
+                    f"{path}: the host contract's kev_max_age_days is "
+                    f"{age:g}, which is not a positive number of days")
+
+
+def _validate_kev_coverage_verification(
+        path: str,
+        text: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the runbook's known-exploited coverage (dimension 4s).
+
+    The operator's confirmation of the served map is the check the runbook
+    shows. A runbook that confirms the vendor fix-status overlays but not
+    the known-exploited set confirms a map whose threat axis may be blind:
+    the rows are still there, but they are the rows of an older catalog
+    and nothing says so.
+    """
+    if contract is None:
+        return
+    floor = _contract_kev_min_rows(contract)
+    max_age = _contract_kev_max_age_days(contract)
+    if floor is None and max_age is None:
+        return
+    commands = _runbook_spine_verify_commands(text)
+    if not commands:
+        # The missing verification is reported by dimension 4l.
+        return
+    for invocation in commands:
+        stated_rows = _stated_kev_requirement(invocation)
+        if floor is not None and stated_rows is None:
+            failures.append(
+                f"{path}: the runbook verifies the served map but does not "
+                f"require the known-exploited rows, which the host "
+                f"contract's kev_min_rows floor declares (the command must "
+                f"carry `--require-kev {floor}`; the known-exploited set is "
+                f"what the threat axis reads, and the no-wipe ingest leaves "
+                f"the last-known-good rows serving when a fetch fails)")
+        elif floor is not None and stated_rows != floor:
+            failures.append(
+                f"{path}: the runbook requires {stated_rows} known-exploited "
+                f"row(s) where the host contract's kev_min_rows floor is "
+                f"{floor}")
+        if max_age is not None:
+            stated_age = _stated_kev_max_age_days(invocation)
+            if stated_age is None:
+                failures.append(
+                    f"{path}: the runbook verifies the served map but does "
+                    f"not require the known-exploited rows to be fresh "
+                    f"within the host contract's kev_max_age_days "
+                    f"({max_age:g} day(s)); the command must carry "
+                    f"`--require-kev-max-age-days {max_age:g}` (a "
+                    f"known-exploited set that stopped being refreshed still "
+                    f"satisfies the row floor)")
+            elif stated_age != max_age:
+                failures.append(
+                    f"{path}: the runbook allows {stated_age:g} day(s) for "
+                    f"the known-exploited rows where the host contract's "
+                    f"kev_max_age_days is {max_age:g}")
+
+
+def _validate_kev_coverage_job(
+        path: str,
+        script_text: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the nightly job's known-exploited coverage (dimension 4s).
+
+    The nightly job is the thing that builds the map the operator checks.
+    A job that publishes a map whose known-exploited set has stopped being
+    refreshed, and never looks, is a quiet success every night: the map
+    stays intact, signed and fresh, and only the age of those rows shows
+    it. The job must make the same check the runbook shows, right after it
+    publishes.
+    """
+    if contract is None or not script_text:
+        return
+    floor = _contract_kev_min_rows(contract)
+    max_age = _contract_kev_max_age_days(contract)
+    if floor is None and max_age is None:
+        return
+    commands = [invocation for words, invocation in _invocations(script_text)
+                if words[:2] == ["spine", "verify"]]
+    if not commands:
+        failures.append(
+            f"{path}: the daily job never checks the served map's "
+            f"known-exploited coverage, so a build that publishes a map "
+            f"whose known-exploited set has stopped being refreshed is a "
+            f"quiet success instead of a degraded run")
+        return
+    for invocation in commands:
+        stated_rows = _stated_kev_requirement(invocation)
+        if floor is not None and stated_rows is None:
+            failures.append(
+                f"{path}: the daily job checks the served map but does not "
+                f"require the known-exploited rows, which the host "
+                f"contract's kev_min_rows floor declares (the check must "
+                f"carry `--require-kev {floor}`; the known-exploited set is "
+                f"what the threat axis reads, and the no-wipe ingest leaves "
+                f"the last-known-good rows serving when a fetch fails)")
+        elif floor is not None and stated_rows != floor:
+            failures.append(
+                f"{path}: the daily job requires {stated_rows} "
+                f"known-exploited row(s) where the host contract's "
+                f"kev_min_rows floor is {floor}")
+        if max_age is not None:
+            stated_age = _stated_kev_max_age_days(invocation)
+            if stated_age is None:
+                failures.append(
+                    f"{path}: the daily job checks the served map but does "
+                    f"not require the known-exploited rows to be fresh "
+                    f"within the host contract's kev_max_age_days "
+                    f"({max_age:g} day(s)); the check must carry "
+                    f"`--require-kev-max-age-days {max_age:g}`")
+            elif stated_age != max_age:
+                failures.append(
+                    f"{path}: the daily job allows {stated_age:g} day(s) for "
+                    f"the known-exploited rows where the host contract's "
+                    f"kev_max_age_days is {max_age:g}")
+
+
+# ---------------------------------------------------------------------------
 # Host command contract (4g)
 # ---------------------------------------------------------------------------
 
@@ -3552,6 +3785,10 @@ def main(paths: list[str]) -> int:
                 path, runbook_contracts.get(path), failures)
             _validate_overlay_package_coverage_verification(
                 path, text, runbook_contracts.get(path), failures)
+            _validate_kev_coverage_contract(
+                path, runbook_contracts.get(path), failures)
+            _validate_kev_coverage_verification(
+                path, text, runbook_contracts.get(path), failures)
             checked += _validate_runbook_host_commands(
                 path, text, runbook_contracts.get(path), failures)
             if daily_script_text:
@@ -3587,6 +3824,15 @@ def main(paths: list[str]) -> int:
     #     narrow overlay that still passes the per-release floor.
     if daily_script_text and contract is not None:
         _validate_overlay_package_coverage_job(
+            "scripts/vps_spine.sh", daily_script_text, contract, failures)
+
+    # 4s (job side). The nightly job's known-exploited coverage must be
+    #     the one the contract declares, so a known-exploited set that
+    #     stopped being refreshed (the ingest is a no-wipe refresh, so a
+    #     failed fetch leaves the last-known-good rows serving) is loud
+    #     at check time instead of a quiet nightly success.
+    if daily_script_text and contract is not None:
+        _validate_kev_coverage_job(
             "scripts/vps_spine.sh", daily_script_text, contract, failures)
 
     for failure in failures:
@@ -3647,6 +3893,9 @@ def main(paths: list[str]) -> int:
         ok_parts.append("the served map's per-package overlay coverage "
                         "is checked against the contract's per-package "
                         "row floor")
+        ok_parts.append("the served map's known-exploited coverage is "
+                        "checked against the contract's row floor and "
+                        "freshness allowance")
     if contract is not None:
         ok_parts.append("the growth-guard thresholds match the contract")
     if runbook_paths and daily_script_text:

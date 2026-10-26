@@ -821,6 +821,28 @@ def _cmd_spine(args) -> int:
                 for table, releases in package_coverage.items()
                 for release, packages in releases.items()
                 for package, rows in packages.items()) + ")"
+        # The known-exploited set is the map's statement about what is
+        # being exploited in the wild, and it is what the threat axis
+        # reads. The CISA KEV ingest is a no-wipe full refresh, so a fetch
+        # that fails leaves the last-known-good rows in place: the map
+        # stays intact, signed, fresh and consistent with its own
+        # manifest, every other check still passes, and only the age of
+        # the known-exploited rows shows that the set stopped being
+        # refreshed. The requirement says how many rows the host needs
+        # and how old they may be.
+        kev_note = ""
+        kev_min_rows = getattr(args, "require_kev", None)
+        kev_max_age_days = getattr(args, "require_kev_max_age_days", None)
+        if kev_min_rows is not None or kev_max_age_days is not None:
+            try:
+                kev_coverage = _export.verify_kev_coverage(
+                    manifest, min_rows=kev_min_rows,
+                    max_age_days=kev_max_age_days)
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            kev_note = (f", known-exploited coverage OK "
+                        f"({kev_coverage['rows']} row(s))")
         ok_line = f"spine verify: OK — {len(manifest['files'])} shard(s), "
         ok_line += f"{manifest['counts']}"
         if signature_note:
@@ -829,6 +851,7 @@ def _cmd_spine(args) -> int:
         ok_line += overlay_note
         ok_line += release_note
         ok_line += package_note
+        ok_line += kev_note
         print(ok_line)
         return 0
     # publish is the deployment line's serving path: export into a staging
@@ -1468,6 +1491,21 @@ def build_parser() -> argparse.ArgumentParser:
                          "nothing leaves that release looking populated "
                          "while its fix-status rows are gone, which the "
                          "per-release floor cannot see)")
+    sp.add_argument("--require-kev", dest="require_kev", type=int,
+                    default=None, metavar="MIN_ROWS",
+                    help="verify: fail when the map carries fewer "
+                         "known-exploited (kev) rows than this (the CISA "
+                         "Known Exploited Vulnerabilities set is what the "
+                         "threat axis reads, and the ingest is a no-wipe "
+                         "refresh, so a failed fetch leaves the "
+                         "last-known-good rows serving)")
+    sp.add_argument("--require-kev-max-age-days",
+                    dest="require_kev_max_age_days", type=float,
+                    default=None, metavar="DAYS",
+                    help="verify: fail when the map's newest known-exploited "
+                         "row was fetched more than this many days ago (a "
+                         "known-exploited set that stopped being refreshed "
+                         "still satisfies the row floor)")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_spine)
 
     # -- ingestion: CVE stream + incremental refresh + catalog ---------------
