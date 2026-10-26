@@ -49,6 +49,7 @@ units will point at paths that do not exist.
 | `/var/lib/posture/posture.db` | the persistent catalog database |
 | `/var/lib/posture/manifest.json` | the published map's manifest: shard digests and row counts |
 | `/etc/posture/posture.env` | the environment overrides for the system units |
+| `/etc/posture/signing_key.pem` | the manifest signing key, when the manifest is signed (readable by the posture group) |
 | `~/.config/posture/env` | the environment overrides for the two user units |
 
 ### The host contract
@@ -75,6 +76,8 @@ user_env_file: ~/.config/posture/env
 service_account: posture
 disk_warn_gb: 5
 disk_crit_gb: 2
+sign_key: /etc/posture/signing_key.pem
+served_dir_owner: posture
 ```
 
 The last two keys are the free-space thresholds the daily job applies to the
@@ -85,6 +88,20 @@ these two values, so a threshold that changes in one place and not the other
 is reported at check time rather than discovered on a host that is already
 out of disk. The operator can still override them per host with
 `POSTURE_DISK_WARN_GB` and `POSTURE_DISK_CRIT_GB` in the environment file.
+
+`sign_key` is the path the operator points `POSTURE_SIGN_KEY` at when the
+manifest is signed. The manifest may be left unsigned (the daily job
+simply omits `--sign-key` when `POSTURE_SIGN_KEY` is unset), but the
+contract still names the canonical location so a host that does sign
+keeps the key inside the layout this runbook builds, not at an arbitrary
+path. The deployment-line gate checks that a runbook command references
+this path, so a contract that moves the key while the runbook still
+builds the old location is loud at check time. `served_dir_owner` is the
+account that owns the served directory (`export_dir`) the daily job
+publishes the map into; the gate checks that the runbook command that
+creates that directory sets its owner to this value, so a contract that
+changes the owner while the runbook still creates the directory as the
+old account describes a host the daily job cannot publish into.
 
 ## Step 1 — the service account and the directories
 
@@ -146,6 +163,17 @@ sudoedit /etc/posture/posture.env
 install -m 0600 /dev/null ~/.config/posture/env
 ```
 
+If you sign the manifest, place the private key at the contract's
+`sign_key` path and point `POSTURE_SIGN_KEY` at it in the environment
+file. The key is root-owned and readable by the posture group, so the
+daily job (which runs as `posture`) can read it to sign without the key
+ever being owned by the service account:
+
+```bash
+sudo install -m 0640 -o root -g posture /dev/null /etc/posture/signing_key.pem
+sudoedit /etc/posture/signing_key.pem
+```
+
 The variables the daily job reads:
 
 | Variable | Meaning | Default |
@@ -163,7 +191,7 @@ The variables the daily job reads:
 | `POSTURE_DISK_WARN_GB` | free-space warning threshold | `5` |
 | `POSTURE_DISK_CRIT_GB` | free-space threshold that refuses to build | `2` |
 | `POSTURE_GC_INTERVAL_DAYS` | days between the source-clone maintenance pass | `7` |
-| `POSTURE_SIGN_KEY` | the manifest signing key; when unset the manifest is unsigned | unset |
+| `POSTURE_SIGN_KEY` | the manifest signing key; set to the contract's `sign_key` path (`/etc/posture/signing_key.pem`) when the manifest is signed; when unset the manifest is unsigned | unset |
 | `NVD_API_KEY` | the NVD request credential; it travels in a request header, never in a query string | unset |
 
 ## Step 5 — enable the timers
@@ -297,3 +325,10 @@ deployment line, and makes five kinds of drift loud:
    that raises the warning threshold while the job still warns at the old
    value describes a host that warns later than the operator believes it
    does.
+10. **Manifest signing key and served-directory ownership** — the host
+    contract declares where the manifest signing key lives and who owns
+    the served directory. A runbook command must reference the contract's
+    signing key path, and the command that creates the served directory
+    must set its owner to the contract's served directory owner. A
+    contract that moves the key or changes the owner while the runbook
+    still builds the old host is drift rather than a host nobody builds.

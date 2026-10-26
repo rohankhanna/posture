@@ -748,6 +748,8 @@ user_env_file: ~/.config/posture/env
 service_account: posture
 disk_warn_gb: 5
 disk_crit_gb: 2
+sign_key: /etc/posture/signing_key.pem
+served_dir_owner: posture
 ```
 """
 
@@ -756,6 +758,7 @@ _HOST_LAYOUT_TABLE = """"| Path | Holds |
 | `/opt/posture` | this repository\'s tree |
 | `/var/lib/posture` | the catalog database and the published map |
 | `/etc/posture/posture.env` | the environment overrides for the system units |
+| `/etc/posture/signing_key.pem` | the manifest signing key, when the manifest is signed |
 | `~/.config/posture/env` | the environment overrides for the two user units |
 """
 
@@ -817,6 +820,11 @@ def _baseline_runbook(extra: str = "") -> str:
         lines.append("")
     lines.append(_HOST_CONTRACT_BLOCK)
     lines.append(_HOST_LAYOUT_TABLE)
+    lines.append("```bash")
+    lines.append("sudo install -m 0640 -o root -g posture /dev/null "
+                 "/etc/posture/signing_key.pem")
+    lines.append("```")
+    lines.append("")
     lines.append("```bash")
     lines.extend(_unit_install_commands())
     lines.append("```")
@@ -966,6 +974,8 @@ HOST_CONTRACT_KEYS = (
     "service_account",
     "disk_warn_gb",
     "disk_crit_gb",
+    "sign_key",
+    "served_dir_owner",
 )
 
 
@@ -1427,3 +1437,153 @@ def test_gate_reports_the_growth_guard_dimension_in_its_summary():
     result = _run_gate_on([])
     assert result.returncode == 0, result.stdout + result.stderr
     assert "the growth-guard thresholds match the contract" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# The manifest signing key and the served-directory ownership (dimension 4i)
+# ---------------------------------------------------------------------------
+
+def test_the_host_contract_declares_the_sign_key_and_served_dir_owner():
+    # The contract is the runbook's machine-readable statement of the host;
+    # the manifest signing key's location and the served directory's owner
+    # are host expectations, so they belong in it rather than only in prose.
+    for key in ("sign_key", "served_dir_owner"):
+        assert _contract_value(key), (
+            f"the host contract declares no {key}")
+
+
+def _normalize_host_path_helper(value: str) -> str:
+    # The gate's own normalizer is embedded in the shell script; mirror the
+    # host-path normalization the gate applies so the test compares like
+    # with like.
+    v = value.strip().strip('"').strip("'")
+    if v.startswith("%h"):
+        v = "~" + v[len("%h"):]
+    if len(v) > 1:
+        v = v.rstrip("/")
+    return v or "/"
+
+
+def _layout_table_paths(text: str) -> list[str]:
+    # Mirror the gate's install-layout-table path extraction so the test
+    # compares the contract's sign_key against the same set the gate does.
+    paths: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if not cells:
+            continue
+        first = cells[0].strip("`").strip()
+        if first.startswith("/") or first.startswith("~"):
+            paths.append(_normalize_host_path_helper(first))
+    return paths
+
+
+def test_the_sign_key_path_is_in_the_install_layout_table():
+    # The signing key must live inside the layout the runbook builds, not at
+    # an arbitrary path the operator has no reason to expect.
+    sign_key = _normalize_host_path_helper(_contract_value("sign_key"))
+    layout = _layout_table_paths(RUNBOOK.read_text())
+    assert sign_key in layout, (
+        f"the host contract's sign_key ({sign_key}) is not in the install "
+        f"layout table")
+
+
+def test_gate_reports_the_sign_key_and_served_dir_owner_dimension_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ("the manifest signing key and the served directory owner match "
+            "the contract") in result.stdout
+
+
+def test_runbook_that_never_references_the_sign_key_path_is_rejected(
+        tmp_path):
+    # A contract that declares where the signing key lives but a runbook
+    # that never names that path does not build the key location the
+    # contract describes.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook()
+    # Strip the baseline's signing-key install command so no command
+    # references the contract's sign_key path.
+    body = body.replace(
+        "sudo install -m 0640 -o root -g posture /dev/null "
+        "/etc/posture/signing_key.pem\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "sign_key" in result.stdout
+    assert "signing key" in result.stdout
+
+
+def test_runbook_referencing_the_sign_key_path_passes(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook())
+    result = _run_gate_on([runbook])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_runbook_that_creates_the_served_directory_with_the_wrong_owner_is_rejected(
+        tmp_path):
+    # The served directory is the export directory the daily job publishes
+    # the map into; a runbook that creates it as another account describes
+    # a host the contract does not declare.
+    runbook = _runbook_with_commands(
+        tmp_path,
+        ["sudo install -d -o root -g posture /var/lib/posture"])
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "served directory" in result.stdout
+    assert "served directory owner" in result.stdout
+
+
+def test_runbook_that_creates_the_served_directory_with_the_contract_owner_passes(
+        tmp_path):
+    runbook = _runbook_with_commands(
+        tmp_path,
+        ["sudo install -d -o posture -g posture /var/lib/posture"])
+    result = _run_gate_on([runbook])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_rejects_a_contract_whose_served_dir_owner_drifted(tmp_path):
+    # A contract that changes the served directory's owner while the
+    # runbook still creates the directory as the old account is drift.
+    runbook = _runbook_with_commands(
+        tmp_path,
+        ["sudo install -d -o posture -g posture /var/lib/posture"])
+    body = runbook.read_text().replace(
+        "served_dir_owner: posture", "served_dir_owner: spine")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "served directory owner" in result.stdout
+
+
+def test_gate_rejects_a_contract_without_the_sign_key_and_served_dir_owner(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(
+        _baseline_runbook()
+        .replace("sign_key: /etc/posture/signing_key.pem\n", "")
+        .replace("served_dir_owner: posture\n", ""))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "sign_key" in result.stdout
+    assert "served_dir_owner" in result.stdout
+
+
+def test_gate_rejects_a_contract_whose_sign_key_is_outside_the_layout(
+        tmp_path):
+    # A signing key the install layout does not cover is a key the operator
+    # has no reason to expect at that path.
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(
+        _baseline_runbook().replace(
+            "sign_key: /etc/posture/signing_key.pem",
+            "sign_key: /srv/posture/signing_key.pem"))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "sign_key" in result.stdout
+    assert "install layout table" in result.stdout

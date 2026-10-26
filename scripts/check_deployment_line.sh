@@ -133,6 +133,19 @@
 #         unit directory its kind belongs in. A contract that changes
 #         while the commands do not describes a host nobody builds.
 #
+#     4i. Manifest signing key and served-directory ownership — the host
+#         contract declares where the manifest signing key lives (the path
+#         the operator points POSTURE_SIGN_KEY at when the manifest is
+#         signed) and who owns the served directory the daily job
+#         publishes the map into. The runbook's operator commands are
+#         bound to both: a command must reference the contract's signing
+#         key path (so the runbook tells the operator where the key lives
+#         and the contract cannot move it silently), and the command that
+#         creates the served directory must set its owner to the
+#         contract's served directory owner (so a contract that changes
+#         the owner while the runbook still creates the directory as the
+#         old account describes a host the daily job cannot publish into).
+#
 # Usage: check_deployment_line.sh [FILE ...]
 #   Default: scripts/vps_spine.sh plus every systemd/*.service and
 #   systemd/*.timer unit.
@@ -847,6 +860,8 @@ _CONTRACT_KEYS = (
     "service_account",
     "disk_warn_gb",
     "disk_crit_gb",
+    "sign_key",
+    "served_dir_owner",
 )
 # The contract keys that name a path on the host.
 _CONTRACT_PATH_KEYS = (
@@ -855,6 +870,7 @@ _CONTRACT_PATH_KEYS = (
     "export_dir",
     "system_env_file",
     "user_env_file",
+    "sign_key",
 )
 def _host_contract(blocks: list[str]) -> dict[str, str] | None:
     """The host contract a runbook declares, or None.
@@ -1215,7 +1231,12 @@ def _validate_runbook_host_commands(
     ships must be installed into the unit directory its kind belongs in,
     and every unit the runbook installs must also be removed by a
     command so a unit added to the tree but never torn down is reported
-    as drift rather than left stale on the host after teardown.
+    as drift rather than left stale on the host after teardown. The
+    manifest signing key and the served directory's ownership are
+    bound too (dimension 4i): a command must reference the contract's
+    signing key path, and the command that creates the served
+    directory must set its owner to the contract's served directory
+    owner.
 
     Returns the number of host commands checked.
     """
@@ -1233,6 +1254,9 @@ def _validate_runbook_host_commands(
     installed: dict[str, str] = {}
     removed: set[str] = set()
     checked = 0
+    sign_key = _normalize_host_path(contract.get("sign_key", ""))
+    served_dir_owner = contract.get("served_dir_owner", "").strip()
+    referenced_sign_key = False
 
     for block in blocks:
         for line in block.splitlines():
@@ -1241,6 +1265,14 @@ def _validate_runbook_host_commands(
                 continue
             checked += 1
             path_tokens = _command_path_tokens(stripped)
+
+            # (4i-a) Track whether any operator command references the
+            #        contract's manifest signing key path. A contract
+            #        that declares where the key lives but a runbook
+            #        that never names that path does not build the key
+            #        location the contract describes.
+            if sign_key and sign_key in path_tokens:
+                referenced_sign_key = True
 
             # (a) Every path a command names must be governed by the
             #     contract or be a standard system path.
@@ -1313,6 +1345,29 @@ def _validate_runbook_host_commands(
                             f"daily job cannot write to a directory it does "
                             f"not own)")
 
+            # (4i-b) The command that creates the served directory (the
+            #        export directory the daily job publishes the map
+            #        into) must set its owner to the contract's served
+            #        directory owner. A contract that changes the owner
+            #        while the runbook still creates the directory as the
+            #        old account describes a host the daily job cannot
+            #        publish into.
+            if (_INSTALL_COMMAND_RE.match(stripped) and path_tokens
+                    and served_dir_owner and export_dir):
+                destination = path_tokens[-1]
+                if destination == export_dir:
+                    owners = [m.group(1).strip("\"'")
+                              for m in _OWNER_RE.finditer(stripped)]
+                    if served_dir_owner not in owners:
+                        failures.append(
+                            f"{path}: the command `{stripped}` creates the "
+                            f"served directory `{destination}` with owner "
+                            f"{owners or 'none'}, which is not the "
+                            f"contract's served directory owner "
+                            f"({served_dir_owner}) (the daily job publishes "
+                            f"the map into this directory, so the contract "
+                            f"and the runbook must agree on who owns it)")
+
             # (d) Every unit this tree ships must be installed by a
             #     runbook command, into the unit directory its kind
             #     belongs in.
@@ -1356,6 +1411,14 @@ def _validate_runbook_host_commands(
                 f"{path}: the runbook installs `{name}` but never removes "
                 f"it with a command (a unit the runbook puts on the host "
                 f"but never tears down leaves stale files after removal)")
+
+    if sign_key and not referenced_sign_key:
+        failures.append(
+            f"{path}: the runbook never references the manifest signing key "
+            f"at the contract's sign_key location ({sign_key}) (the contract "
+            f"declares where the key lives but no operator command names that "
+            f"path, so the runbook does not build the key location the "
+            f"contract describes)")
 
     return checked
 
@@ -1725,6 +1788,8 @@ def main(paths: list[str]) -> int:
     if runbook_paths and contract is not None:
         ok_parts.append("every runbook host command matches the contract")
         ok_parts.append("every installed unit is removed by the runbook")
+        ok_parts.append("the manifest signing key and the served directory "
+                        "owner match the contract")
     if contract is not None:
         ok_parts.append("the growth-guard thresholds match the contract")
     ok_text = ", ".join(ok_parts)
