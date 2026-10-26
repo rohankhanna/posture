@@ -8,6 +8,7 @@ swallow it). These tests pin the gate that makes that drift loud.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -745,6 +746,8 @@ export_dir: /var/lib/posture
 system_env_file: /etc/posture/posture.env
 user_env_file: ~/.config/posture/env
 service_account: posture
+disk_warn_gb: 5
+disk_crit_gb: 2
 ```
 """
 
@@ -961,6 +964,8 @@ HOST_CONTRACT_KEYS = (
     "system_env_file",
     "user_env_file",
     "service_account",
+    "disk_warn_gb",
+    "disk_crit_gb",
 )
 
 
@@ -1319,3 +1324,106 @@ def test_runbook_that_removes_with_sudo_rm_passes(tmp_path):
     runbook.write_text(body)
     result = _run_gate_on([runbook])
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ---------------------------------------------------------------------------
+# The growth-guard thresholds (dimension 4h)
+# ---------------------------------------------------------------------------
+
+def _contract_value(key: str) -> str:
+    """The value the shipped runbook's host contract declares for a key."""
+    for line in RUNBOOK.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f"{key}:"):
+            return stripped.split(":", 1)[1].strip()
+    raise AssertionError(f"the host contract declares no {key}")
+
+
+def _daily_script_default(variable: str) -> int:
+    """The default the daily job uses for a growth-guard variable."""
+    text = DAILY_SCRIPT.read_text()
+    match = re.search(re.escape(variable) + r":-(\d+)", text)
+    assert match is not None, f"the daily job declares no {variable} default"
+    return int(match.group(1))
+
+
+def test_the_host_contract_declares_the_growth_guard_thresholds():
+    # The contract is the runbook's machine-readable statement of the
+    # host; the free-space thresholds the daily job applies belong in it,
+    # or the thresholds live only in the script.
+    for key in ("disk_warn_gb", "disk_crit_gb"):
+        assert _contract_value(key), f"the host contract declares no {key}"
+
+
+def test_the_contract_thresholds_are_the_daily_jobs_own_defaults():
+    # A contract that declares thresholds the job does not use describes a
+    # host that warns (or refuses to build) at a different level of free
+    # space than the operator believes it does.
+    assert int(_contract_value("disk_warn_gb")) == _daily_script_default(
+        "POSTURE_DISK_WARN_GB")
+    assert int(_contract_value("disk_crit_gb")) == _daily_script_default(
+        "POSTURE_DISK_CRIT_GB")
+
+
+def test_the_critical_threshold_is_below_the_warning_threshold():
+    assert int(_contract_value("disk_crit_gb")) < int(
+        _contract_value("disk_warn_gb"))
+
+
+def test_gate_rejects_a_contract_whose_threshold_drifted_from_the_job(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook().replace(
+        "disk_warn_gb: 5", "disk_warn_gb: 9"))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "disk_warn_gb" in result.stdout
+    assert "POSTURE_DISK_WARN_GB" in result.stdout
+
+
+def test_gate_rejects_a_daily_job_whose_threshold_default_drifted(tmp_path):
+    script = tmp_path / "vps_spine.sh"
+    script.write_text(
+        'DISK_WARN_GB="${POSTURE_DISK_WARN_GB:-9}"\n'
+        'DISK_CRIT_GB="${POSTURE_DISK_CRIT_GB:-2}"\n')
+    result = _run_gate_on([script])
+    assert result.returncode == 1
+    assert "POSTURE_DISK_WARN_GB" in result.stdout
+    assert "disk_warn_gb" in result.stdout
+
+
+def test_gate_rejects_a_contract_whose_critical_threshold_is_not_lower(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook().replace(
+        "disk_crit_gb: 2", "disk_crit_gb: 7"))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "disk_crit_gb" in result.stdout
+
+
+def test_gate_rejects_a_contract_threshold_that_is_not_a_whole_number(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook().replace(
+        "disk_warn_gb: 5", "disk_warn_gb: 5.5"))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "disk_warn_gb" in result.stdout
+
+
+def test_gate_rejects_a_contract_without_the_growth_guard_thresholds(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook()
+                        .replace("disk_warn_gb: 5\n", "")
+                        .replace("disk_crit_gb: 2\n", ""))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "disk_warn_gb" in result.stdout
+
+
+def test_gate_reports_the_growth_guard_dimension_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "the growth-guard thresholds match the contract" in result.stdout

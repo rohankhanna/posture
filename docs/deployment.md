@@ -73,7 +73,18 @@ export_dir: /var/lib/posture
 system_env_file: /etc/posture/posture.env
 user_env_file: ~/.config/posture/env
 service_account: posture
+disk_warn_gb: 5
+disk_crit_gb: 2
 ```
+
+The last two keys are the free-space thresholds the daily job applies to the
+state filesystem: below `disk_warn_gb` the job warns that the growth guard is
+the only thing keeping the host alive, and below `disk_crit_gb` it refuses to
+start a build. The deployment-line gate checks the job's own defaults against
+these two values, so a threshold that changes in one place and not the other
+is reported at check time rather than discovered on a host that is already
+out of disk. The operator can still override them per host with
+`POSTURE_DISK_WARN_GB` and `POSTURE_DISK_CRIT_GB` in the environment file.
 
 ## Step 1 — the service account and the directories
 
@@ -280,3 +291,9 @@ deployment line, and makes five kinds of drift loud:
    a unit added to the tree but never torn down is reported as drift
    rather than left stale on the host after teardown. A contract that
    changes while the commands do not describes a host nobody builds.
+9. **Growth-guard thresholds** — the free-space thresholds the host
+   contract declares must be the ones the daily job's own defaults use, and
+   the critical threshold must be below the warning threshold. A contract
+   that raises the warning threshold while the job still warns at the old
+   value describes a host that warns later than the operator believes it
+   does.

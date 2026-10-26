@@ -111,6 +111,16 @@
 #         covered by the contract. The two describe the same host, so
 #         neither may drift away from the other.
 #
+#     4h. Growth-guard thresholds — the daily job refuses to start a
+#          build when the state filesystem has less free space than the
+#          contract's critical threshold, and warns below the warning
+#          threshold. The contract declares both, and the gate checks the
+#          job's own defaults against them: a contract that raises a
+#          threshold while the job keeps the old one describes a host that
+#          warns later (or refuses to build later) than the operator
+#          believes it does, and that difference is only visible on a host
+#          that is already out of disk.
+#
 #     4g. Host command contract — the runbook's own operator commands are
 #         bound to the host contract, not only the units. Every path a
 #         command names must be governed by the contract (or be a
@@ -835,6 +845,8 @@ _CONTRACT_KEYS = (
     "system_env_file",
     "user_env_file",
     "service_account",
+    "disk_warn_gb",
+    "disk_crit_gb",
 )
 # The contract keys that name a path on the host.
 _CONTRACT_PATH_KEYS = (
@@ -1349,6 +1361,93 @@ def _validate_runbook_host_commands(
 
 
 # ---------------------------------------------------------------------------
+# Growth-guard thresholds (4h)
+# ---------------------------------------------------------------------------
+
+# The contract key that declares each free-space threshold, and the
+# environment variable the daily job reads that threshold from.
+_GROWTH_GUARD_VARS = (
+    ("disk_warn_gb", "POSTURE_DISK_WARN_GB"),
+    ("disk_crit_gb", "POSTURE_DISK_CRIT_GB"),
+)
+
+
+def _script_growth_guard_default(text: str, variable: str) -> int | None:
+    """The default a script uses for a growth-guard variable, or None.
+
+    The daily job reads its thresholds as
+    ${POSTURE_DISK_WARN_GB:-5}: the value in the environment file
+    wins, and the number after the :- is the default the job falls
+    back to. That default is what the contract must describe.
+    """
+    match = re.search(re.escape(variable) + r":-(\d+)", text)
+    return int(match.group(1)) if match else None
+
+
+def _validate_growth_guard(
+    contract: dict[str, str],
+    source: str,
+    script_paths: list[str],
+    failures: list[str],
+) -> int:
+    """The daily job's free-space thresholds against the host contract.
+
+    The contract declares the warning and the critical free-space
+    thresholds; the daily job carries its own defaults for the same two
+    numbers. Both must agree, and the critical threshold must be below the
+    warning threshold, or the job refuses to build at a level of free space
+    the operator believes is still acceptable.
+
+    Returns the number of thresholds checked.
+    """
+    values: dict[str, int] = {}
+    for key, variable in _GROWTH_GUARD_VARS:
+        raw = contract.get(key, "").strip()
+        if not raw:
+            continue
+        try:
+            values[key] = int(raw)
+        except ValueError:
+            failures.append(
+                f"{source}: the host contract's {key} ({raw}) is not a whole "
+                f"number of gigabytes (the daily job compares free space in "
+                f"whole gigabytes, so a fractional threshold cannot be "
+                f"checked against it)")
+
+    warn = values.get("disk_warn_gb")
+    crit = values.get("disk_crit_gb")
+    if warn is not None and crit is not None and crit >= warn:
+        failures.append(
+            f"{source}: the host contract's critical free-space threshold "
+            f"(disk_crit_gb: {crit}) is not below its warning threshold "
+            f"(disk_warn_gb: {warn}) (the job warns first and then refuses "
+            f"to build, so the critical threshold must be the lower of the "
+            f"two)")
+
+    checked = 0
+    for path in script_paths:
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for key, variable in _GROWTH_GUARD_VARS:
+            if key not in values:
+                continue
+            default = _script_growth_guard_default(text, variable)
+            if default is None:
+                continue
+            checked += 1
+            if default != values[key]:
+                failures.append(
+                    f"{path}: the daily job's {variable} default "
+                    f"({default}) does not match the host contract's {key} "
+                    f"({values[key]}) (the job would warn or refuse to build "
+                    f"at a different level of free space than the contract "
+                    f"describes)")
+    return checked
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1557,6 +1656,19 @@ def main(paths: list[str]) -> int:
     #     a timer in scope.
     _check_service_coverage(unit_paths, timer_paths, failures)
 
+    # 4h. The daily job's growth-guard thresholds against the contract.
+    #     The daily job is always checked, even when the gate is run on
+    #     the runbook alone, because the contract describes the job's
+    #     thresholds whether or not the job's script is in scope.
+    if contract is not None:
+        growth_scripts = list(script_paths)
+        daily_script = "scripts/vps_spine.sh"
+        if daily_script not in growth_scripts and Path(daily_script).is_file():
+            growth_scripts.append(daily_script)
+        _validate_growth_guard(
+            contract, contract_source or "the host contract",
+            growth_scripts, failures)
+
     # --- Deployment runbook: unit coverage, tree paths, commands, and the
     #     environment contract between the runbook and the shipped tree
     #     (4a-4e).
@@ -1613,6 +1725,8 @@ def main(paths: list[str]) -> int:
     if runbook_paths and contract is not None:
         ok_parts.append("every runbook host command matches the contract")
         ok_parts.append("every installed unit is removed by the runbook")
+    if contract is not None:
+        ok_parts.append("the growth-guard thresholds match the contract")
     ok_text = ", ".join(ok_parts)
     print(f"check_deployment_line: OK — {ok_text} ({checked} invocation(s) "
           f"checked, {coverage})")
