@@ -349,6 +349,19 @@ sudo systemctl start posture-spine.service
 journalctl -u posture-spine.service -n 200 --no-pager
 ```
 
+Every step of the daily build except the publish is best-effort: the stream,
+the backfill, every peer and distro-tracker overlay, the catalog refresh, the
+three maintenance passes (the vocabulary monitor scan, the repair reconcile
+and the horizon scan) and the bounded-growth purge all report a failure as a
+degraded step, print a warning naming the step, and let the build continue,
+because none of them writes the map, the verdicts or the trust, and the
+catalog keeps its last-known-good rows when a fetch fails. The run ends with a
+non-zero exit, so a degraded build is visible in the journal and to the
+timer, while the publish still happens and the host serves a fresh map. The
+publish step is the exception: if it fails, the build fails, and the
+previously published map keeps serving, because a half-written map is one no
+client can import.
+
 ## Step 7 — verify the published map
 
 The publish step writes the map to a staging directory, checks it against its

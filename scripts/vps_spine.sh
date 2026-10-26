@@ -151,10 +151,31 @@ set -e
 posture refresh --no-devices --cap "$REFRESH_CAP" --db "$DB_PATH" || \
   degrade "refresh incomplete; last-known-good retained, spine continues"
 
-# 5) Keep the map honest without touching devices.
-posture monitor run --db "$DB_PATH"
-posture repair reconcile --db "$DB_PATH"
-posture discover --db "$DB_PATH"
+# 5) Keep the map honest without touching devices. These three maintenance
+#    passes only SURFACE things for human review (vocabulary candidates,
+#    drift proposals, new source candidates); none of them writes the map,
+#    the verdicts, or the trust. A failure in one of them must therefore not
+#    abort the daily build: the purge and the publish still have to run so
+#    the host serves a fresh map. Each failure is marked degraded, so the run
+#    exits non-zero at the end and the failure is visible in the journal
+#    instead of being swallowed. These passes depend on the local database
+#    and on the host's own state, so a transient fault in one of them (a
+#    locked database, a temporary filesystem condition) is exactly the case
+#    the script's stated principle covers: it must NOT block the daily
+#    build.
+#    A failure of one of these three is also not a reason to withhold the
+#    map: the publish step exports and verifies the map from the SAME
+#    database, so a database that makes these commands raise (a locked
+#    file, a schema the running code no longer understands) fails the
+#    publish too and leaves the previously published map serving. A
+#    database that is quietly wrong produces quietly wrong rows rather
+#    than a raised error, and no command in this script can detect that.
+posture monitor run --db "$DB_PATH" || \
+  degrade "vocabulary monitor scan failed; no vocabulary candidates were surfaced and the spine continues"
+posture repair reconcile --db "$DB_PATH" || \
+  degrade "repair reconcile failed; no drift proposals were raised and the spine continues"
+posture discover --db "$DB_PATH" || \
+  degrade "horizon scan failed; no new source candidates were surfaced and the spine continues"
 
 # 6) Bounded-growth purge. Remove ancient defects that are no longer
 #    relevant: older than PURGE_AGE_DAYS, not in KEV, not highly exploitable

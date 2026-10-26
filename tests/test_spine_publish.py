@@ -274,18 +274,32 @@ def test_cli_verify_without_verify_sig_is_unchanged(conn, tmp_path, capsys):
 # the daily job script
 # ---------------------------------------------------------------------------
 
-def _run_daily_job(tmp_path: Path) -> list[str]:
+def _run_daily_job(tmp_path: Path, fail_on: tuple[str, ...] = ()
+                   ) -> tuple[list[str], subprocess.CompletedProcess]:
     """Run scripts/vps_spine.sh against a stub `posture` binary and return the
-    recorded invocations (one argv line per call, space-joined)."""
+    recorded invocations (one argv line per call, space-joined) plus the
+    completed process.
+
+    `fail_on` lists invocation prefixes (e.g. "discover") whose stub call
+    exits non-zero, so a test can drive a transient failure of one step."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "posture-calls.log"
     stub = bin_dir / "posture"
-    stub.write_text(
-        "#!/usr/bin/env bash\n"
-        f'printf "%s\\n" "$*" >> "{log}"\n'
-        "exit 0\n"
-    )
+    if fail_on:
+        patterns = "|".join(f'"{prefix}"*' for prefix in fail_on)
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$*" >> "{log}"\n'
+            f'case "$*" in {patterns}) exit 3 ;; esac\n'
+            "exit 0\n"
+        )
+    else:
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$*" >> "{log}"\n'
+            "exit 0\n"
+        )
     stub.chmod(0o755)
 
     state = tmp_path / "state"
@@ -302,12 +316,13 @@ def _run_daily_job(tmp_path: Path) -> list[str]:
         ["bash", str(REPO_ROOT / "scripts" / "vps_spine.sh")],
         env=env, capture_output=True, text=True, timeout=120,
     )
-    assert result.returncode == 0, result.stderr
-    return [line for line in log.read_text().splitlines() if line]
+    calls = [line for line in log.read_text().splitlines() if line]
+    return calls, result
 
 
 def test_the_daily_job_publishes_through_the_verified_path(tmp_path):
-    calls = _run_daily_job(tmp_path)
+    calls, result = _run_daily_job(tmp_path)
+    assert result.returncode == 0, result.stderr
 
     publishes = [c for c in calls if c.startswith("spine publish")]
     assert len(publishes) == 1, calls
@@ -334,3 +349,34 @@ def test_the_daily_job_publishes_through_the_verified_path(tmp_path):
     # the map is published after the data plane and the overlays
     assert any(c.startswith("ingest ubuntu") for c in calls), calls
     assert any(c.startswith("ingest debian") for c in calls), calls
+
+
+def test_a_failing_maintenance_step_does_not_abort_the_daily_build(tmp_path):
+    # The daily job runs under `set -euo pipefail`. The maintenance passes
+    # (the vocabulary monitor scan, the repair reconcile, the horizon scan)
+    # only SURFACE things for human review; none of them writes the map, the
+    # verdicts, or the trust. A failure in one of them -- the horizon scan
+    # in particular, which is the externally dependent one -- must not abort
+    # the build: the purge and the publish still have to run so the host
+    # serves a fresh map, and the run must end DEGRADED (non-zero exit) so
+    # the failure is visible in the journal.
+    calls, result = _run_daily_job(tmp_path, fail_on=("monitor run",))
+
+    # the maintenance failure did not stop the later steps
+    assert any(c.startswith("repair reconcile") for c in calls), calls
+    assert any(c.startswith("discover") for c in calls), calls
+    assert any(c.startswith("spine publish") for c in calls), calls
+    # and the failure is loud: the run ends degraded
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "DEGRADED" in result.stdout, result.stdout
+
+
+def test_a_failing_horizon_scan_still_publishes_the_map(tmp_path):
+    # The same rule for the externally dependent pass: a transient outage
+    # in the horizon scan must not stop the daily build from publishing.
+    calls, result = _run_daily_job(tmp_path, fail_on=("discover",))
+
+    assert any(c.startswith("spine publish") for c in calls), calls
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "DEGRADED" in result.stdout, result.stdout
+    assert "horizon scan failed" in result.stdout, result.stdout

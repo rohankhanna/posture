@@ -260,6 +260,69 @@ def test_daily_script_tracker_command_failures_call_degrade():
 
 
 
+def test_daily_script_maintenance_commands_have_fault_tolerance():
+    # The script runs under `set -euo pipefail`, so any unguarded `posture`
+    # command that returns non-zero aborts the entire daily spine build.
+    # The maintenance passes in step 5 -- the vocabulary monitor scan, the
+    # repair reconcile and the horizon scan -- only SURFACE things for human
+    # review; none of them writes the map, the verdicts, or the trust. So a
+    # failure in one of them (the horizon scan in particular, which is the
+    # externally dependent one) must NOT abort the build: the purge and the
+    # publish still have to run so the host serves a fresh map, and the run
+    # must end DEGRADED so the failure is visible in the journal.
+    text = DAILY_SCRIPT.read_text()
+    lines = text.splitlines()
+    logicals = _join_continuations(lines)
+    in_plus_e = False
+    maintenance_commands = ("posture monitor ", "posture repair ",
+                            "posture discover ")
+    unguarded = []
+    for lineno, logical in logicals:
+        stripped = logical.strip()
+        if stripped == "set +e":
+            in_plus_e = True
+            continue
+        if stripped == "set -e":
+            in_plus_e = False
+            continue
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not any(stripped.startswith(mc) for mc in maintenance_commands):
+            continue
+        if in_plus_e:
+            continue
+        if "||" in stripped:
+            continue
+        unguarded.append((lineno, stripped))
+    assert not unguarded, (
+        "unguarded maintenance command(s) in vps_spine.sh would abort the "
+        "entire daily spine build on a transient failure: "
+        + "; ".join(f"line {n}: {s}" for n, s in unguarded)
+    )
+
+
+def test_daily_script_maintenance_command_failures_call_degrade():
+    # Each maintenance command's failure handler must call `degrade` (not a
+    # bare `echo`) so the run is marked DEGRADED and exits non-zero at the
+    # end. This is the script's stated principle: "Every degradation is
+    # loud."
+    text = DAILY_SCRIPT.read_text()
+    lines = text.splitlines()
+    logicals = _join_continuations(lines)
+    maintenance_commands = ("posture monitor ", "posture repair ",
+                            "posture discover ")
+    for _, logical in logicals:
+        stripped = logical.strip()
+        if not any(stripped.startswith(mc) for mc in maintenance_commands):
+            continue
+        if "||" not in stripped:
+            continue
+        assert "degrade" in logical, (
+            f"maintenance command failure handler does not call degrade: "
+            f"{stripped}"
+        )
+
+
 @pytest.mark.parametrize("command", ["purge", "spine", "ingest"])
 def test_cli_provides_the_commands_the_daily_script_uses(command):
     from posture.cli import build_parser
