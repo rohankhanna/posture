@@ -497,6 +497,12 @@ posture spine verify --from /var/lib/posture
 # When the manifest is signed, also check its signature against the public key
 # (the same trust check a client makes before it imports):
 posture spine verify --from /var/lib/posture --verify-sig --signature-key signing_pub.pem
+
+# Also fail when the map is older than the host allows. Publication is atomic,
+# so a build that has been failing for days leaves the last good map serving
+# and every content check on it still passes; only the map's own build
+# timestamp shows that the build stopped.
+posture spine verify --from /var/lib/posture --max-age-days 2
 ```
 
 A failed export or a failed verification leaves the previously published map

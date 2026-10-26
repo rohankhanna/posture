@@ -752,6 +752,7 @@ disk_crit_gb: 2
 sign_key: /etc/posture/signing_key.pem
 sign_pub_key: /etc/posture/signing_pub.pem
 served_dir_owner: posture
+map_max_age_days: 2
 ```
 """
 
@@ -841,7 +842,8 @@ def _baseline_runbook(extra: str = "") -> str:
     lines.extend(_unit_removal_commands())
     lines.append("```")
     lines.append("```bash")
-    lines.append("posture spine verify --from /var/lib/posture")
+    lines.append("posture spine verify --from /var/lib/posture "
+                 "--max-age-days 2")
     lines.append("```")
     if extra:
         lines.append(extra)
@@ -988,6 +990,7 @@ HOST_CONTRACT_KEYS = (
     "sign_key",
     "sign_pub_key",
     "served_dir_owner",
+    "map_max_age_days",
 )
 
 
@@ -1819,7 +1822,8 @@ def test_gate_rejects_a_runbook_that_only_lists_the_published_map(tmp_path):
     # truncated or tampered shard, so it is not a verification.
     runbook = tmp_path / "deployment.md"
     body = _baseline_runbook().replace(
-        "posture spine verify --from /var/lib/posture\n", "")
+        "posture spine verify --from /var/lib/posture --max-age-days 2\n",
+        "")
     runbook.write_text(body)
     result = _run_gate_on([runbook])
     assert result.returncode == 1
@@ -1934,3 +1938,88 @@ def test_gate_rejects_a_contract_without_the_sign_pub_key(tmp_path):
     result = _run_gate_on([runbook])
     assert result.returncode == 1
     assert "sign_pub_key" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Published-map freshness (dimension 4m)
+# ---------------------------------------------------------------------------
+
+
+def test_the_host_contract_declares_the_maximum_map_age():
+    # The publish is atomic, so a daily build that has been failing leaves
+    # the last good map serving; the contract states how old a map may be
+    # before the operator is told the build has stopped.
+    body = RUNBOOK.read_text()
+    assert "map_max_age_days: 2" in body, (
+        "the host contract does not declare how old the served map is "
+        "allowed to be")
+
+
+def test_the_shipped_runbook_checks_the_served_maps_freshness():
+    body = RUNBOOK.read_text()
+    assert ("posture spine verify --from /var/lib/posture --max-age-days 2"
+            in body), (
+        "the runbook does not check how old the served map is, so a map that "
+        "stopped being rebuilt would pass every content check")
+
+
+def test_gate_reports_the_published_map_freshness_dimension_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "the served map's freshness is checked" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_never_checks_the_maps_age(tmp_path):
+    # Verifying the map's contents but never its age confirms a map that may
+    # have been frozen for a week.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "posture spine verify --from /var/lib/posture --max-age-days 2",
+        "posture spine verify --from /var/lib/posture")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "how old the map is allowed to be" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_allows_a_different_age_than_the_contract(
+        tmp_path):
+    # The contract states how stale a map may be; a runbook that allows a
+    # different age describes a host the operator and the contract disagree
+    # about.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace("--max-age-days 2", "--max-age-days 9")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "the host contract declares 2 day(s)" in result.stdout
+
+
+def test_gate_rejects_a_contract_whose_maximum_age_is_not_a_number(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "map_max_age_days: 2", "map_max_age_days: soon")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "map_max_age_days" in result.stdout
+    assert "not a number of days" in result.stdout
+
+
+def test_gate_rejects_a_contract_whose_maximum_age_is_not_positive(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "map_max_age_days: 2", "map_max_age_days: 0")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "must be a positive number of days" in result.stdout
+
+
+def test_gate_rejects_a_contract_without_the_maximum_map_age(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace("map_max_age_days: 2\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "map_max_age_days" in result.stdout

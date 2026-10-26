@@ -83,6 +83,7 @@ disk_crit_gb: 2
 sign_key: /etc/posture/signing_key.pem
 sign_pub_key: /etc/posture/signing_pub.pem
 served_dir_owner: posture
+map_max_age_days: 2
 ```
 
 The last two keys are the free-space thresholds the daily job applies to the
@@ -117,6 +118,15 @@ publishes the map into; the gate checks that the runbook command that
 creates that directory sets its owner to this value, so a contract that
 changes the owner while the runbook still creates the directory as the
 old account describes a host the daily job cannot publish into.
+
+`map_max_age_days` is how old the published map is allowed to be before
+the operator is told that the daily build has stopped. The publish is
+atomic, so a build that has been failing for days leaves the previously
+published map serving, intact and internally consistent: every check on
+the map's contents still passes, and the only thing that shows the build
+has stopped is the map's own build timestamp. The contract declares the
+age the operator's verification step enforces, and the deployment-line
+gate checks that the runbook's verification uses exactly this number.
 
 The environment table below states a default for every knob the daily job
 reads. Those defaults live in the job itself, as the values it falls back
@@ -262,7 +272,7 @@ shards, and the previous map is gone only because the swap succeeded.
 ```bash
 posture health --db /var/lib/posture/posture.db
 posture catalog --db /var/lib/posture/posture.db --limit 5
-posture spine verify --from /var/lib/posture
+posture spine verify --from /var/lib/posture --max-age-days 2
 sudo ls -l /var/lib/posture/spine/manifest.json
 sudo ls -l /var/lib/posture/spine/defects
 ```
@@ -276,6 +286,16 @@ not hold the map its manifest describes: read the last run's journal before
 doing anything else, and leave the served map alone. A failed build leaves
 the previously published map serving, so the map that is up is still the
 last good one.
+
+`--max-age-days 2` is the contract's `map_max_age_days`: the served map's
+manifest carries the timestamp of the build that produced it, and the
+check fails when that timestamp is older than the number of days the
+contract allows. A map that is too old is not a broken map — it is an
+intact map that the daily job has stopped rebuilding, which is the
+failure the atomic publish otherwise hides: the last good map keeps
+serving, so every content check on it still passes while the data behind
+it grows stale. When this check fails, read the last run's journal before
+doing anything else; the served map is still the last good one.
 
 A client that pulls the map verifies the manifest's shard digests before it
 imports anything, so a half-written map is refused rather than believed.
@@ -292,7 +312,7 @@ map alone. The map that is up is still the last good one the daily job
 published and signed.
 
 ```bash
-posture spine verify --from /var/lib/posture --verify-sig --signature-key /etc/posture/signing_pub.pem
+posture spine verify --from /var/lib/posture --verify-sig --signature-key /etc/posture/signing_pub.pem --max-age-days 2
 ```
 
 ## Step 8 — check the tree before you deploy it
@@ -425,3 +445,13 @@ deployment line, and makes these kinds of drift loud:
     naming the public key path the contract declares (`sign_pub_key`), so
     a runbook that verifies the signature against a key the contract does
     not build is drift at check time.
+14. **Published-map freshness** — the runbook's verification must also say
+    how old the served map is allowed to be, and the age it allows must be
+    the one the host contract declares (`map_max_age_days`). The publish
+    is atomic, so a daily build that has been failing for days leaves the
+    last good map serving, intact and consistent with its own manifest;
+    only the map's build timestamp shows that the build stopped. A
+    runbook that verifies the map's contents but never its age confirms a
+    map that may have been frozen for a week, and a runbook that allows a
+    different age than the contract declares describes a host the
+    operator and the contract disagree about.

@@ -171,6 +171,19 @@
 #         so a runbook that verifies the signature against a key the
 #         contract does not build is drift at check time.
 #
+#     4m. Published-map freshness — the publish is atomic, so a daily build
+#          that has been failing for days leaves the previously published
+#          map serving, intact and internally consistent. Every check on
+#          the map's contents still passes; only the map's own build
+#          timestamp (the manifest's `generated_at`) shows that the build
+#          stopped. The runbook's verification must therefore say how old
+#          the served map is allowed to be (`--max-age-days`), and the age
+#          it allows must be the one the host contract declares
+#          (`map_max_age_days`). A runbook that checks the map's contents
+#          but never its age confirms a map that may have been frozen for a
+#          week; one that allows a different age than the contract
+#          describes a host the operator and the contract disagree about.
+#
 #     4k. Documented environment defaults — the runbook's environment table
 #         states a default for every knob the daily job reads: the state
 #         and export directories, the catalog and clone paths, the
@@ -903,6 +916,7 @@ _CONTRACT_KEYS = (
     "sign_key",
     "sign_pub_key",
     "served_dir_owner",
+    "map_max_age_days",
 )
 # The contract keys that name a path on the host.
 _CONTRACT_PATH_KEYS = (
@@ -1327,6 +1341,78 @@ def _validate_published_map_verification(
                     f"contract builds, so a contract that moves the key "
                     f"while the runbook verifies against the old path is "
                     f"drift at check time")
+
+# ---------------------------------------------------------------------------
+# Published-map freshness (4m)
+# ---------------------------------------------------------------------------
+
+
+def _validate_published_map_freshness(
+    path: str,
+    text: str,
+    contract: dict[str, str] | None,
+    failures: list[str],
+) -> None:
+    """Check the runbook's freshness check on the served map (dimension 4m).
+
+    The publish is atomic, so a daily build that has been failing for days
+    leaves the previously published map serving, intact and internally
+    consistent. Every check on the map's contents still passes; only the
+    map's own build timestamp (the manifest's generated_at) shows that
+    the build has stopped. The runbook's verification must therefore say
+    how old the served map is allowed to be, and the age it allows must be
+    the one the host contract declares.
+    """
+    if contract is None:
+        return
+    declared = contract.get("map_max_age_days", "").strip()
+    if not declared:
+        # The missing contract key is reported by the contract check.
+        return
+    try:
+        allowed = float(declared)
+    except ValueError:
+        failures.append(
+            f"{path}: the host contract's map_max_age_days ({declared}) is "
+            f"not a number of days (the contract states how old the served "
+            f"map is allowed to be)")
+        return
+    if allowed <= 0:
+        failures.append(
+            f"{path}: the host contract's map_max_age_days ({declared}) must "
+            f"be a positive number of days (a map of any age would fail the "
+            f"check, or the check would mean nothing)")
+        return
+
+    commands = _runbook_spine_verify_commands(text)
+    if not commands:
+        # The missing verification is reported by dimension 4l.
+        return
+    for invocation in commands:
+        value = _option_value(invocation, "--max-age-days")
+        if value is None:
+            failures.append(
+                f"{path}: the runbook verifies the published map but does not "
+                f"say how old the map is allowed to be; the command must "
+                f"carry `--max-age-days {allowed:g}` (the publish is atomic, "
+                f"so a daily build that has been failing for days leaves the "
+                f"last good map serving and every content check on it still "
+                f"passes)")
+            continue
+        try:
+            stated = float(value)
+        except ValueError:
+            failures.append(
+                f"{path}: the runbook checks the served map's age with "
+                f"`--max-age-days {value}`, which is not a number of days")
+            continue
+        if stated != allowed:
+            failures.append(
+                f"{path}: the runbook allows the served map to be "
+                f"{stated:g} day(s) old, but the host contract declares "
+                f"{allowed:g} day(s) (the contract states how stale a map may "
+                f"be before the operator is told the daily build has stopped)")
+
 
 # ---------------------------------------------------------------------------
 # Host command contract (4g)
@@ -2162,6 +2248,8 @@ def main(paths: list[str]) -> int:
                 path, text, runbook_contracts.get(path), failures)
             _validate_published_map_verification(
                 path, text, runbook_contracts.get(path), failures)
+            _validate_published_map_freshness(
+                path, text, runbook_contracts.get(path), failures)
             checked += _validate_runbook_host_commands(
                 path, text, runbook_contracts.get(path), failures)
             if daily_script_text:
@@ -2210,6 +2298,8 @@ def main(paths: list[str]) -> int:
                         "implementation")
         ok_parts.append("the published map is verified by the runbook "
                         "(including the signature check when it is signed)")
+        ok_parts.append("the served map's freshness is checked against the "
+                        "contract's maximum age")
     if contract is not None:
         ok_parts.append("the growth-guard thresholds match the contract")
     if runbook_paths and daily_script_text:

@@ -457,6 +457,18 @@ def publish_spine(conn, out_dir: os.PathLike | str = ".",
 # verify (manifest-internal consistency — NOT the cosign signature)
 # ---------------------------------------------------------------------------
 
+def read_manifest(from_dir: os.PathLike | str = ".") -> dict:
+    """The manifest of a published map directory.
+
+    The manifest is the map's own statement about itself: which shards it
+    holds, what each shard's digest and row count are, and when the map
+    was built (generated_at). Reading it is cheap; verifying it is
+    :func:`verify_spine`'s job.
+    """
+    root = Path(from_dir) / SPINE_DIR
+    return json.loads((root / MANIFEST_NAME).read_text())
+
+
 def verify_spine(from_dir: os.PathLike | str = ".") -> dict:
     """Recompute every shard sha256 and assert it matches manifest.json.
     This checks the manifest's internal consistency (the snapshot is intact on
@@ -466,7 +478,7 @@ def verify_spine(from_dir: os.PathLike | str = ".") -> dict:
     Returns the manifest on success.
     """
     root = Path(from_dir) / SPINE_DIR
-    manifest = json.loads((root / MANIFEST_NAME).read_text())
+    manifest = read_manifest(from_dir)
     for entry in manifest["files"]:
         path = root / entry["path"]
         if not path.exists():
@@ -482,6 +494,83 @@ def verify_spine(from_dir: os.PathLike | str = ".") -> dict:
                 f"({n} != {entry['count']})"
             )
     return manifest
+
+
+# ---------------------------------------------------------------------------
+# verify (freshness — how old is the map the host is serving?)
+# ---------------------------------------------------------------------------
+
+
+def _parse_generated_at(manifest: dict) -> _dt.datetime:
+    """The build timestamp a manifest carries, as an aware datetime.
+
+    Raises ValueError when the manifest carries no timestamp or one
+    this version cannot read: a map whose age cannot be established is
+    not a map that can be shown to be fresh.
+    """
+    raw = manifest.get("generated_at")
+    if not raw or not isinstance(raw, str):
+        raise ValueError(
+            "the manifest carries no generated_at timestamp, so the age of "
+            "the map cannot be established")
+    text = raw.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        stamp = _dt.datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(
+            f"the manifest's generated_at ({raw}) is not a readable "
+            f"timestamp, so the age of the map cannot be established"
+        ) from exc
+    if stamp.tzinfo is None:
+        # A timestamp without an offset is read as UTC: every writer in
+        # this repository stamps the manifest in UTC.
+        stamp = stamp.replace(tzinfo=_dt.UTC)
+    return stamp
+
+
+def manifest_age_days(manifest: dict,
+                      now: _dt.datetime | None = None) -> float:
+    """The age of a manifest, in days, from its generated_at stamp.
+
+    A negative age means the manifest was stamped in the future (a
+    builder whose clock runs ahead); the map is not stale, and the caller
+    sees the skew in the number it reports.
+    """
+    stamp = _parse_generated_at(manifest)
+    reference = now or _dt.datetime.now(_dt.UTC)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=_dt.UTC)
+    return (reference - stamp).total_seconds() / 86400.0
+
+
+def verify_manifest_freshness(manifest: dict, max_age_days: float,
+                               now: _dt.datetime | None = None) -> float:
+    """Check that a map is no older than max_age_days.
+
+    The publish path is atomic, so a daily build that has been failing for
+    days leaves the previously published map serving, intact and
+    internally consistent. Every check on the map's contents still passes,
+    and the only thing that shows the build has stopped is the map's own
+    build timestamp. This check reads that timestamp and fails loudly when
+    the map is older than the host allows.
+
+    Returns the map's age in days. Raises ValueError when the map is
+    older than the allowed age, when its age cannot be established, or
+    when the allowed age is not a positive number of days.
+    """
+    if max_age_days is None or max_age_days <= 0:
+        raise ValueError(
+            "the maximum map age must be a positive number of days")
+    age = manifest_age_days(manifest, now=now)
+    if age > max_age_days:
+        raise ValueError(
+            f"the map was generated at {manifest.get('generated_at')} and is "
+            f"{age:.1f} day(s) old, which is older than the {max_age_days:g} "
+            f"day(s) allowed (the daily build has not published a newer map; "
+            f"the last good map is still serving)")
+    return age
 
 
 # ---------------------------------------------------------------------------

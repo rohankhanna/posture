@@ -89,6 +89,7 @@ The library API surface:
 | `posture.refresh` | `refresh_tick(conn, devices, ...)` | Incremental NVD enrichment + re-decide |
 | `posture.export` | `export_spine(conn, out_dir, ...)` | Serialize catalog to signed JSONL shards |
 | `posture.export` | `verify_spine(from_dir)` | Verify shard hashes against manifest |
+| `posture.export` | `verify_manifest_freshness(manifest, max_age_days)` | Fail when a served map is older than the host allows |
 | `posture.export` | `import_spine(conn, from_dir)` | Import verified JSONL into local SQLite |
 | `posture.export` | `publish_spine(conn, out_dir, ...)` | Export, verify, and swap the served map in one atomic step |
 
@@ -178,6 +179,15 @@ catalog paths or environment file no longer match it is drift, and the
 contract is what maps a unit's absolute script path back into this tree),
 and checks the contract against the runbook's install layout table, so the
 two never disagree about where the tree lives on the host.
+
+Atomic publication hides one failure mode: when the daily build stops, the
+previously published map keeps serving, intact and consistent with its own
+manifest, so every check on the map's contents still passes. The map's build
+timestamp (`generated_at`) is the only thing that shows the build stopped, so
+`posture spine verify --max-age-days N` reads it and fails when the map is
+older than the host allows. The runbook's host contract declares that age
+(`map_max_age_days`), and the gate checks that the runbook's verification
+uses exactly the number the contract declares.
 
 The contract also governs the runbook's own operator commands. Every path
 a runbook command names must be governed by the contract or be a standard

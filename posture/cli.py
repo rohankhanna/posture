@@ -609,6 +609,24 @@ def _cmd_repair(args) -> int:
     return 2
 
 
+def _max_age_days(value: str) -> float:
+    """Parse a maximum map age in days, refusing a non-positive one.
+
+    A maximum age of zero days would make every map fail, and a negative
+    one has no meaning at all: both are an operator mistake, caught while
+    the command line is parsed rather than after the map is read.
+    """
+    try:
+        days = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a number of days") from None
+    if days <= 0:
+        raise argparse.ArgumentTypeError(
+            "the maximum map age must be a positive number of days")
+    return days
+
+
 def _cmd_spine(args) -> int:
     # export is read-only over the DB and produces no trust change; it serializes
     # the catalog (the MAP) to sharded JSONL + a manifest that CI cosign-signs.
@@ -653,11 +671,30 @@ def _cmd_spine(args) -> int:
             except (ValueError, OSError) as exc:
                 print(f"spine verify: FAILED — {exc}")
                 return 1
-            print(f"spine verify: OK — {len(manifest['files'])} shard(s), "
-                  f"{manifest['counts']}, signature verified")
+            signature_note = "signature verified"
         else:
-            print(f"spine verify: OK — {len(manifest['files'])} shard(s), "
-                  f"{manifest['counts']}")
+            signature_note = ""
+        # The publish is atomic, so a daily build that has been failing for
+        # days leaves the last good map serving, intact and internally
+        # consistent. Only the map's own build timestamp shows that the
+        # build stopped, so the freshness check reads it.
+        max_age_days = getattr(args, "max_age_days", None)
+        freshness_note = ""
+        if max_age_days is not None:
+            try:
+                age = _export.verify_manifest_freshness(manifest, max_age_days)
+            except (ValueError, OSError) as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            freshness_note = (
+                f", generated {manifest['generated_at']} "
+                f"({age:.1f} day(s) old)")
+        ok_line = f"spine verify: OK — {len(manifest['files'])} shard(s), "
+        ok_line += f"{manifest['counts']}"
+        if signature_note:
+            ok_line += f", {signature_note}"
+        ok_line += freshness_note
+        print(ok_line)
         return 0
     # publish is the deployment line's serving path: export into a staging
     # directory, verify it, and swap it into the served directory in one step.
@@ -683,6 +720,20 @@ def _cmd_spine(args) -> int:
         if getattr(args, "verify_sig", False) and getattr(args, "signature_key", None):
             _export.verify_manifest_signature(args.from_dir, args.signature_key)
             print(f"  signature verified -> {args.from_dir}/{_export.SPINE_DIR}/state.sig")
+        # A client that pulls the map can refuse a map that is older than it
+        # is willing to trust, for the same reason the operator does: a
+        # served map that stopped being rebuilt stays intact and passes
+        # every digest check.
+        max_age_days = getattr(args, "max_age_days", None)
+        if max_age_days is not None:
+            try:
+                age = _export.verify_manifest_freshness(
+                    _export.read_manifest(args.from_dir), max_age_days)
+            except (ValueError, OSError) as exc:
+                print(f"spine import: FAILED — {exc}")
+                return 1
+            print(f"  map is {age:.1f} day(s) old (within the "
+                  f"{max_age_days:g} day(s) allowed)")
         with _open_db(args.db) as conn:
             _glossary.ensure_seeded(conn)
             stats = _export.import_spine(conn, from_dir=args.from_dir,
@@ -1241,6 +1292,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="verify/import: verify the manifest's ed25519 signature (state.sig) before trusting the map")
     sp.add_argument("--signature-key", dest="signature_key", default=None,
                     help="verify/import: ed25519 public key (PEM) for --verify-sig")
+    sp.add_argument("--max-age-days", dest="max_age_days", type=_max_age_days,
+                    default=None,
+                    help="verify/import: fail when the map's manifest is older than this "
+                         "many days (the daily build keeps the last good map serving, so a "
+                         "stale map means the build has stopped)")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_spine)
 
     # -- ingestion: CVE stream + incremental refresh + catalog ---------------
