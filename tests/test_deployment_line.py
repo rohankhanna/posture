@@ -1696,3 +1696,91 @@ def test_gate_rejects_a_contract_without_the_served_map_directory(tmp_path):
     result = _run_gate_on([runbook])
     assert result.returncode == 1
     assert "served_map_dir" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# The documented environment defaults (dimension 4k)
+# ---------------------------------------------------------------------------
+
+def test_the_runbooks_documented_defaults_match_the_daily_jobs_defaults():
+    # The runbook's environment table states a default for every knob the
+    # daily job reads. The operator sizes the host and writes the
+    # environment file against those numbers, so each stated default must
+    # be the number the job actually falls back to.
+    result = _run_gate_on([RUNBOOK])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "POSTURE_" not in result.stdout
+
+
+def test_gate_rejects_a_runbook_whose_documented_default_drifted(tmp_path):
+    # A documented default the job does not use is drift: the runbook
+    # tells the operator the refresh cap is 500 while the job caps at 200.
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(RUNBOOK.read_text().replace(
+        "| `POSTURE_REFRESH_CAP` | the cap on the per-run catalog refresh "
+        "| `200` |",
+        "| `POSTURE_REFRESH_CAP` | the cap on the per-run catalog refresh "
+        "| `500` |"))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "POSTURE_REFRESH_CAP" in result.stdout
+    assert "the daily job falls back to" in result.stdout
+
+
+def test_gate_rejects_a_runbook_whose_documented_path_default_drifted(
+        tmp_path):
+    # The catalog path is documented in terms of the state directory; a
+    # runbook that names a different file describes a host whose database
+    # is not where the job writes it.
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(RUNBOOK.read_text().replace(
+        "`$POSTURE_STATE_DIR/posture.db`", "`$POSTURE_STATE_DIR/catalog.db`"))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "POSTURE_DB_PATH" in result.stdout
+
+
+def test_gate_accepts_an_equivalent_spelling_of_a_documented_default(
+        tmp_path):
+    # The job's own default for the clone directory is written in terms
+    # of its state-directory variable; a runbook may spell the same path
+    # out in full, and the two are the same default.
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(RUNBOOK.read_text().replace(
+        "`$POSTURE_STATE_DIR/cvelist`", "`/var/lib/posture/cvelist`"))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_accepts_an_unset_default_for_an_optional_variable(tmp_path):
+    # The signing key is optional: the job falls back to no key at all,
+    # which the runbook states as "unset".
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(RUNBOOK.read_text().replace(
+        "the manifest is unsigned | unset |", "the manifest is unsigned | "
+        "unset |"))
+    result = _run_gate_on([runbook])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_rejects_a_runbook_that_documents_a_default_the_job_never_uses(
+        tmp_path):
+    # A default that names nothing the job reads is drift in the other
+    # direction: the operator would believe a knob exists that does not.
+    runbook = tmp_path / "deployment.md"
+    body = RUNBOOK.read_text().replace(
+        "| `POSTURE_GC_INTERVAL_DAYS` | days between the source-clone "
+        "maintenance pass | `7` |",
+        "| `POSTURE_GC_INTERVAL_DAYS` | days between the source-clone "
+        "maintenance pass | `14` |")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "POSTURE_GC_INTERVAL_DAYS" in result.stdout
+
+
+def test_gate_reports_the_documented_defaults_dimension_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ("every documented environment default matches the daily job's "
+            "own default") in result.stdout

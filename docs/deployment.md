@@ -116,6 +116,14 @@ creates that directory sets its owner to this value, so a contract that
 changes the owner while the runbook still creates the directory as the
 old account describes a host the daily job cannot publish into.
 
+The environment table below states a default for every knob the daily job
+reads. Those defaults live in the job itself, as the values it falls back
+to when the environment file sets nothing, and the deployment-line gate
+checks the two against each other: a runbook that documents a default the
+job no longer uses describes a host the operator sizes against numbers
+that are not in effect, and the difference only shows up in the nightly
+job's behaviour.
+
 ## Step 1 — the service account and the directories
 
 The daily build runs as an unprivileged account, `posture`, and writes only
@@ -291,7 +299,7 @@ pulling the last good map while you are tearing the host down.
 ## What the runbook gate checks
 
 `scripts/check_deployment_line.sh` treats this document as part of the
-deployment line, and makes five kinds of drift loud:
+deployment line, and makes these kinds of drift loud:
 
 1. **Unit coverage** — every unit file this tree ships must be named here.
    A unit the runbook does not install is a unit that never runs.
@@ -354,3 +362,9 @@ deployment line, and makes five kinds of drift loud:
     operator to check a path the code never writes is a verification step
     that can never pass, and a map a client is told to pull from a
     directory that does not exist is a map nobody receives.
+12. **Documented environment defaults** — every default the environment
+    table above states must be the default the daily job actually falls
+    back to. A runbook that documents a cap, a path, a retention or a
+    threshold the job no longer uses tells the operator to size the host
+    against numbers that are not in effect, and the drift is invisible
+    until the nightly job behaves differently from the runbook.

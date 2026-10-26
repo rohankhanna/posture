@@ -158,6 +158,19 @@
 #         file that does not exist, and a client told to pull from that
 #         directory gets nothing.
 #
+#     4k. Documented environment defaults — the runbook's environment table
+#         states a default for every knob the daily job reads: the state
+#         and export directories, the catalog and clone paths, the
+#         backfill and overlay caps, the refresh cap, the purge retention
+#         and exploitability percentile, the free-space thresholds, and the
+#         maintenance interval. Those defaults live in the daily job as
+#         shell parameter expansions, and the gate checks the runbook's
+#         stated default against the default the job actually falls back
+#         to. A runbook that documents a default the job no longer uses
+#         sizes the host and writes the environment file against numbers
+#         that are not in effect, and the drift is invisible until a
+#         nightly job behaves differently from what the runbook says.
+#
 # Usage: check_deployment_line.sh [FILE ...]
 #   Default: scripts/vps_spine.sh plus every systemd/*.service and
 #   systemd/*.timer unit.
@@ -1597,6 +1610,151 @@ def _validate_growth_guard(
 
 
 # ---------------------------------------------------------------------------
+# Documented environment defaults (4k)
+# ---------------------------------------------------------------------------
+
+# An assignment of the form the daily job uses to read a knob:
+#     STATE_DIR="${POSTURE_STATE_DIR:-/var/lib/posture}"
+# The environment variable is the name the operator writes in the
+# environment file; the text after the :- is the default the job falls
+# back to when the operator sets nothing.
+_JOB_ASSIGN_RE = re.compile(
+    r'^\s*(?P<shell>[A-Z_][A-Z0-9_]*)="\$\{(?P<var>[A-Z_][A-Z0-9_]*)'
+    r'(?::-(?P<default>[^}]*))?\}"', re.MULTILINE)
+
+# A shell variable reference inside a default value.
+_SHELL_REF_RE = re.compile(
+    r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _expand_default(text: str, shell_values: dict[str, str],
+                    env_defaults: dict[str, str]) -> str:
+    """Expand the shell variable references inside a default value.
+
+    A default may be written in terms of another variable the job
+    already resolved ($STATE_DIR/cvelist), so the references are
+    expanded against the values known so far.
+    """
+    out = text
+    for _ in range(5):
+        def replace(match: re.Match) -> str:
+            name = match.group(1) or match.group(2)
+            if name in shell_values:
+                return shell_values[name]
+            if name in env_defaults:
+                return env_defaults[name]
+            return match.group(0)
+        expanded = _SHELL_REF_RE.sub(replace, out)
+        if expanded == out:
+            break
+        out = expanded
+    return out
+
+
+def _script_env_defaults(text: str) -> tuple[dict[str, str], dict[str, str]]:
+    """The defaults the daily job falls back to, per environment variable.
+
+    Returns the environment-variable defaults (POSTURE_* -> the value the
+    job uses when the operator sets nothing) and the shell-variable
+    values the same assignments carry, both resolved.
+    """
+    env_defaults: dict[str, str] = {}
+    shell_values: dict[str, str] = {}
+    for match in _JOB_ASSIGN_RE.finditer(text):
+        shell = match.group("shell")
+        variable = match.group("var")
+        default = match.group("default") or ""
+        value = _expand_default(default, shell_values, env_defaults)
+        shell_values[shell] = value
+        env_defaults[variable] = value
+    return env_defaults, shell_values
+
+
+def _runbook_env_defaults(text: str) -> dict[str, str]:
+    """The default the runbook's environment table states per variable.
+
+    The table's first column names the variable and its last column
+    states the default. Any other table in the runbook (the install
+    layout, the shipped artifacts) has a different first column and is
+    not read here.
+    """
+    defaults: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        name = cells[0].strip("`").strip()
+        if not re.fullmatch(r"POSTURE_[A-Z_]+|NVD_API_KEY", name):
+            continue
+        defaults[name] = cells[-1].strip()
+    return defaults
+
+
+def _normalize_default(value: str) -> str:
+    """Normalize a documented default for comparison.
+
+    Backticks and surrounding whitespace are noise; an empty default is
+    the same statement as "unset".
+    """
+    cleaned = value.strip().strip("`").strip()
+    if not cleaned:
+        return "unset"
+    return cleaned
+
+
+def _defaults_agree(documented: str, actual: str) -> bool:
+    """True when a documented default is the default the job uses."""
+    if documented == actual:
+        return True
+    try:
+        return float(documented) == float(actual)
+    except ValueError:
+        return False
+
+
+def _validate_documented_defaults(
+    runbook_path: str,
+    runbook_text: str,
+    script_text: str,
+    failures: list[str],
+) -> int:
+    """The runbook's documented defaults against the daily job's defaults.
+
+    The runbook's environment table tells the operator what each knob
+    does and what it is set to when the environment file says nothing.
+    The daily job carries its own defaults for the same knobs. Both must
+    agree, or the operator sizes the host and writes the environment file
+    against numbers the job does not use.
+
+    Returns the number of defaults checked.
+    """
+    env_defaults, shell_values = _script_env_defaults(script_text)
+    documented = _runbook_env_defaults(runbook_text)
+    checked = 0
+    for name, cell in sorted(documented.items()):
+        if name not in env_defaults:
+            # The job does not read this variable with a default of its
+            # own (the package reads it, or it is optional): there is
+            # nothing here to compare against.
+            continue
+        wanted = _normalize_default(_expand_default(
+            _normalize_default(cell), shell_values, env_defaults))
+        actual = _normalize_default(env_defaults[name])
+        checked += 1
+        if _defaults_agree(wanted, actual):
+            continue
+        failures.append(
+            f"{runbook_path}: the runbook documents `{name}` with a default "
+            f"of {wanted}, but the daily job falls back to {actual} (the "
+            f"runbook's stated default is the number the operator sizes the "
+            f"host against, and it is not the number the job uses)")
+    return checked
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1821,6 +1979,19 @@ def main(paths: list[str]) -> int:
     # --- Deployment runbook: unit coverage, tree paths, commands, and the
     #     environment contract between the runbook and the shipped tree
     #     (4a-4e).
+    # The daily job's own defaults, read from the shipped script. The
+    # runbook's environment table states a default for every knob the
+    # job reads, so the daily job is always read, even when the gate is
+    # run on the runbook alone.
+    daily_script_text = ""
+    daily_script_path = Path("scripts/vps_spine.sh")
+    if daily_script_path.is_file():
+        try:
+            daily_script_text = daily_script_path.read_text(
+                encoding="utf-8", errors="replace")
+        except OSError:
+            daily_script_text = ""
+
     if runbook_paths:
         runbook_package_vars = _package_env_vars()
         runbook_script_vars = _script_env_vars("scripts/vps_spine.sh")
@@ -1839,6 +2010,9 @@ def main(paths: list[str]) -> int:
                 path, text, runbook_contracts.get(path), failures)
             checked += _validate_runbook_host_commands(
                 path, text, runbook_contracts.get(path), failures)
+            if daily_script_text:
+                _validate_documented_defaults(
+                    path, text, daily_script_text, failures)
 
     for failure in failures:
         print(f"check_deployment_line: FAIL — {failure}")
@@ -1882,6 +2056,9 @@ def main(paths: list[str]) -> int:
                         "implementation")
     if contract is not None:
         ok_parts.append("the growth-guard thresholds match the contract")
+    if runbook_paths and daily_script_text:
+        ok_parts.append("every documented environment default matches the "
+                        "daily job's own default")
     ok_text = ", ".join(ok_parts)
     print(f"check_deployment_line: OK — {ok_text} ({checked} invocation(s) "
           f"checked, {coverage})")
