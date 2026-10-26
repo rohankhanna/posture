@@ -312,7 +312,11 @@ def _run_daily_job(tmp_path: Path, fail_on: tuple[str, ...] = (),
     stub.chmod(0o755)
     if git_fail:
         git_stub = bin_dir / "git"
-        git_stub.write_text("#!/usr/bin/env bash\nexit 1\n")
+        git_stub.write_text(
+            "#!/usr/bin/env bash\n"
+            "echo 'fatal: fake disk full' >&2\n"
+            "exit 1\n"
+        )
         git_stub.chmod(0o755)
 
     state = tmp_path / "state"
@@ -447,3 +451,24 @@ def test_the_daily_job_does_not_stamp_maintenance_when_no_clone_exists(tmp_path)
         "the daily job wrote the gc stamp without running maintenance on any "
         "clone, so the next run would skip maintenance for GC_INTERVAL_DAYS"
     )
+
+
+def test_a_failing_git_gc_includes_the_error_detail(tmp_path):
+    # The "every degradation is loud" principle means the operator must see
+    # WHY git gc failed, not just that it failed.  The old code used
+    # `2>/dev/null` which suppressed all stderr including the error message,
+    # so the journal showed "git gc failed" with no diagnostic detail.  The
+    # fix captures stderr and includes it in the degrade message, so the
+    # operator can diagnose the failure (disk full, corrupt pack, permission
+    # denied) from the journal alone without having to manually re-run the
+    # command on the host.
+    _calls, result = _run_daily_job(tmp_path, clone_dirs=True, git_fail=True)
+    assert result.returncode == 1, result.stdout + result.stderr
+    # The degrade message must carry the captured stderr so the operator
+    # sees the actual error, not just "git gc failed".
+    assert "fatal: fake disk full" in result.stdout, (
+        "the git gc failure message does not include the captured stderr, "
+        "so the operator cannot diagnose the failure from the journal: "
+        f"{result.stdout}"
+    )
+

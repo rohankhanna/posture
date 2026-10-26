@@ -316,10 +316,14 @@ if [ "$RUN_GC" -eq 1 ]; then
   for repo in "$CVELIST_DIR/cvelistV5" "$GHSA_DIR/advisory-database"; do
     if [ -d "$repo/.git" ]; then
       GC_RAN=1
-      git -C "$repo" remote prune origin 2>/dev/null || \
-        { degrade "git remote prune failed for $repo; clone bloat not reclaimed, spine continues"; GC_OK=0; }
-      git -C "$repo" gc 2>/dev/null || \
-        { degrade "git gc failed for $repo; clone bloat not reclaimed, spine continues"; GC_OK=0; }
+      # Capture stderr so the degrade message includes the actual error
+      # (disk full, corrupt pack file, permission denied) instead of just
+      # "git gc failed".  On a successful gc the captured stderr (progress
+      # noise) is simply discarded because the || branch does not run.
+      gc_err=$(git -C "$repo" remote prune origin 2>&1 1>/dev/null) || \
+        { degrade "git remote prune failed for $repo: ${gc_err}; clone bloat not reclaimed, spine continues"; GC_OK=0; }
+      gc_err=$(git -C "$repo" gc 2>&1 1>/dev/null) || \
+        { degrade "git gc failed for $repo: ${gc_err}; clone bloat not reclaimed, spine continues"; GC_OK=0; }
     fi
   done
   # Only stamp a maintenance pass that actually ran and did not fail. A
