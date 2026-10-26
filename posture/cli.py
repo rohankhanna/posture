@@ -10,6 +10,8 @@
   posture audit <observer>
   posture crosswalk {add|show} ...
   posture discover
+  posture source-history {list|show <id>|source <src>}   public-infrastructure event ledger
+  posture purge [--dry-run]              bounded-growth: forget ancient, irrelevant defects
 
 The report footer emits NVD attribution whenever the NVD observer was actually
 used (project rule: the map is foreign-authored; say so).
@@ -31,6 +33,7 @@ from . import store as _store
 from . import engine as _engine
 from . import provenance as _prov
 from . import health as _health
+from . import source_history as _source_history
 from . import discovery as _discovery
 from . import spine as _spine
 from . import glossary as _glossary
@@ -41,6 +44,7 @@ from . import stream as _stream
 from . import refresh as _refresh
 from . import export as _export
 from . import llm_enrich as _llm_enrich
+from . import source_history as _source_history
 from .sources import build_default_registry
 from .sources.nvd_cve import NvdCveObserver
 from .sources import kev as _kev_mod
@@ -49,6 +53,7 @@ from .sources import osv as _osv_mod
 from .sources import apple_ingest as _apple_ingest_mod
 from .sources import debian_ingest as _debian_ingest_mod
 from .sources import ubuntu_ingest as _ubuntu_ingest_mod
+from .sources import ubuntu_git_ingest as _ubuntu_git_ingest_mod
 from .sources import epss as _epss_mod
 from .sources.ubuntu_tracker import UbuntuTrackerObserver
 from .sources.debian_tracker import DebianTrackerObserver
@@ -382,8 +387,9 @@ def _cmd_health(args) -> int:
         else:
             observers = [observer]
         now = _engine._now()
+        ledger = None if args.no_source_history else _source_history.default_ledger()
         for wid in observers:
-            rep = _health.health_report(conn, wid, policy, now)
+            rep = _health.health_report(conn, wid, policy, now, ledger=ledger)
             op = rep["operational"]
             print(f"== {wid} ==")
             print(f"  operational: samples={op['samples']} "
@@ -401,6 +407,15 @@ def _cmd_health(args) -> int:
             else:
                 print("  dossier: (empty — add with `posture health --add-dossier`)")
             print(f"  drift: {_health.drift_flag(conn, wid)}")
+            sh = rep.get("source_history")
+            if sh and sh["active_events"]:
+                tag = "DEGRADED" if sh["degraded"] else "context"
+                print(f"  source_history ({tag}, {len(sh['active_events'])} active):")
+                for e in sh["active_events"]:
+                    print(f"    {e['date']} [{e['event_type']}/{e['status']}] "
+                          f"{e['summary'][:70]}")
+                    if e["interpretation"]:
+                        print(f"      -> {e['interpretation'][:100]}")
     return 0
 
 
@@ -595,6 +610,117 @@ def _cmd_repair(args) -> int:
     return 2
 
 
+def _max_age_days(value: str) -> float:
+    """Parse a maximum map age in days, refusing a non-positive one.
+
+    A maximum age of zero days would make every map fail, and a negative
+    one has no meaning at all: both are an operator mistake, caught while
+    the command line is parsed rather than after the map is read.
+    """
+    try:
+        days = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a number of days") from None
+    if days <= 0:
+        raise argparse.ArgumentTypeError(
+            "the maximum map age must be a positive number of days")
+    return days
+
+
+def _parse_overlay_release_requirements(
+        values: list[str] | None) -> list[tuple[str, str, int]]:
+    """Parse the --require-overlay-release values into requirements.
+
+    Each value names the overlay table, the release, and the minimum number
+    of rows the map must carry for that release: TABLE:RELEASE:MIN_ROWS.
+    A malformed value is a mistake on the command line, so it is refused
+    while the arguments are parsed rather than after the map is read.
+    """
+    requirements: list[tuple[str, str, int]] = []
+    for value in values or []:
+        parts = str(value).split(":")
+        if len(parts) != 3 or not parts[0].strip() or not parts[1].strip():
+            raise ValueError(
+                f"{value!r} is not a release coverage requirement; the form "
+                f"is TABLE:RELEASE:MIN_ROWS (for example "
+                f"ubuntu_fixes:noble:100)")
+        try:
+            min_rows = int(parts[2])
+        except ValueError:
+            raise ValueError(
+                f"{value!r} does not name a row count; MIN_ROWS must be a "
+                f"whole number") from None
+        if min_rows < 1:
+            raise ValueError(
+                f"{value!r} asks for fewer than one row; the minimum is one")
+        requirements.append((parts[0].strip(), parts[1].strip(), min_rows))
+    return requirements
+
+
+def _parse_overlay_package_requirements(
+        values: list[str] | None) -> list[tuple[str, str, str, int]]:
+    """Parse the --require-overlay-package values into requirements.
+
+    Each value names the overlay table, the release, the source package,
+    and the minimum number of rows the map must carry for that package of
+    that release: TABLE:RELEASE:PACKAGE:MIN_ROWS. A malformed value is
+    a mistake on the command line, so it is refused while the arguments
+    are parsed rather than after the map is read.
+    """
+    requirements: list[tuple[str, str, str, int]] = []
+    for value in values or []:
+        parts = str(value).split(":")
+        if (len(parts) != 4 or not parts[0].strip() or not parts[1].strip()
+                or not parts[2].strip()):
+            raise ValueError(
+                f"{value!r} is not a package coverage requirement; the form "
+                f"is TABLE:RELEASE:PACKAGE:MIN_ROWS (for example "
+                f"ubuntu_fixes:noble:linux:1)")
+        try:
+            min_rows = int(parts[3])
+        except ValueError:
+            raise ValueError(
+                f"{value!r} does not name a row count; MIN_ROWS must be a "
+                f"whole number") from None
+        if min_rows < 1:
+            raise ValueError(
+                f"{value!r} asks for fewer than one row; the minimum is one")
+        requirements.append(
+            (parts[0].strip(), parts[1].strip(), parts[2].strip(), min_rows))
+    return requirements
+
+
+def _parse_apple_fixes_product_requirements(
+        values: list[str] | None) -> list[tuple[str, int]]:
+    """Parse the --require-apple-fixes-product values into requirements.
+
+    Each value names the Apple product and the minimum number of rows the
+    map must carry for that product: PRODUCT:MIN_ROWS (for example
+    iphone_os:1). A malformed value is a mistake on the command line,
+    so it is refused while the arguments are parsed rather than after the
+    map is read.
+    """
+    requirements: list[tuple[str, int]] = []
+    for value in values or []:
+        parts = str(value).split(":")
+        if len(parts) != 2 or not parts[0].strip():
+            raise ValueError(
+                f"{value!r} is not an Apple product coverage requirement; "
+                f"the form is PRODUCT:MIN_ROWS (for example iphone_os:1)")
+        try:
+            min_rows = int(parts[1])
+        except ValueError:
+            raise ValueError(
+                f"{value!r} does not name a row count; MIN_ROWS must be a "
+                f"whole number") from None
+        if min_rows < 1:
+            raise ValueError(
+                f"{value!r} asks for fewer than one row; the minimum is one")
+        requirements.append((parts[0].strip(), min_rows))
+    return requirements
+
+
 def _cmd_spine(args) -> int:
     # export is read-only over the DB and produces no trust change; it serializes
     # the catalog (the MAP) to sharded JSONL + a manifest that CI cosign-signs.
@@ -612,6 +738,277 @@ def _cmd_spine(args) -> int:
                   f"{args.out}/{_export.SPINE_DIR}/state.sig "
                   f"{args.out}/{_export.SPINE_DIR}/manifest.json")
             print(f"  or: posture spine export --sign-key <private_key.pem> ...")
+        print("  serving this directory directly? use `posture spine publish` "
+              "(verify + atomic swap)")
+        return 0
+    # verify re-checks a spine directory against its own manifest (every shard's
+    # sha256 + row count). It is the gate the deployment line runs before it
+    # publishes a new map, and the same check a client can run on a pulled map.
+    # When the operator passes --verify-sig, the manifest's ed25519 signature
+    # (state.sig) is verified against the supplied public key after the
+    # internal consistency check passes, so the operator's confirmation of the
+    # served map is the same trust check a client makes before it imports.
+    if args.sub == "verify":
+        try:
+            manifest = _export.verify_spine(args.from_dir)
+        except (ValueError, OSError) as exc:
+            print(f"spine verify: FAILED — {exc}")
+            return 1
+        if getattr(args, "verify_sig", False):
+            signature_key = getattr(args, "signature_key", None)
+            if not signature_key:
+                print("spine verify: FAILED --verify-sig requires "
+                      "--signature-key (the ed25519 public key PEM)")
+                return 1
+            try:
+                _export.verify_manifest_signature(args.from_dir, signature_key)
+            except (ValueError, OSError) as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            signature_note = "signature verified"
+        else:
+            signature_note = ""
+        # The publish is atomic, so a daily build that has been failing for
+        # days leaves the last good map serving, intact and internally
+        # consistent. Only the map's own build timestamp shows that the
+        # build stopped, so the freshness check reads it.
+        max_age_days = getattr(args, "max_age_days", None)
+        freshness_note = ""
+        if max_age_days is not None:
+            try:
+                age = _export.verify_manifest_freshness(manifest, max_age_days)
+            except (ValueError, OSError) as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            freshness_note = (
+                f", generated {manifest['generated_at']} "
+                f"({age:.1f} day(s) old)")
+        # The map can be intact, signed, fresh and consistent with its own
+        # manifest while an overlay table is empty: the vendor fix-status
+        # rows are simply gone, and the map is quietly wrong about which
+        # packages are patched. A host that requires those rows says so,
+        # and the check fails loudly instead of passing.
+        required_overlays = getattr(args, "require_overlay", None) or []
+        overlay_note = ""
+        if required_overlays:
+            try:
+                coverage = _export.verify_overlay_coverage(manifest,
+                                                           required_overlays)
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            overlay_note = ", overlay coverage OK (" + ", ".join(
+                f"{name} {count} row(s)" for name, count in coverage.items()) + ")"
+        # The per-table overlay check above cannot see a release that is
+        # missing while the table as a whole still holds rows: the
+        # per-(release, package) refresh deletes the rows it replaces, so a
+        # release whose tracker feed returned nothing ends up empty while
+        # the presence check still passes. The per-release requirement says
+        # which releases the host needs and how many rows each must carry.
+        release_note = ""
+        try:
+            release_requirements = _parse_overlay_release_requirements(
+                getattr(args, "require_overlay_release", None))
+        except ValueError as exc:
+            print(f"spine verify: FAILED — {exc}")
+            return 1
+        overlay_max_age_days = getattr(args, "require_overlay_max_age_days", None)
+        if release_requirements or overlay_max_age_days is not None:
+            try:
+                release_coverage = _export.verify_overlay_release_coverage(
+                    manifest, release_requirements,
+                    max_age_days=overlay_max_age_days)
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            release_note = ", per-release overlay coverage OK (" + ", ".join(
+                f"{table} {release} {entry['rows']} row(s)"
+                for table, releases in release_coverage.items()
+                for release, entry in releases.items()) + ")"
+        # The per-release floor cannot see a package that stopped
+        # returning rows while its release still looks populated: the
+        # per-(release, package) refresh deletes the rows it replaces, so
+        # a source package whose tracker feed went empty leaves that
+        # (release, package) pair with no rows while the release's row
+        # total and freshness still pass. The per-package requirement says
+        # which (release, package) pairs the host needs and how many rows
+        # each must carry.
+        package_note = ""
+        try:
+            package_requirements = _parse_overlay_package_requirements(
+                getattr(args, "require_overlay_package", None))
+        except ValueError as exc:
+            print(f"spine verify: FAILED — {exc}")
+            return 1
+        if package_requirements:
+            try:
+                package_coverage = _export.verify_overlay_package_coverage(
+                    manifest, package_requirements)
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            package_note = ", per-package overlay coverage OK (" + ", ".join(
+                f"{table} {release} {package} {rows} row(s)"
+                for table, releases in package_coverage.items()
+                for release, packages in releases.items()
+                for package, rows in packages.items()) + ")"
+        # The known-exploited set is the map's statement about what is
+        # being exploited in the wild, and it is what the threat axis
+        # reads. The CISA KEV ingest is a no-wipe full refresh, so a fetch
+        # that fails leaves the last-known-good rows in place: the map
+        # stays intact, signed, fresh and consistent with its own
+        # manifest, every other check still passes, and only the age of
+        # the known-exploited rows shows that the set stopped being
+        # refreshed. The requirement says how many rows the host needs
+        # and how old they may be.
+        kev_note = ""
+        kev_min_rows = getattr(args, "require_kev", None)
+        kev_max_age_days = getattr(args, "require_kev_max_age_days", None)
+        if kev_min_rows is not None or kev_max_age_days is not None:
+            try:
+                kev_coverage = _export.verify_kev_coverage(
+                    manifest, min_rows=kev_min_rows,
+                    max_age_days=kev_max_age_days)
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            kev_note = (f", known-exploited coverage OK "
+                        f"({kev_coverage['rows']} row(s))")
+        # The Apple fix overlay is authoritative for iOS/iPadOS/macOS fix
+        # versions (NVD's Apple coverage is thin). The ingest is a per-product
+        # full refresh that is no-wipe on the caller side, so a failed fetch
+        # leaves the last-known-good rows serving while every other check
+        # still passes. The requirement says how many rows the host needs and
+        # how old they may be.
+        apple_note = ""
+        apple_min_rows = getattr(args, "require_apple_fixes", None)
+        apple_max_age_days = getattr(args, "require_apple_fixes_max_age_days",
+                                     None)
+        if apple_min_rows is not None or apple_max_age_days is not None:
+            try:
+                apple_coverage = _export.verify_apple_fixes_coverage(
+                    manifest, min_rows=apple_min_rows,
+                    max_age_days=apple_max_age_days)
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            apple_note = (f", Apple fix coverage OK "
+                          f"({apple_coverage['rows']} row(s))")
+        # The Apple fix overlay is ingested per product (a per-product full
+        # refresh, so a product whose feed returned nothing loses its rows),
+        # so the table-level floor cannot see a product that went empty
+        # while the other products keep theirs. The per-product
+        # requirement says which products the host needs and how many rows
+        # each must carry.
+        apple_product_note = ""
+        apple_products = getattr(args, "require_apple_fixes_product", None)
+        apple_product_max_age_days = getattr(
+            args, "require_apple_fixes_product_max_age_days", None)
+        if apple_products or apple_product_max_age_days is not None:
+            try:
+                apple_product_requirements = (
+                    _parse_apple_fixes_product_requirements(apple_products))
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            try:
+                apple_product_coverage = (
+                    _export.verify_apple_fixes_product_coverage(
+                        manifest, apple_product_requirements,
+                        max_age_days=apple_product_max_age_days))
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            if apple_product_coverage:
+                apple_product_note = (
+                    ", per-product Apple fix coverage OK (" + ", ".join(
+                        f"{product} {entry['rows']} row(s)"
+                        for product, entry in apple_product_coverage.items())
+                    + ")")
+        # The EPSS overlay scores every published CVE daily with a
+        # probability of exploitation. The ingest is a full refresh that is
+        # no-wipe on the caller side, so a failed fetch leaves the
+        # last-known-good rows serving while every other check still passes.
+        # The requirement says how many rows the host needs and how old they
+        # may be.
+        epss_note = ""
+        epss_min_rows = getattr(args, "require_epss", None)
+        epss_max_age_days = getattr(args, "require_epss_max_age_days", None)
+        if epss_min_rows is not None or epss_max_age_days is not None:
+            try:
+                epss_coverage = _export.verify_epss_coverage(
+                    manifest, min_rows=epss_min_rows,
+                    max_age_days=epss_max_age_days)
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            epss_note = (f", EPSS coverage OK "
+                         f"({epss_coverage['rows']} row(s))")
+        # The EPSS overlay scores every CVE with an exploitation likelihood
+        # and a percentile. The table-level coverage check above asks whether
+        # the overlay holds rows; a per-table answer hides a distribution
+        # failure: a map that holds 270k rows passes the floor while quietly
+        # losing every CVE in the top percentile bands if the model shifted
+        # or a partial fetch narrowed the set. The per-band requirement
+        # names the percentile thresholds the host needs populated.
+        epss_band_note = ""
+        epss_band_reqs = getattr(args, "require_epss_score_band", None)
+        if epss_band_reqs:
+            band_requirements: list[tuple[float, int]] = []
+            for value in epss_band_reqs:
+                percentile_str, _, rows_str = str(value).partition(":")
+                try:
+                    band_percentile = float(percentile_str)
+                    band_min_rows = int(rows_str)
+                except ValueError:
+                    print(f"spine verify: FAILED — "
+                          f"--require-epss-score-band {value} does not "
+                          f"name a percentile and a row count "
+                          f"(expected PERCENTILE:MIN_ROWS)")
+                    return 1
+                band_requirements.append((band_percentile, band_min_rows))
+            try:
+                epss_band_coverage = _export.verify_epss_score_band_coverage(
+                    manifest, requirements=band_requirements)
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            epss_band_note = (
+                ", per-band EPSS coverage OK (" + ", ".join(
+                    f"p>={band} {entry['rows']} row(s)"
+                    for band, entry in epss_band_coverage.items())
+                + ")")
+        ok_line = f"spine verify: OK — {len(manifest['files'])} shard(s), "
+        ok_line += f"{manifest['counts']}"
+        if signature_note:
+            ok_line += f", {signature_note}"
+        ok_line += freshness_note
+        ok_line += overlay_note
+        ok_line += release_note
+        ok_line += package_note
+        ok_line += kev_note
+        ok_line += apple_note
+        ok_line += apple_product_note
+        ok_line += epss_note
+        ok_line += epss_band_note
+        print(ok_line)
+        return 0
+    # publish is the deployment line's serving path: export into a staging
+    # directory, verify it, and swap it into the served directory in one step.
+    # A failed export or a failed verification leaves the previously published
+    # map untouched — the served map is never half-written.
+    if args.sub == "publish":
+        policy = _load_policy(args.policy)
+        with _open_db(args.db, readonly=True) as conn:
+            manifest = _export.publish_spine(
+                conn, out_dir=args.out, policy_version=policy.version,
+                sign_key=getattr(args, "sign_key", None))
+        print(f"spine publish: {manifest['counts']} -> {args.out}/{_export.SPINE_DIR}/ "
+              f"(verified, published atomically)")
+        if not getattr(args, "sign_key", None):
+            print(f"  sign it: cosign sign-blob --output-signature "
+                  f"{args.out}/{_export.SPINE_DIR}/state.sig "
+                  f"{args.out}/{_export.SPINE_DIR}/manifest.json")
         return 0
     # import is the client consumption path: load the signed spine JSONL into a
     # local DB, then run `assess` over private devices. Data-only — never touches
@@ -620,6 +1017,20 @@ def _cmd_spine(args) -> int:
         if getattr(args, "verify_sig", False) and getattr(args, "signature_key", None):
             _export.verify_manifest_signature(args.from_dir, args.signature_key)
             print(f"  signature verified -> {args.from_dir}/{_export.SPINE_DIR}/state.sig")
+        # A client that pulls the map can refuse a map that is older than it
+        # is willing to trust, for the same reason the operator does: a
+        # served map that stopped being rebuilt stays intact and passes
+        # every digest check.
+        max_age_days = getattr(args, "max_age_days", None)
+        if max_age_days is not None:
+            try:
+                age = _export.verify_manifest_freshness(
+                    _export.read_manifest(args.from_dir), max_age_days)
+            except (ValueError, OSError) as exc:
+                print(f"spine import: FAILED — {exc}")
+                return 1
+            print(f"  map is {age:.1f} day(s) old (within the "
+                  f"{max_age_days:g} day(s) allowed)")
         with _open_db(args.db) as conn:
             _glossary.ensure_seeded(conn)
             stats = _export.import_spine(conn, from_dir=args.from_dir,
@@ -778,18 +1189,26 @@ def _cmd_ingest_ubuntu(args) -> int:
     policy = _load_policy(args.policy)
     releases = [r.strip().lower() for r in (args.release or []) if r.strip()]
     packages = [p.strip() for p in (args.package or []) if p.strip()]
+    source = getattr(args, "source", "http")
     with _open_db(args.db) as conn:
         _install_policy_if_needed(conn, policy)
-        stats = _ubuntu_ingest_mod.ubuntu_ingest_tick(
-            conn, releases=releases, packages=packages, now=_engine._now())
+        if source == "git":
+            stats = _ubuntu_git_ingest_mod.ubuntu_git_ingest_tick(
+                conn, releases=releases, packages=packages,
+                tracker_dir=getattr(args, "tracker_dir", None),
+                now=_engine._now())
+        else:
+            stats = _ubuntu_ingest_mod.ubuntu_ingest_tick(
+                conn, releases=releases, packages=packages, now=_engine._now())
         conn.commit()
     if stats["error"]:
         print(f"ingest ubuntu: no-op ({stats['error']})")
         return 1
+    src_label = stats.get("source", "http")
     print(f"ingest ubuntu: {stats['rows']} overlay row(s) across "
           f"{stats['sheets']} sheet(s) "
           f"({len(stats['releases'])} release(s) x {len(stats['packages'])} "
-          f"package(s)) · fetched={stats['fetched']}")
+          f"package(s)) · fetched={stats['fetched']} · source={src_label}")
     line = _attr.attribution_for("ubuntu_tracker")
     if line:
         print(f"  {line}")
@@ -863,6 +1282,29 @@ def _cmd_ingest_osv(args) -> int:
         print(f"  {line}")
     return 0
 
+
+def _cmd_ingest_nvd_cpe(args) -> int:
+    policy = _load_policy(args.policy)
+    with _open_db(args.db) as conn:
+        _install_policy_if_needed(conn, policy)
+        stats = _refresh.nvd_cpe_ingest_tick(
+            conn, cpes=args.cpe, policy_version=policy.version,
+            now=_engine._now(), cap=args.cap)
+        conn.commit()
+    if stats["errors"]:
+        print(f"ingest nvd-cpe: {stats['upserted']} row(s) upserted · "
+              f"{stats['skipped']} skipped · {stats['incomplete']} incomplete")
+        for e in stats["errors"][:10]:
+            print(f"  {e}")
+        return 1
+    print(f"ingest nvd-cpe: {stats['upserted']} row(s) upserted · "
+          f"{stats['skipped']} skipped across {len(stats['heads'])} CPE head(s)")
+    for r in stats["results"]:
+        print(f"  {r['cpe']}: {r['rows']} row(s) ({r['reason']})")
+    line = _attr.attribution_for("nvd")
+    if line:
+        print(f"  {line}")
+    return 0
 
 def _cmd_refresh(args) -> int:
     policy = _load_policy(args.policy)
@@ -947,6 +1389,77 @@ def _cmd_enrich_llm(args) -> int:
     return 0
 
 
+def _cmd_source_history(args) -> int:
+    """Public-infrastructure event ledger (source reliability history)."""
+    ledger = _source_history.default_ledger()
+    if getattr(args, "file", None):
+        # .json is read as the versioned document; anything else as JSONL.
+        ledger = _source_history.EventLedger.load_any(args.file)
+    sub = args.sub
+    if sub == "list":
+        print(f"{'date':12} {'source':8} {'type':16} {'layer':12} {'status':9} id")
+        print("-" * 80)
+        for e in ledger.sorted_by_date():
+            print(f"{e.date:12} {e.source:8} {e.event_type:16} "
+                  f"{e.map_layer:12} {e.status:9} {e.id}")
+        print(f"{len(ledger.events)} events ({len(ledger.active())} active)")
+        if ledger.version:
+            print(f"ledger version: {ledger.version}"
+                  + (f" (dated {ledger.dated})" if ledger.dated else ""))
+        return 0
+    if sub == "show":
+        e = ledger.get(args.target)
+        if not e:
+            print(f"{args.target}: not in ledger")
+            return 1
+        print(json.dumps(e.to_dict(), indent=2))
+        return 0
+    if sub == "source":
+        rows = ledger.for_source(args.target)
+        if not rows:
+            print(f"{args.target}: no events")
+            return 1
+        for e in rows:
+            print(f"{e.date}  {e.id}  [{e.status}]")
+            print(f"  {e.summary}")
+            if e.interpretation:
+                print(f"  -> {e.interpretation}")
+        return 0
+    return 2
+
+
+def _cmd_purge(args) -> int:
+    """Bounded-growth purge: forget ancient defects that are no longer
+    relevant, so the catalog on a small host stays bounded. A dry run reports
+    what would go without touching the catalog."""
+    with _open_db(args.db) as conn:
+        stats = _store.purge_defects(
+            conn,
+            max_age_days=args.max_age_days,
+            keep_epss_percentile=args.keep_epss_percentile,
+            dry_run=args.dry_run,
+        )
+    cc = stats["candidate_count"]
+    cd = stats["cutoff_date"]
+    ma = stats["max_age_days"]
+    ke = stats["keep_epss_percentile"]
+    if args.dry_run:
+        print(f"DRY RUN — {cc} defect(s) eligible for purge "
+              f"(cutoff: {cd}, age={ma}d, keep EPSS >= {ke})")
+        return 0
+    print(f"purge complete — cutoff {cd} (age={ma}d, keep EPSS >= {ke})")
+    print(f"  defects purged:       {stats['defects_purged']}")
+    print(f"  crosswalk purged:     {stats['crosswalk_purged']}")
+    print(f"  seen_defects purged:  {stats['seen_defects_purged']}")
+    orphans = stats["orphan_overlays_purged"]
+    print(f"  orphan kev purged:          {orphans['kev']}")
+    print(f"  orphan epss purged:         {orphans['epss']}")
+    print(f"  orphan debian_fixes purged: {orphans['debian_fixes']}")
+    print(f"  orphan ubuntu_fixes purged: {orphans['ubuntu_fixes']}")
+    print(f"  orphan apple_fixes purged:  {orphans['apple_fixes']}")
+    return 0
+
+
 def _cmd_catalog(args) -> int:
     with _open_db(args.db, readonly=True) as conn:
         if args.sub == "show":
@@ -1028,6 +1541,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--axis", default="vulnerability")
     sp.add_argument("--date"); sp.add_argument("--claim"); sp.add_argument("--citation")
     sp.add_argument("--direction", default="other")
+    sp.add_argument("--no-source-history", action="store_true",
+                    help="do not consult the public-infrastructure event ledger "
+                         "for the source-reliability signal")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_health)
 
     sp = sub.add_parser("distrust", help="mark a observer's verdicts distrusted (retroactive)")
@@ -1070,17 +1586,136 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("proposal_id", nargs="?", default=None)
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_repair)
 
-    sp = sub.add_parser("spine", help="spine: show | export | import")
-    sp.add_argument("sub", choices=["show", "export", "import"])
+    sp = sub.add_parser("spine", help="spine: show | export | import | verify | publish")
+    sp.add_argument("sub", choices=["show", "export", "import", "verify", "publish"])
     sp.add_argument("--out", default=".", help="export output dir (default: cwd)")
     sp.add_argument("--from", dest="from_dir", default=".", help="import source dir (default: cwd)")
     sp.add_argument("--no-verify", action="store_true", help="import: skip manifest sha256 check")
     sp.add_argument("--sign-key", dest="sign_key", default=None,
                     help="export: sign manifest.json with this ed25519 private key (PEM) -> state.sig")
     sp.add_argument("--verify-sig", dest="verify_sig", action="store_true",
-                    help="import: verify state.sig before importing")
+                    help="verify/import: verify the manifest's ed25519 signature (state.sig) before trusting the map")
     sp.add_argument("--signature-key", dest="signature_key", default=None,
-                    help="import: ed25519 public key (PEM) for --verify-sig")
+                    help="verify/import: ed25519 public key (PEM) for --verify-sig")
+    sp.add_argument("--max-age-days", dest="max_age_days", type=_max_age_days,
+                    default=None,
+                    help="verify/import: fail when the map's manifest is older than this "
+                         "many days (the daily build keeps the last good map serving, so a "
+                         "stale map means the build has stopped)")
+    sp.add_argument("--require-overlay", dest="require_overlay", action="append",
+                    default=None, metavar="TABLE",
+                    help="verify: fail when the map does not carry this overlay table's "
+                         "rows (repeatable; the overlay tables are: "
+                         + ", ".join(_export.OVERLAY_TABLES) + ")")
+    sp.add_argument("--require-overlay-release", dest="require_overlay_release",
+                    action="append", default=None,
+                    metavar="TABLE:RELEASE:MIN_ROWS",
+                    help="verify: fail when the map does not carry at least "
+                         "MIN_ROWS rows for a release of a release-keyed overlay "
+                         "table (repeatable; the release-keyed overlay tables "
+                         "are: " + ", ".join(_export.RELEASE_KEYED_OVERLAY_TABLES)
+                         + "; a release whose tracker feed returned nothing "
+                         "leaves the table populated with the other "
+                         "releases' rows, which the presence-only check "
+                         "cannot see)")
+    sp.add_argument("--require-overlay-max-age-days",
+                    dest="require_overlay_max_age_days", type=float,
+                    default=None, metavar="DAYS",
+                    help="verify: fail when the newest row of a required "
+                         "overlay release was fetched more than this many "
+                         "days ago (a release the nightly job stopped "
+                         "ingesting keeps its last-known-good rows, so only "
+                         "their age shows that they went stale)")
+    sp.add_argument("--require-overlay-package", dest="require_overlay_package",
+                    action="append", default=None,
+                    metavar="TABLE:RELEASE:PACKAGE:MIN_ROWS",
+                    help="verify: fail when the map does not carry at least "
+                         "MIN_ROWS rows for a source package of a release of "
+                         "a release-keyed overlay table (repeatable; the "
+                         "release-keyed overlay tables are: "
+                         + ", ".join(_export.RELEASE_KEYED_OVERLAY_TABLES)
+                         + "; a source package whose tracker feed returned "
+                         "nothing leaves that release looking populated "
+                         "while its fix-status rows are gone, which the "
+                         "per-release floor cannot see)")
+    sp.add_argument("--require-kev", dest="require_kev", type=int,
+                    default=None, metavar="MIN_ROWS",
+                    help="verify: fail when the map carries fewer "
+                         "known-exploited (kev) rows than this (the CISA "
+                         "Known Exploited Vulnerabilities set is what the "
+                         "threat axis reads, and the ingest is a no-wipe "
+                         "refresh, so a failed fetch leaves the "
+                         "last-known-good rows serving)")
+    sp.add_argument("--require-kev-max-age-days",
+                    dest="require_kev_max_age_days", type=float,
+                    default=None, metavar="DAYS",
+                    help="verify: fail when the map's newest known-exploited "
+                         "row was fetched more than this many days ago (a "
+                         "known-exploited set that stopped being refreshed "
+                         "still satisfies the row floor)")
+    sp.add_argument("--require-apple-fixes", dest="require_apple_fixes",
+                    type=int, default=None, metavar="MIN_ROWS",
+                    help="verify: fail when the map carries fewer Apple fix "
+                         "(apple_fixes) rows than this (Apple's own "
+                         "advisories are authoritative for iOS/iPadOS/macOS "
+                         "fix versions; the ingest is a per-product full "
+                         "refresh that is no-wipe on the caller side, so a "
+                         "failed fetch leaves the last-known-good rows "
+                         "serving)")
+    sp.add_argument("--require-apple-fixes-max-age-days",
+                    dest="require_apple_fixes_max_age_days", type=float,
+                    default=None, metavar="DAYS",
+                    help="verify: fail when the map's newest Apple fix row "
+                         "was fetched more than this many days ago (an "
+                         "Apple fix overlay that stopped being refreshed "
+                         "still satisfies the row floor)")
+    sp.add_argument("--require-apple-fixes-product",
+                    dest="require_apple_fixes_product",
+                    action="append", default=None,
+                    metavar="PRODUCT:MIN_ROWS",
+                    help="verify: fail when the map does not carry at least "
+                         "MIN_ROWS Apple fix rows for a product (repeatable; "
+                         "the Apple fix overlay is ingested per product, so a "
+                         "product whose advisory feed returned nothing loses "
+                         "its rows while the table still holds the other "
+                         "products' rows, which the table-level floor cannot "
+                         "see)")
+    sp.add_argument("--require-apple-fixes-product-max-age-days",
+                    dest="require_apple_fixes_product_max_age_days",
+                    type=float, default=None, metavar="DAYS",
+                    help="verify: fail when the newest Apple fix row of a "
+                         "required product was fetched more than this many "
+                         "days ago (each product is refreshed on its own, so "
+                         "a product that stopped being refreshed still "
+                         "satisfies the per-product row floor)")
+    sp.add_argument("--require-epss", dest="require_epss", type=int,
+                    default=None, metavar="MIN_ROWS",
+                    help="verify: fail when the map carries fewer EPSS "
+                         "(exploitability-probability) rows than this "
+                         "(FIRST.org scores every published CVE daily; "
+                         "the ingest is a full refresh that is no-wipe on "
+                         "the caller side, so a failed fetch leaves the "
+                         "last-known-good rows serving)")
+    sp.add_argument("--require-epss-max-age-days",
+                    dest="require_epss_max_age_days", type=float,
+                    default=None, metavar="DAYS",
+                    help="verify: fail when the map's newest EPSS row was "
+                         "fetched more than this many days ago (an EPSS "
+                         "overlay that stopped being refreshed still "
+                         "satisfies the row floor)")
+    sp.add_argument("--require-epss-score-band",
+                    dest="require_epss_score_band",
+                    action="append", default=None,
+                    metavar="PERCENTILE:MIN_ROWS",
+                    help="verify: fail when the map does not carry at "
+                         "least MIN_ROWS EPSS entries with a percentile "
+                         "at or above PERCENTILE (repeatable; the EPSS "
+                         "overlay scores every CVE with an exploitation "
+                         "likelihood, and the high-percentile bands are "
+                         "the ones an operator triages first, so a map "
+                         "that lost them passes the table-level floor "
+                         "while the prioritization surface is silently "
+                         "narrowed)")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_spine)
 
     # -- ingestion: CVE stream + incremental refresh + catalog ---------------
@@ -1094,7 +1729,7 @@ def build_parser() -> argparse.ArgumentParser:
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_backfill)
 
     # -- ingestion: aggregator peers (KEV overlay first; OSV/GHSA to follow) ----
-    sp = sub.add_parser("ingest", help="ingest an aggregator peer / fix / exploitability overlay into the catalog (kev | osv | ghsa | apple | debian | ubuntu | epss)")
+    sp = sub.add_parser("ingest", help="ingest an aggregator peer / fix / exploitability overlay into the catalog (kev | osv | ghsa | apple | debian | ubuntu | epss | nvd-cpe)")
     psub = sp.add_subparsers(dest="peer", required=True)
     spk = psub.add_parser("kev", help="CISA KEV overlay refresh (exploitability_signal; CVE-keyed, full refresh)")
     db_arg(spk); pol_arg(spk); spk.set_defaults(func=_cmd_ingest_kev)
@@ -1122,9 +1757,19 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Ubuntu release codename to ingest (noble|jammy|focal|...); repeatable, REQUIRED (no default public-spine scope is wired)")
     spu.add_argument("--package", action="append", default=None, required=True,
                     help="Ubuntu source package to ingest (linux|...); repeatable, REQUIRED (no default public-spine scope is wired)")
+    spu.add_argument("--source", choices=["http", "git"], default="http",
+                    help="Ubuntu fix-status source: 'http' (default, the paginated bulk-CVE-JSON API) or 'git' (the ubuntu-cve-tracker git repository, one git pull instead of thousands of paginated requests)")
+    spu.add_argument("--tracker-dir", default=None,
+                    help="Path to the ubuntu-cve-tracker checkout (git source only; default /opt/posture/ubuntu-cve-tracker)")
     db_arg(spu); pol_arg(spu); spu.set_defaults(func=_cmd_ingest_ubuntu)
     spe = psub.add_parser("epss", help="FIRST.org EPSS exploitability-likelihood overlay (CVE-keyed; daily full refresh; fills the NVD-degradation gap; complementary to kev)")
     db_arg(spe); pol_arg(spe); spe.set_defaults(func=_cmd_ingest_epss)
+    spn = psub.add_parser("nvd-cpe", help="NVD CPE-head ingestion: query NVD by one or more CPE heads and upsert every matching CVE into the catalog")
+    spn.add_argument("--cpe", action="append", required=True,
+                    help="CPE 2.3 head to query (e.g. cpe:2.3:o:linux:linux_kernel); repeatable")
+    spn.add_argument("--cap", type=int, default=None,
+                    help="max total rows to upsert this tick (default: no cap)")
+    db_arg(spn); pol_arg(spn); spn.set_defaults(func=_cmd_ingest_nvd_cpe)
 
     sp = sub.add_parser("refresh", help="incremental NVD enrichment + per-CVE re-decide (wipe-proof; never a bulk re-pull)")
     sp.add_argument("--devices", default=DEFAULT_DEVICES, help="fleet YAML (list of device dicts)")
@@ -1153,6 +1798,29 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=100)
     sp.add_argument("--offset", type=int, default=0)
     db_arg(sp); sp.set_defaults(func=_cmd_catalog)
+
+    sp = sub.add_parser("purge",
+                        help="bounded-growth: remove ancient defects no longer relevant (dry-run capable)")
+    sp.add_argument("--max-age-days", type=int, default=_store.DEFAULT_PURGE_AGE_DAYS,
+                    help=f"purge defects older than this many days "
+                         f"(default: {_store.DEFAULT_PURGE_AGE_DAYS})")
+    sp.add_argument("--keep-epss-percentile", type=float,
+                    default=_store.DEFAULT_KEEP_EPSS_PERCENTILE,
+                    help=f"keep CVEs with EPSS percentile >= this "
+                         f"(default: {_store.DEFAULT_KEEP_EPSS_PERCENTILE})")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="report what would be purged without deleting")
+    db_arg(sp); sp.set_defaults(func=_cmd_purge)
+
+    sp = sub.add_parser("source-history",
+                        help="public-infrastructure event ledger: list | show <id> | source <src>")
+    sp.add_argument("sub", choices=["list", "show", "source"])
+    sp.add_argument("target", nargs="?", default=None,
+                    help="event id (show) or source id (source)")
+    sp.add_argument("--file", default=None,
+                    help="ledger file: .json document or .jsonl stream "
+                         "(default: bundled versioned seed data)")
+    sp.set_defaults(func=_cmd_source_history)
 
     return p
 

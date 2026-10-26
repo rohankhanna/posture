@@ -89,7 +89,9 @@ The library API surface:
 | `posture.refresh` | `refresh_tick(conn, devices, ...)` | Incremental NVD enrichment + re-decide |
 | `posture.export` | `export_spine(conn, out_dir, ...)` | Serialize catalog to signed JSONL shards |
 | `posture.export` | `verify_spine(from_dir)` | Verify shard hashes against manifest |
+| `posture.export` | `verify_manifest_freshness(manifest, max_age_days)` | Fail when a served map is older than the host allows |
 | `posture.export` | `import_spine(conn, from_dir)` | Import verified JSONL into local SQLite |
+| `posture.export` | `publish_spine(conn, out_dir, ...)` | Export, verify, and swap the served map in one atomic step |
 
 The engine never imports a source by name. Sources register themselves in the
 default registry; the policy decides which run and in what order. Adding a
@@ -123,6 +125,81 @@ cosign sign-blob               (recompute sha256, assert match)
 ↓                              ↓
 commit spine/                   posture assess <device.yaml>
 ```
+
+Every shard the export writes is **size-capped**: a defect month that outgrows
+the cap becomes numbered parts (`2026-07-000001.jsonl`, ...), and the flat
+overlay tables are capped the same way (`crosswalk-000001.jsonl`, ...). The cap
+sits well below the repository host's hard per-file limit (a push containing a
+file above it is rejected outright), and the export fails closed if a written
+shard ever reaches that limit — an un-publishable map is never published. The
+committed tree is checked by `scripts/check_spine_size.sh` (a gate of
+`scripts/verify-all`).
+
+On a host that serves the spine directory directly to clients (the single-VPS
+deployment line), publication is **atomic and verified**: `publish_spine()`
+exports into a staging directory, verifies the staged map against its own
+manifest (every shard's sha256 + row count), and only then moves it into the
+served directory with a single rename. A failed export or a failed verification
+leaves the previously published map serving untouched, so the served map is
+always either the last verified snapshot or the new one — never a mixture.
+
+The catalog that backs that map only grows, and the serving host's disk does
+not, so the deployment line is **bounded in growth** as well. A disk-space
+guard refuses to start a build that would fill the disk; a bounded-growth
+purge (`posture purge`) forgets ancient defects that are no longer relevant,
+never a known-exploited defect, never a defect that is still highly
+exploitable, and never one with an outstanding fix on a tracked distribution;
+a weekly git maintenance pass reclaims the pack-file bloat the advisory and
+CVE clones accumulate. The purge runs before the publish, so the published map
+is the purged map and the export never carries rows that are about to be
+forgotten.
+
+The daily job (`scripts/vps_spine.sh`) is a shell script that calls this
+package's command-line interface, so the two can drift apart. The
+**deployment-line command gate** (`scripts/check_deployment_line.sh`) makes
+that drift loud: every `posture ...` invocation in the daily script must
+resolve against the interface this repository ships, and the check runs as a
+gate of `scripts/verify-all`. A missing capability is a loud UNKNOWN, never a
+silently degraded spine.
+
+The same gate covers the systemd units and the **deployment runbook**
+(`docs/deployment.md`), the operator's procedure for putting this tree on
+the single-VPS host and for verifying the published map there. The runbook is
+kept honest by the same mechanism: a unit it does not install, a tree path it
+points at that does not exist, a command this repository does not provide, an
+environment variable nothing reads, and an environment variable a shipped unit
+sets but the runbook does not document are all loud at check time, so the
+runbook cannot quietly stop describing the tree it installs.
+
+The runbook also declares a **host contract**: the install root, the state
+and export directories, the two environment files and the service account
+the units are written against. The gate checks the units against that
+contract (a unit whose `WorkingDirectory`, account, state directory,
+catalog paths or environment file no longer match it is drift, and the
+contract is what maps a unit's absolute script path back into this tree),
+and checks the contract against the runbook's install layout table, so the
+two never disagree about where the tree lives on the host.
+
+Atomic publication hides one failure mode: when the daily build stops, the
+previously published map keeps serving, intact and consistent with its own
+manifest, so every check on the map's contents still passes. The map's build
+timestamp (`generated_at`) is the only thing that shows the build stopped, so
+`posture spine verify --max-age-days N` reads it and fails when the map is
+older than the host allows. The runbook's host contract declares that age
+(`map_max_age_days`), and the gate checks that the runbook's verification
+uses exactly the number the contract declares.
+
+The contract also governs the runbook's own operator commands. Every path
+a runbook command names must be governed by the contract or be a standard
+system path; the account the runbook creates must be the contract's
+service account, with the contract's state directory as its home; an
+owner or group a command names must be that account or root; a directory
+the daily job writes into must be owned by the service account; and every
+unit the tree ships must be installed by a command into the unit directory
+its kind belongs in (a system unit in `/etc/systemd/system`, a user unit
+in `~/.config/systemd/user`). One block therefore describes the whole
+host the operator builds: where the tree lives, who runs it, and what the
+operator's commands create.
 
 The spine is **data-only**. It serializes these MAP tables:
 

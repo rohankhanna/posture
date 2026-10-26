@@ -478,6 +478,84 @@ signature over `manifest.json`). Distribute the public key to clients; guard the
 private key (chmod 600). The VPS runner signs when `POSTURE_SIGN_KEY` is set in
 its environment.
 
+**Publishing a self-hosted map (atomic, verified).** When a host serves the
+spine directory directly to clients, the directory must never be observed
+half-written: an export that dies halfway would leave shards that no longer
+match the manifest, and the export's own cleanup can delete shards the previous
+manifest still references. `posture spine publish` removes that window — it
+exports into a staging directory, checks the staged map against its own
+manifest (every shard's sha256 and row count), and only then moves it into the
+served directory with a single rename:
+
+```bash
+# Build, verify, and publish the served map (sign it in the same step):
+posture spine publish --db posture.db --out /var/lib/posture --sign-key signing_key.pem
+
+# Check a map that is already on disk (what a client can run on a pulled map):
+posture spine verify --from /var/lib/posture
+
+# When the manifest is signed, also check its signature against the public key
+# (the same trust check a client makes before it imports):
+posture spine verify --from /var/lib/posture --verify-sig --signature-key signing_pub.pem
+
+# Also fail when the map is older than the host allows. Publication is atomic,
+# so a build that has been failing for days leaves the last good map serving
+# and every content check on it still passes; only the map's own build
+# timestamp shows that the build stopped.
+posture spine verify --from /var/lib/posture --max-age-days 2
+```
+
+A failed export or a failed verification leaves the previously published map
+serving untouched — the served map is always the last verified snapshot or the
+new one, never a mixture. The deployment line's daily job
+(`scripts/vps_spine.sh`) publishes through this path.
+
+**Shard size caps.** The repository host refuses a push that contains a file
+above its hard per-file limit, so the export caps every shard it writes well
+below it. A defect month that outgrows the cap becomes numbered parts
+(`2026-07-000001.jsonl`, ...), and the flat overlay tables are capped the same
+way (`crosswalk-000001.jsonl`, ...). The export also fails closed if a written
+shard ever reaches the hard limit, so an un-publishable map is never
+published. The committed tree is checked by `scripts/check_spine_size.sh`,
+which runs as the third gate of `scripts/verify-all`.
+
+**Bounded growth on the serving host.** The catalog only ever grows and the
+host's disk does not, so the deployment line bounds itself in three places. A
+disk-space guard refuses to start a build that would fill the disk (it tries an
+aggressive one-year-retention purge first). A bounded-growth purge forgets
+ancient defects that are no longer relevant — never a known-exploited defect,
+never a defect that is still highly exploitable, never a defect with an
+outstanding fix on a tracked distribution, and never a row without a published
+date. A weekly git maintenance pass reclaims the pack-file bloat the advisory
+and CVE clones accumulate. The purge runs before the publish, so the served map
+is the purged map in one atomic publish:
+
+```bash
+# Report what the growth guard would forget, without forgetting anything:
+posture purge --dry-run --db posture.db
+
+# Forget it:
+posture purge --max-age-days 3650 --keep-epss-percentile 0.90 --db posture.db
+```
+
+**The deployment-line command gate.** The daily job is a shell script that
+calls this command-line interface. When the script and the package drift
+apart, the job calls a command that does not exist, the shell's best-effort
+handlers swallow it, and the spine silently loses a capability.
+`scripts/check_deployment_line.sh` closes that window: every `posture ...`
+invocation in the daily script must resolve against the interface this
+repository ships. It runs as the fourth gate of `scripts/verify-all`, so a
+script that outruns its package fails loudly instead of quietly. The same
+gate covers the systemd units and the deployment runbook, including the
+runbook's **host contract** — the install root, the state and export
+directories, the environment files and the service account the units are
+written against — so a unit that drifts away from the documented host
+layout fails loudly instead of quietly at 03:07 UTC. The runbook's own
+operator commands are bound to that contract too: the directories they
+create, the account they create, the ownership they set and the directory
+each unit is installed into are all checked against it, so a contract that
+changes without its commands describes a host nobody builds.
+
 ## Data sources and ingestion
 
 **How the product is actually used.** There are two audiences for ingestion, and
@@ -505,8 +583,50 @@ gated) lives in [`docs/sources.md`](docs/sources.md).
 | `posture ingest osv --cap N` | osv.dev hub — the highest-leverage peer (RustSec, PyPA, Go, Red Hat, Debian, Ubuntu, Alpine…). Per-ecosystem backfill + incremental. A CVE-less OSV record still anchors as first-class. |
 | `posture ingest kev` | CISA KEV overlay (annotates existing CVE rows; not a new defect type). Idempotent full refresh, ~1,660 entries. |
 | `posture ingest apple [--product …] [--history]` | Apple advisory fix-version overlay, CVE+product-keyed, per-product full refresh. `--history` recovers pre-index CVEs from Wayback (more fetches). |
+| `posture ingest nvd-cpe --cpe <cpe> [--cap N]` | NVD CPE-head ingestion: query NVD by one or more CPE heads and upsert every matching CVE into the catalog. Use this to seed the exact host-matcher heads a self-hosted spine must cover. |
 | `posture refresh [--devices <yaml> \| --no-devices]` | Incremental NVD enrichment + per-CVE re-decide; upserts verdicts one key at a time, never a bulk swap. |
 | `posture enrich llm [--source …] [--cap N] [--model M] [--dry-run]` | Source-agnostic LLM draft over thin/unscored catalog rows (every peer scheme, not just NVD). LLM-as-map/human-as-trust: the LLM drafts catalog MAP fields only, drafts are labeled `source='llm:<model>'`, and the assess decide path selects `source='nvd'` only, so a draft is structurally barred from ever producing a trust/DEFCON verdict. Off-by-default `POSTURE_LLM` seam (no provider until the operator gates one); `--dry-run` inspects the thin pool with no provider. |
+
+### Public-infrastructure event ledger (source reliability)
+
+The map is not the territory. A device's risk moves for two separable reasons:
+something changed on the device, or something changed **upstream** in the
+public sources posture depends on (NVD stopped enriching a CVE, MITRE moved to
+a new record format, an EPSS feed host expired, a rate limit tightened).
+Without a side-by-side record of the second kind, a shift in the fleet view is
+indistinguishable from a shift in the map.
+
+`posture source-history` is that record: a dated, structured ledger of
+upstream-source events, each with the source, the event kind, the map layer it
+perturbs, an evidence URL, its current status, and how posture should read it.
+
+```bash
+posture source-history list                      # the bundled, versioned history
+posture source-history show nvd-2026-04-15-enrichment-gap
+posture source-history source nvd
+posture source-history list --file my-ledger.jsonl   # your own ledger (JSONL or JSON)
+```
+
+The history is **data, not code** — the same trust-as-data discipline as the
+trust policy. It lives in the versioned, dated file
+[`posture/policy/source_history.json`](posture/policy/source_history.json)
+(beside `policy.yaml`), and the engine only reads it. Recording a new
+upstream event is a data edit plus a version bump, not a code change; the
+ledger is append-only — never rewrite a past event's facts, add a superseding
+one instead. The vocabulary of event kinds, map layers and statuses is
+deliberately **open**: a new kind of upstream event records without a code
+change.
+
+The ledger is wired into the trust-policy **degradation fallback**. Each
+event's `interpretation` field is the seam: it carries posture's read of what
+the upstream event means. `posture health <observer>` now surfaces the active
+source-history events for that observer's source alongside the measured
+operational health, and an *active* degradation/outage event forces the
+pre-declared fallback rule to engage even when the source is freshly fetched —
+a freshly-fetched verdict from a degraded source is still a degraded verdict.
+Other event kinds (rate-limit, feed-relocated, format-change, …) are surfaced
+as context (posture has adapted to them per their `interpretation`) but do not
+by themselves force the fallback. `--no-source-history` opts out of the signal.
 
 ### CI ingestion (the recommended publication path)
 
@@ -611,9 +731,10 @@ Every subcommand takes `--help` for full options. Common options include
 |---|---|
 | `posture stream` | MITRE cvelistV5 stream tick (skeletons, only-adds) |
 | `posture backfill --cap N` | cvelistV5 back-catalog (self-disables when done) |
-| `posture ingest {kev\|osv\|ghsa\|apple}` | aggregator peers + overlays (`apple`: `--product`, `--history`) |
+| `posture ingest {kev\|osv\|ghsa\|apple\|nvd-cpe}` | aggregator peers + overlays (`apple`: `--product`, `--history`; `nvd-cpe`: repeatable `--cpe`, optional `--cap`) |
 | `posture refresh [--no-devices\|--devices <yaml>] [--cap N]` | incremental NVD enrichment + re-decide |
 | `posture enrich llm [--source …] [--dry-run]` | source-agnostic LLM draft over thin/unscored rows (off-by-default `POSTURE_LLM`; LLM-as-map, never trust) |
+| `posture purge [--max-age-days N] [--keep-epss-percentile P] [--dry-run]` | bounded-growth: forget ancient defects that are no longer relevant (never a known-exploited or highly-exploitable one, never one with an outstanding fix on a tracked distribution) |
 
 **Governance & development**
 
@@ -623,6 +744,7 @@ Every subcommand takes `--help` for full options. Common options include
 | `posture glossary {list\|roles\|show\|add\|promote\|deprecate}` | the vocabulary as data (axes, defect types, roles) |
 | `posture monitor {run\|queue}` | vocabulary monitor |
 | `posture repair {list\|apply <id>\|reconcile}` | trust-repair proposals (`apply` takes a proposal id) |
+| `posture source-history {list\|show <id>\|source <src>}` | public-infrastructure event ledger: upstream-source reliability history (versioned data file) |
 
 ## Library API
 

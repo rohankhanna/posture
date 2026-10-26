@@ -57,8 +57,6 @@ NVD_API_KEY is never touched.
 """
 from __future__ import annotations
 
-import time
-
 from datetime import datetime, timezone
 from urllib.parse import quote
 
@@ -78,21 +76,6 @@ from . import ubuntu_tracker as _ut
 UBUNTU_CVE_URL = "https://ubuntu.com/security/cves.json"
 PAGE_SIZE = 20
 TIMEOUT = 300  # one package's CVE set can be a few thousand rows over a few pages
-
-# Fail-fast circuit breaker. Ubuntu's CVE endpoint is rate-fragile and serves
-# roughly 1180 paginated requests for two kernel packages (PAGE_SIZE=20, the
-# API refuses larger pages). When the upstream degrades -- intermittent
-# 503/504 or multi-second 200s -- the tick used to grind through every page
-# until the systemd unit's TimeoutStartSec killed the whole daily spine build,
-# taking the export step down with it. These thresholds abort the tick fast so
-# vps_spine.sh's `|| ... last-known-good retained, spine continues` fires and
-# the spine still refreshes from the other sources with the ubuntu overlay
-# held at last-known-good. The tick stays all-or-nothing (a mid-tick abort
-# writes nothing; the overlay is never partially wiped).
-MAX_CONSECUTIVE_FAIL = 8  # consecutive failed pages (non-200 / non-dict) -> abort
-MAX_TOTAL_FAIL = 80  # cumulative failed pages across the whole tick -> abort
-SLOW_PAGE_SECONDS = 5.0  # a successful page slower than this is a "slow" hit
-MAX_CONSECUTIVE_SLOW = 12  # consecutive slow pages -> abort (sustained upstream slowness)
 
 
 def _now() -> str:
@@ -120,7 +103,7 @@ def _fetch_page(package: str, offset: int, limit: int) -> tuple[dict | None, str
         if code == 200 and isinstance(data, dict):
             return data, "live"
         if attempt < 2:
-            time.sleep(2)
+            import time; time.sleep(2)
     return None, f"ubuntu cves fetch absent (http {code or 'timeout'})"
 
 
@@ -235,13 +218,7 @@ def ubuntu_ingest_tick(conn, releases: list[str] | None = None,
     # at once (the API serves large objects; accumulating all 19k+ CVEs for
     # the linux package exceeds a 2G VPS).  Resilient: a transient page
     # failure (504) skips that page and continues; the first page must
-    # succeed or the tick aborts (no-wipe for a total outage). A fail-fast
-    # circuit breaker (MAX_CONSECUTIVE_FAIL / MAX_TOTAL_FAIL / slow-page
-    # watermark) aborts the tick on sustained upstream degradation so the
-    # daily spine is not held hostage to one flaky source.
-    consecutive_fail = 0
-    total_fail = 0
-    consecutive_slow = 0
+    # succeed or the tick aborts (no-wipe for a total outage).
     pkg_data: dict[str, dict[str, dict[str, tuple[str, str | None]]]] = {}
     for pkg in packages:
         per_release: dict[str, dict[str, tuple[str, str | None]]] = {
@@ -250,44 +227,20 @@ def ubuntu_ingest_tick(conn, releases: list[str] | None = None,
         skipped = 0
         total = 0
         while True:
-            t0 = time.monotonic()
             data, reason = _fetch_page(pkg, offset, page_size)
-            elapsed = time.monotonic() - t0
             if data is None:
                 skipped += 1
-                consecutive_fail += 1
-                total_fail += 1
-                consecutive_slow = 0
                 print(f"ingest ubuntu: skipping page offset={offset} for {pkg}: {reason}", flush=True)
                 if offset == 0:
                     stats["error"] = f"first page failed for {pkg}: {reason}"
                     return stats
-                if consecutive_fail >= MAX_CONSECUTIVE_FAIL:
-                    stats["error"] = (f"upstream degraded: {consecutive_fail} consecutive "
-                                      f"failed pages for {pkg} ({reason}); aborting tick, "
-                                      f"last-known-good retained")
-                    return stats
-                if total_fail >= MAX_TOTAL_FAIL:
-                    stats["error"] = (f"upstream degraded: {total_fail} total failed pages "
-                                      f"across tick ({reason}); aborting, last-known-good retained")
+                if skipped > 50:
+                    stats["error"] = f"too many skipped pages ({skipped}) for {pkg}: {reason}"
                     return stats
                 offset += page_size
                 if total and offset >= total:
                     break
                 continue
-            # success: classify speed for the slow-page breaker. A healthy
-            # ubuntu.com feed is sub-second to ~2s; sustained >5s pages mean
-            # the upstream is degraded and the tick will not finish in budget.
-            if elapsed > SLOW_PAGE_SECONDS:
-                consecutive_slow += 1
-            else:
-                consecutive_slow = 0
-            consecutive_fail = 0
-            if consecutive_slow >= MAX_CONSECUTIVE_SLOW:
-                stats["error"] = (f"upstream degraded: {consecutive_slow} consecutive slow pages "
-                                  f"(>{SLOW_PAGE_SECONDS:.0f}s each, last {elapsed:.1f}s) for {pkg}; "
-                                  f"aborting tick, last-known-good retained")
-                return stats
             page = data.get("cves") or []
             for release in releases:
                 per_release[release].update(
