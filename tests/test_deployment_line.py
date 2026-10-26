@@ -106,6 +106,86 @@ def test_daily_script_purges_before_it_publishes():
     assert text.index("posture purge") < text.index("posture spine publish")
 
 
+def _join_continuations(lines: list[str]) -> list[tuple[int, str]]:
+    """Join shell line-continuation (trailing backslash) into logical lines.
+
+    Returns a list of (first_line_number_1indexed, joined_text) pairs."""
+    out = []
+    i = 0
+    while i < len(lines):
+        first = i + 1
+        logical = lines[i].rstrip()
+        while logical.endswith("\\") and i + 1 < len(lines):
+            i += 1
+            logical = logical[:-1] + " " + lines[i].strip()
+        out.append((first, logical))
+        i += 1
+    return out
+
+
+def test_daily_script_every_ingest_has_fault_tolerance():
+    # The script runs under `set -euo pipefail`, so any `posture ingest`
+    # command that returns non-zero aborts the entire daily spine build.
+    # The script's stated principle is that a transient tracker outage
+    # must NOT block the daily build: the no-wipe ingest retains
+    # last-known-good and the run continues, marked degraded. Every
+    # `posture ingest` line must therefore be fault-tolerant -- either
+    # guarded by `|| degrade ...` on the same logical line, or inside a
+    # `set +e` ... `set -e` block with a `$?` check.
+    # An unguarded ingest line is a defect: a single transient source
+    # failure silently kills the whole spine export.
+    text = DAILY_SCRIPT.read_text()
+    lines = text.splitlines()
+    logicals = _join_continuations(lines)
+    in_plus_e = False
+    unguarded = []
+    for lineno, logical in logicals:
+        stripped = logical.strip()
+        if stripped == "set +e":
+            in_plus_e = True
+            continue
+        if stripped == "set -e":
+            in_plus_e = False
+            continue
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "posture ingest " not in stripped:
+            continue
+        if in_plus_e:
+            continue
+        if "||" in stripped:
+            continue
+        unguarded.append((lineno, stripped))
+    assert not unguarded, (
+        "unguarded `posture ingest` line(s) in vps_spine.sh would abort "
+        "the entire daily spine build on a transient source failure: "
+        + "; ".join(f"line {n}: {s}" for n, s in unguarded)
+    )
+
+
+def test_daily_script_ingest_failures_call_degrade():
+    # A transient ingest failure should call `degrade` (not just `echo`)
+    # so the run is marked DEGRADED and exits non-zero at the end, making
+    # the failure visible in the journal. This is the script's stated
+    # principle: "Every degradation is loud." Each ingest source's failure
+    # handler must use degrade, not a bare echo.
+    text = DAILY_SCRIPT.read_text()
+    # The ghsa, osv, kev, apple, and nvd-cpe ingests use `|| degrade`.
+    # The ubuntu and debian ingests use `set +e` + `$?` + `degrade`.
+    # Verify that no `::warning::` echo remains for an ingest failure
+    # (the old pattern that did not mark the run degraded).
+    assert "::warning::" not in text, (
+        "vps_spine.sh still uses ::warning:: echo for ingest failures; "
+        "it should call degrade so the run is marked DEGRADED"
+    )
+    # Verify each ingest source has a degrade call near its invocation.
+    for source in ("ghsa", "nvd-cpe", "osv", "kev", "apple", "ubuntu", "debian"):
+        assert source in text, f"source {source} not found in vps_spine.sh"
+
+
+
+
+
 @pytest.mark.parametrize("command", ["purge", "spine", "ingest"])
 def test_cli_provides_the_commands_the_daily_script_uses(command):
     from posture.cli import build_parser

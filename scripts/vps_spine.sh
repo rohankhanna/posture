@@ -82,8 +82,12 @@ posture stream --db "$DB_PATH"
 posture backfill --cap "$BACKFILL_CAP" --db "$DB_PATH"
 
 # 3) Peer overlays. Caps keep the small VPS bounded; each source is
-#    incremental from the persistent database.
-posture ingest ghsa --cap "$OSV_CAP" --db "$DB_PATH"
+#    incremental from the persistent database. Best-effort: a transient
+#    outage in any source must NOT block the daily spine build; the no-wipe
+#    ingest retains last-known-good and the run is marked degraded so the
+#    failure is visible in the journal without aborting the export.
+posture ingest ghsa --cap "$OSV_CAP" --db "$DB_PATH" || \
+  degrade "ghsa ingest incomplete; last-known-good retained, spine continues"
 
 # 3a) Seed the exact NVD CPE heads the operator's host matchers use. The
 #     per-CVE refresh cannot guarantee that a specific CPE head is present in
@@ -99,10 +103,13 @@ posture ingest nvd-cpe \
   --cpe 'cpe:2.3:h:mediatek:mt7925' \
   --cpe 'cpe:2.3:h:realtek:rtl8127' \
   --db "$DB_PATH" || \
-  echo "posture-spine: warning: nvd-cpe ingest incomplete; last-known-good retained, spine continues"
-posture ingest osv --cap "$OSV_CAP" --db "$DB_PATH"
-posture ingest kev --db "$DB_PATH"
-posture ingest apple --db "$DB_PATH"
+  degrade "nvd-cpe ingest incomplete; last-known-good retained, spine continues"
+posture ingest osv --cap "$OSV_CAP" --db "$DB_PATH" || \
+  degrade "osv ingest incomplete; last-known-good retained, spine continues"
+posture ingest kev --db "$DB_PATH" || \
+  degrade "kev ingest incomplete; last-known-good retained, spine continues"
+posture ingest apple --db "$DB_PATH" || \
+  degrade "apple ingest incomplete; last-known-good retained, spine continues"
 
 # 3b) Distro security-tracker status overlays (ubuntu_fixes, debian_fixes).
 #     These carry the per-release status words (released/needed/not-affected/...)
@@ -117,12 +124,12 @@ posture ingest ubuntu \
   --release resolute --release noble --release jammy --release focal \
   --package linux --package linux-nvidia --db "$DB_PATH"
 if [ $? -ne 0 ]; then
-  echo "::warning::ubuntu ingest failed; last-known-good retained, spine continues"
+  degrade "ubuntu ingest failed; last-known-good retained, spine continues"
 fi
 posture ingest debian --release trixie --release bookworm \
   --package linux --db "$DB_PATH"
 if [ $? -ne 0 ]; then
-  echo "::warning::debian ingest failed; last-known-good retained, spine continues"
+  degrade "debian ingest failed; last-known-good retained, spine continues"
 fi
 set -e
 
