@@ -965,6 +965,10 @@ _CONTRACT_KEYS = (
     "overlay_debian_min_package_rows",
     "kev_min_rows",
     "kev_max_age_days",
+    "apple_fixes_min_rows",
+    "apple_fixes_max_age_days",
+    "epss_min_rows",
+    "epss_max_age_days",
 )
 # The contract keys that name a path on the host.
 _CONTRACT_PATH_KEYS = (
@@ -2923,6 +2927,231 @@ def _validate_kev_coverage_job(
 
 
 # ---------------------------------------------------------------------------
+# Flat overlay coverage (4t) -- Apple fix overlay and EPSS overlay
+# ---------------------------------------------------------------------------
+
+# The Apple fix overlay (apple_fixes) and the exploitability-probability
+# overlay (epss) are flat tables the export writes with a coverage record
+# (rows, newest_fetched_at) but no per-release or per-package structure.
+# Both ingests are no-wipe on the caller side, so a failed fetch leaves the
+# last-known-good rows serving while every other check on the served map
+# still passes. The contract declares a row floor and a freshness allowance
+# for each, and the gate checks that every `posture spine verify` command
+# the runbook shows, and the check the nightly job runs after its publish,
+# requires exactly the floor and the allowance the contract declares.
+
+
+def _contract_int_floor(contract: dict[str, str], key: str) -> int | None:
+    """The integer row floor a contract key declares (or None)."""
+    raw = contract.get(key, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None  # reported by the contract-level check
+
+
+def _contract_float_days(contract: dict[str, str], key: str) -> float | None:
+    """The float freshness allowance a contract key declares (or None)."""
+    raw = contract.get(key, "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None  # reported by the contract-level check
+
+
+def _stated_int_option(invocation: str, option: str) -> int | None:
+    """The integer value an invocation states for option (or None)."""
+    values = _option_values(invocation, option)
+    if not values:
+        return None
+    try:
+        return int(values[0])
+    except ValueError:
+        return None
+
+
+def _stated_float_option(invocation: str, option: str) -> float | None:
+    """The float value an invocation states for option (or None)."""
+    values = _option_values(invocation, option)
+    if not values:
+        return None
+    try:
+        return float(values[0])
+    except ValueError:
+        return None
+
+
+def _validate_flat_overlay_coverage_contract(
+        path: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+        rows_key: str,
+        age_key: str,
+        label: str,
+) -> None:
+    """Check the contract's declared flat-overlay coverage (4t)."""
+    if contract is None:
+        return
+    raw_rows = contract.get(rows_key, "").strip()
+    if not raw_rows:
+        failures.append(
+            f"{path}: the host contract declares no {rows_key}, so the "
+            f"gate cannot require the served map to carry the {label} "
+            f"overlay at all (the ingest is no-wipe on the caller side, "
+            f"so a failed fetch leaves the last-known-good rows serving "
+            f"and the map keeps passing every other check while the "
+            f"overlay quietly went stale)")
+    else:
+        try:
+            value = int(raw_rows)
+        except ValueError:
+            failures.append(
+                f"{path}: the host contract's {rows_key} is "
+                f"{raw_rows!r}, which is not a row count")
+        else:
+            if value < 1:
+                failures.append(
+                    f"{path}: the host contract's {rows_key} is {value}, "
+                    f"which is not a positive row count")
+    raw_age = contract.get(age_key, "").strip()
+    if not raw_age:
+        failures.append(
+            f"{path}: the host contract declares no {age_key}, so the "
+            f"gate cannot require the {label} rows to be fresh (the "
+            f"ingest is no-wipe on the caller side, so a {label} overlay "
+            f"that stopped being refreshed still satisfies the row floor)")
+    else:
+        try:
+            age = float(raw_age)
+        except ValueError:
+            failures.append(
+                f"{path}: the host contract's {age_key} is "
+                f"{raw_age!r}, which is not a number of days")
+        else:
+            if age <= 0:
+                failures.append(
+                    f"{path}: the host contract's {age_key} is "
+                    f"{age:g}, which is not a positive number of days")
+
+
+def _validate_flat_overlay_coverage_verification(
+        path: str,
+        text: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+        rows_key: str,
+        age_key: str,
+        rows_option: str,
+        age_option: str,
+        label: str,
+) -> None:
+    """Check the runbook's flat-overlay coverage (dimension 4t)."""
+    if contract is None:
+        return
+    floor = _contract_int_floor(contract, rows_key)
+    max_age = _contract_float_days(contract, age_key)
+    if floor is None and max_age is None:
+        return
+    commands = _runbook_spine_verify_commands(text)
+    if not commands:
+        # The missing verification is reported by dimension 4l.
+        return
+    for invocation in commands:
+        stated_rows = _stated_int_option(invocation, rows_option)
+        if floor is not None and stated_rows is None:
+            failures.append(
+                f"{path}: the runbook verifies the served map but does not "
+                f"require the {label} rows, which the host contract's "
+                f"{rows_key} floor declares (the command must carry "
+                f"`{rows_option} {floor}`; the {label} overlay is what "
+                f"the map says about that axis, and the no-wipe ingest "
+                f"leaves the last-known-good rows serving when a fetch "
+                f"fails)")
+        elif floor is not None and stated_rows != floor:
+            failures.append(
+                f"{path}: the runbook requires {stated_rows} {label} "
+                f"row(s) where the host contract's {rows_key} floor is "
+                f"{floor}")
+        if max_age is not None:
+            stated_age = _stated_float_option(invocation, age_option)
+            if stated_age is None:
+                failures.append(
+                    f"{path}: the runbook verifies the served map but does "
+                    f"not require the {label} rows to be fresh within the "
+                    f"host contract's {age_key} ({max_age:g} day(s)); the "
+                    f"command must carry `{age_option} {max_age:g}` (a "
+                    f"{label} overlay that stopped being refreshed still "
+                    f"satisfies the row floor)")
+            elif stated_age != max_age:
+                failures.append(
+                    f"{path}: the runbook allows {stated_age:g} day(s) for "
+                    f"the {label} rows where the host contract's "
+                    f"{age_key} is {max_age:g}")
+
+
+def _validate_flat_overlay_coverage_job(
+        path: str,
+        script_text: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+        rows_key: str,
+        age_key: str,
+        rows_option: str,
+        age_option: str,
+        label: str,
+) -> None:
+    """Check the nightly job's flat-overlay coverage (dimension 4t)."""
+    if contract is None or not script_text:
+        return
+    floor = _contract_int_floor(contract, rows_key)
+    max_age = _contract_float_days(contract, age_key)
+    if floor is None and max_age is None:
+        return
+    commands = [invocation for words, invocation in _invocations(script_text)
+                if words[:2] == ["spine", "verify"]]
+    if not commands:
+        failures.append(
+            f"{path}: the daily job never checks the served map's "
+            f"{label} coverage, so a build that publishes a map whose "
+            f"{label} overlay has stopped being refreshed is a quiet "
+            f"success instead of a degraded run")
+        return
+    for invocation in commands:
+        stated_rows = _stated_int_option(invocation, rows_option)
+        if floor is not None and stated_rows is None:
+            failures.append(
+                f"{path}: the daily job checks the served map but does not "
+                f"require the {label} rows, which the host contract's "
+                f"{rows_key} floor declares (the check must carry "
+                f"`{rows_option} {floor}`; the {label} overlay is what "
+                f"the map says about that axis, and the no-wipe ingest "
+                f"leaves the last-known-good rows serving when a fetch "
+                f"fails)")
+        elif floor is not None and stated_rows != floor:
+            failures.append(
+                f"{path}: the daily job requires {stated_rows} {label} "
+                f"row(s) where the host contract's {rows_key} floor is "
+                f"{floor}")
+        if max_age is not None:
+            stated_age = _stated_float_option(invocation, age_option)
+            if stated_age is None:
+                failures.append(
+                    f"{path}: the daily job checks the served map but does "
+                    f"not require the {label} rows to be fresh within the "
+                    f"host contract's {age_key} ({max_age:g} day(s)); the "
+                    f"check must carry `{age_option} {max_age:g}`")
+            elif stated_age != max_age:
+                failures.append(
+                    f"{path}: the daily job allows {stated_age:g} day(s) "
+                    f"for the {label} rows where the host contract's "
+                    f"{age_key} is {max_age:g}")
+
+
+# ---------------------------------------------------------------------------
 # Host command contract (4g)
 # ---------------------------------------------------------------------------
 
@@ -3789,6 +4018,22 @@ def main(paths: list[str]) -> int:
                 path, runbook_contracts.get(path), failures)
             _validate_kev_coverage_verification(
                 path, text, runbook_contracts.get(path), failures)
+            _validate_flat_overlay_coverage_contract(
+                path, runbook_contracts.get(path), failures,
+                "apple_fixes_min_rows", "apple_fixes_max_age_days",
+                "Apple fix")
+            _validate_flat_overlay_coverage_verification(
+                path, text, runbook_contracts.get(path), failures,
+                "apple_fixes_min_rows", "apple_fixes_max_age_days",
+                "--require-apple-fixes",
+                "--require-apple-fixes-max-age-days", "Apple fix")
+            _validate_flat_overlay_coverage_contract(
+                path, runbook_contracts.get(path), failures,
+                "epss_min_rows", "epss_max_age_days", "EPSS")
+            _validate_flat_overlay_coverage_verification(
+                path, text, runbook_contracts.get(path), failures,
+                "epss_min_rows", "epss_max_age_days",
+                "--require-epss", "--require-epss-max-age-days", "EPSS")
             checked += _validate_runbook_host_commands(
                 path, text, runbook_contracts.get(path), failures)
             if daily_script_text:
@@ -3834,6 +4079,22 @@ def main(paths: list[str]) -> int:
     if daily_script_text and contract is not None:
         _validate_kev_coverage_job(
             "scripts/vps_spine.sh", daily_script_text, contract, failures)
+
+    # 4t (job side). The nightly job's flat-overlay coverage (Apple fix,
+    #     EPSS) must be the one the contract declares, so an overlay that
+    #     stopped being refreshed (both ingests are no-wipe on the caller
+    #     side, so a failed fetch leaves the last-known-good rows serving)
+    #     is loud at check time instead of a quiet nightly success.
+    if daily_script_text and contract is not None:
+        _validate_flat_overlay_coverage_job(
+            "scripts/vps_spine.sh", daily_script_text, contract, failures,
+            "apple_fixes_min_rows", "apple_fixes_max_age_days",
+            "--require-apple-fixes",
+            "--require-apple-fixes-max-age-days", "Apple fix")
+        _validate_flat_overlay_coverage_job(
+            "scripts/vps_spine.sh", daily_script_text, contract, failures,
+            "epss_min_rows", "epss_max_age_days",
+            "--require-epss", "--require-epss-max-age-days", "EPSS")
 
     for failure in failures:
         print(f"check_deployment_line: FAIL — {failure}")
@@ -3896,6 +4157,9 @@ def main(paths: list[str]) -> int:
         ok_parts.append("the served map's known-exploited coverage is "
                         "checked against the contract's row floor and "
                         "freshness allowance")
+        ok_parts.append("the served map's Apple fix and EPSS overlay "
+                        "coverage is checked against the contract's row "
+                        "floors and freshness allowances")
     if contract is not None:
         ok_parts.append("the growth-guard thresholds match the contract")
     if runbook_paths and daily_script_text:

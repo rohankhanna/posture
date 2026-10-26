@@ -353,6 +353,23 @@ def _tally_kev_coverage(coverage: dict, row: dict) -> None:
             coverage[key] = value or None
 
 
+def _tally_flat_overlay_coverage(coverage: dict, row: dict) -> None:
+    """Fold one flat-overlay row into the map's coverage record.
+
+    The Apple fix overlay (apple_fixes) and the exploitability-probability
+    overlay (epss) are flat tables whose coverage states two things: how
+    many rows the map carries and when the newest of them was fetched. Both
+    ingests are no-wipe on the caller side -- a failed fetch returns an
+    error and touches nothing, so the overlay keeps its last-known-good
+    rows. The fetch time is what tells a refreshed set from a retained one:
+    a map whose overlay rows are all from an older fetch keeps serving a set
+    that stopped being refreshed.
+    """
+    coverage["rows"] = int(coverage.get("rows") or 0) + 1
+    fetched_at = str(row.get("fetched_at") or "").strip()
+    if fetched_at and fetched_at > (coverage.get("newest_fetched_at") or ""):
+        coverage["newest_fetched_at"] = fetched_at
+
 def export_spine(conn, out_dir: os.PathLike | str = ".",
                  policy_version: str = "",
                  source_version: dict | None = None,
@@ -405,6 +422,8 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
         name: {} for name in RELEASE_KEYED_OVERLAY_TABLES}
     kev_coverage: dict = {"rows": 0, "newest_fetched_at": None,
                           "catalog_version": None, "date_released": None}
+    apple_fixes_coverage: dict = {"rows": 0, "newest_fetched_at": None}
+    epss_coverage: dict = {"rows": 0, "newest_fetched_at": None}
     for name in FLAT_TABLES:
         # Same size cap as the defect shards: a flat table that outgrows the
         # cap becomes numbered parts instead of one unbounded file, so no
@@ -416,6 +435,10 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
                 _tally_release_coverage(release_coverage[name], row)
             if name == "kev":
                 _tally_kev_coverage(kev_coverage, row)
+            elif name == "apple_fixes":
+                _tally_flat_overlay_coverage(apple_fixes_coverage, row)
+            elif name == "epss":
+                _tally_flat_overlay_coverage(epss_coverage, row)
         files.extend(writer.finish())
         counts[name] = writer.total
 
@@ -450,6 +473,8 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
         "files": files,
         "release_coverage": release_coverage,
         "kev_coverage": kev_coverage,
+        "apple_fixes_coverage": apple_fixes_coverage,
+        "epss_coverage": epss_coverage,
     }
     (root / MANIFEST_NAME).write_text(
         json.dumps(manifest, sort_keys=True, indent=2) + "\n"
@@ -1046,6 +1071,150 @@ def verify_kev_coverage(
                 f"is a no-wipe refresh, so a failed fetch leaves the last "
                 f"known-good rows serving)")
     return checked
+
+
+# ---------------------------------------------------------------------------
+# verify (Apple fix overlay coverage -- does the map still carry the Apple
+# fix-version overlay, and is that set fresh?)
+# ---------------------------------------------------------------------------
+
+
+def _check_flat_overlay_rows_and_freshness(
+        coverage: dict,
+        label: str,
+        min_rows: int | None = None,
+        max_age_days: float | None = None,
+        now: str | None = None,
+) -> dict:
+    """Shared row-floor + freshness check for a flat overlay coverage record.
+
+    A flat overlay (apple_fixes, epss) carries a coverage record of
+    rows and newest_fetched_at. The row floor catches an empty or
+    narrow set; the freshness allowance catches a set that is present but no
+    longer refreshed (both ingests are no-wipe on the caller side, so a
+    failed fetch leaves the last-known-good rows serving).
+    """
+    floor = 1 if min_rows is None else int(min_rows)
+    if floor < 1:
+        raise ValueError(
+            f"the {label} coverage requirement asks for {floor} "
+            f"row(s); the minimum is one")
+    if max_age_days is not None and max_age_days <= 0:
+        raise ValueError(
+            f"the {label} freshness allowance must be a positive "
+            f"number of days")
+    rows = int(coverage.get("rows") or 0)
+    if rows < floor:
+        raise ValueError(
+            f"the published map carries {rows} {label} row(s), "
+            f"fewer than the {floor} the host requires (the {label} "
+            f"overlay is what clears NVD's unknown-fix false positives on "
+            f"a fully-updated host; without it the map is quietly wrong "
+            f"about which packages are patched)")
+    checked = {
+        "rows": rows,
+        "newest_fetched_at": coverage.get("newest_fetched_at"),
+    }
+    if max_age_days is not None:
+        newest = _parse_timestamp(coverage.get("newest_fetched_at") or "")
+        if newest is None:
+            raise ValueError(
+                f"the published map records no fetch time for its "
+                f"{label} rows, so their freshness cannot be "
+                f"established")
+        now_dt = _parse_timestamp(now) if now else _dt.datetime.now(
+            _dt.timezone.utc)
+        age_days = (now_dt - newest).total_seconds() / 86400.0
+        if age_days > max_age_days:
+            raise ValueError(
+                f"the published map's newest {label} row was fetched "
+                f"{age_days:.1f} day(s) ago, older than the "
+                f"{max_age_days:g} day(s) the host allows, so the "
+                f"{label} overlay stopped being refreshed (the ingest is "
+                f"no-wipe on the caller side, so a failed fetch leaves the "
+                f"last-known-good rows serving)")
+    return checked
+
+
+def verify_apple_fixes_coverage(
+        manifest: dict,
+        min_rows: int | None = None,
+        max_age_days: float | None = None,
+        now: str | None = None,
+) -> dict:
+    """Check that a published map still carries the Apple fix overlay.
+
+    Apple's own security advisories are authoritative for iOS/iPadOS/macOS
+    fix versions (NVD's Apple coverage is thin: it records the CPE but
+    often no version range). The apple_fixes ingest is a per-product full
+    refresh (DELETE WHERE product + INSERT) that is no-wipe on the caller
+    side, so a fetch that fails leaves the last-known-good rows in place:
+    the served map stays intact, signed, fresh and consistent with its own
+    manifest, every other check passes, and only the age of the apple_fixes
+    rows shows the overlay stopped being refreshed.
+
+    min_rows is the number of apple_fixes entries the map must carry
+    (at least one, by default). max_age_days additionally requires the
+    newest of those entries to have been fetched within that many days.
+
+    Returns the apple_fixes coverage that was checked. Raises ValueError
+    when the manifest carries no apple_fixes coverage at all, when the map
+    carries fewer rows than the host requires, or when the newest row is
+    older than the freshness allowance.
+    """
+    coverage = manifest.get("apple_fixes_coverage")
+    if not isinstance(coverage, dict):
+        raise ValueError(
+            "the published map's manifest carries no apple-fixes "
+            "coverage, so the Apple fix overlay the host requires cannot "
+            "be established (the map was published before the manifest "
+            "recorded it)")
+    return _check_flat_overlay_rows_and_freshness(
+        coverage, "Apple fix", min_rows=min_rows,
+        max_age_days=max_age_days, now=now)
+
+
+# ---------------------------------------------------------------------------
+# verify (exploitability-probability overlay coverage -- does the map still
+# carry the EPSS overlay, and is that set fresh?)
+# ---------------------------------------------------------------------------
+
+
+def verify_epss_coverage(
+        manifest: dict,
+        min_rows: int | None = None,
+        max_age_days: float | None = None,
+        now: str | None = None,
+) -> dict:
+    """Check that a published map still carries the EPSS overlay.
+
+    FIRST.org's EPSS scores every published CVE daily with a probability of
+    exploitation in the next 30 days plus a percentile. The EPSS ingest is
+    a full refresh (DELETE all + INSERT) that is no-wipe on the caller
+    side, so a fetch that fails leaves the last-known-good rows in place:
+    the served map stays intact, signed, fresh and consistent with its own
+    manifest, every other check passes, and only the age of the epss rows
+    shows the overlay stopped being refreshed.
+
+    min_rows is the number of epss entries the map must carry (at
+    least one, by default). max_age_days additionally requires the
+    newest of those entries to have been fetched within that many days.
+
+    Returns the epss coverage that was checked. Raises ValueError when
+    the manifest carries no epss coverage at all, when the map carries
+    fewer rows than the host requires, or when the newest row is older
+    than the freshness allowance.
+    """
+    coverage = manifest.get("epss_coverage")
+    if not isinstance(coverage, dict):
+        raise ValueError(
+            "the published map's manifest carries no epss coverage, so "
+            "the exploitability-probability overlay the host requires "
+            "cannot be established (the map was published before the "
+            "manifest recorded it)")
+    return _check_flat_overlay_rows_and_freshness(
+        coverage, "EPSS (exploitability-probability)", min_rows=min_rows,
+        max_age_days=max_age_days, now=now)
 
 
 # ---------------------------------------------------------------------------

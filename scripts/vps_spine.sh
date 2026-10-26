@@ -219,7 +219,11 @@ posture spine verify --from "$EXPORT_DIR" \
   --require-overlay-max-age-days 2 \
   --require-kev 1000 \
   --require-kev-max-age-days 3 \
-  || degrade "the published map does not carry the coverage the host contract requires (the vendor fix-status overlay rows, or a fresh known-exploited set)"
+  --require-apple-fixes 1 \
+  --require-apple-fixes-max-age-days 7 \
+  --require-epss 100000 \
+  --require-epss-max-age-days 3 \
+  || degrade "the published map does not carry the coverage the host contract requires (the vendor fix-status overlay rows, a fresh known-exploited set, the Apple fix overlay, or the EPSS exploitability-probability overlay)"
 
 # 8) Periodic git clone maintenance. The advisory-database and cvelistV5
 #    clones accumulate pack objects from every fetch; a weekly gc + remote

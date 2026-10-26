@@ -97,6 +97,10 @@ overlay_ubuntu_min_package_rows: 1
 overlay_debian_min_package_rows: 1
 kev_min_rows: 1000
 kev_max_age_days: 3
+apple_fixes_min_rows: 1
+apple_fixes_max_age_days: 7
+epss_min_rows: 100000
+epss_max_age_days: 3
 ```
 
 The last two keys are the free-space thresholds the daily job applies to the
@@ -197,6 +201,10 @@ refresh plus a margin for a missed run. The deployment-line gate checks
 that the contract declares both values, and that the runbook and the
 nightly job require exactly the floor and the allowance the contract
 declares.
+
+`apple_fixes_min_rows` and `apple_fixes_max_age_days` are the row floor and the freshness allowance for the Apple fix overlay the served map must carry. Apple's own security advisories are authoritative for iOS, iPadOS and macOS fix versions (NVD's Apple coverage is thin: it records the CPE but often no version range), so the `apple_fixes` overlay is what clears NVD's unknown-fix false positives on a fully-updated Apple host. The ingest is a per-product full refresh (DELETE WHERE product + INSERT) that is no-wipe on the caller side, so a fetch that fails leaves the last-known-good rows in place: the served map stays intact, signed, fresh and consistent with its own manifest, every other check on it still passes, and only the age of the `apple_fixes` rows shows the overlay stopped being refreshed. The published map therefore states how many Apple fix entries it carries and when the newest of them was fetched, and the verification step below requires that count to meet the floor and that newest row to be within the allowance. The shipped floor of one row is the conservative "the Apple fix overlay is present and populated" expectation; raise it to the count observed on the host once it is known. The allowance of seven days covers Apple's advisory cadence plus a margin for a missed run. The deployment-line gate checks that the contract declares both values, and that the runbook and the nightly job require exactly the floor and the allowance the contract declares.
+
+`epss_min_rows` and `epss_max_age_days` are the row floor and the freshness allowance for the EPSS (exploitability-probability) overlay the served map must carry. FIRST.org's EPSS model scores every published CVE daily with a probability of exploitation in the next thirty days plus a percentile, and it is complementary to the known-exploited set: KEV names the roughly seventeen hundred confirmed-exploited vulnerabilities, while EPSS scores the long tail. The EPSS ingest is a full refresh (DELETE all + INSERT) that is no-wipe on the caller side, so a fetch that fails leaves the last-known-good rows in place: the served map stays intact, signed, fresh and consistent with its own manifest, every other check on it still passes, and only the age of the `epss` rows shows the overlay stopped being refreshed. The published map therefore states how many EPSS entries it carries and when the newest of them was fetched, and the verification step below requires that count to meet the floor and that newest row to be within the allowance. The shipped floor of one hundred thousand rows is the conservative "the EPSS overlay is present and populated" expectation for a model that scores over two hundred thousand CVEs; raise it to the count observed on the host once it is known. The allowance of three days is the daily refresh plus a margin for a missed run. The deployment-line gate checks that the contract declares both values, and that the runbook and the nightly job require exactly the floor and the allowance the contract declares.
 
 The environment table below states a default for every knob the daily job
 reads. Those defaults live in the job itself, as the values it falls back
@@ -361,7 +369,11 @@ posture spine verify --from /var/lib/posture --max-age-days 2 --require-overlay 
   --require-overlay-package debian_fixes:bookworm:linux:1 \
   --require-overlay-max-age-days 2 \
   --require-kev 1000 \
-  --require-kev-max-age-days 3
+  --require-kev-max-age-days 3 \
+  --require-apple-fixes 1 \
+  --require-apple-fixes-max-age-days 7 \
+  --require-epss 100000 \
+  --require-epss-max-age-days 3
 sudo ls -l /var/lib/posture/spine/manifest.json
 sudo ls -l /var/lib/posture/spine/defects
 ```
@@ -426,6 +438,10 @@ When this check fails, read the last run's journal: the nightly job makes
 the same check after every publish and reports the same failure as a
 degraded run.
 
+`--require-apple-fixes 1` and `--require-apple-fixes-max-age-days 7` are the contract's expectations for the Apple fix overlay. The check reads the map's own manifest, which states how many Apple fix entries the map carries and when the newest of them was fetched. A failure here is a map that is quietly wrong about which Apple packages are patched: the ingest is a per-product full refresh that is no-wipe on the caller side, so a fetch that failed leaves the last-known-good rows in place, and the map keeps serving them as if they were current. The row floor catches a map that carries too few Apple fix entries, and the freshness allowance catches an overlay that is present but has stopped being refreshed. When this check fails, read the last run's journal: the nightly job makes the same check after every publish and reports the same failure as a degraded run.
+
+`--require-epss 100000` and `--require-epss-max-age-days 3` are the contract's expectations for the EPSS exploitability-probability overlay. The check reads the map's own manifest, which states how many EPSS entries the map carries and when the newest of them was fetched. A failure here is a map that is quietly wrong about exploitability: the EPSS ingest is a full refresh that is no-wipe on the caller side, so a fetch that failed leaves the last-known-good rows in place, and the map keeps serving them as if they were current. The row floor catches a map that carries too few EPSS entries, and the freshness allowance catches an overlay that is present but has stopped being refreshed. When this check fails, read the last run's journal: the nightly job makes the same check after every publish and reports the same failure as a degraded run.
+
 A client that pulls the map verifies the manifest's shard digests before it
 imports anything, so a half-written map is refused rather than believed.
 
@@ -460,7 +476,11 @@ posture spine verify --from /var/lib/posture --verify-sig --signature-key /etc/p
   --require-overlay-package debian_fixes:bookworm:linux:1 \
   --require-overlay-max-age-days 2 \
   --require-kev 1000 \
-  --require-kev-max-age-days 3
+  --require-kev-max-age-days 3 \
+  --require-apple-fixes 1 \
+  --require-apple-fixes-max-age-days 7 \
+  --require-epss 100000 \
+  --require-epss-max-age-days 3
 ```
 
 ## Step 8 — check the tree before you deploy it
@@ -633,3 +653,4 @@ deployment line, and makes these kinds of drift loud:
 
 19. **Per-package overlay coverage of the served map** — the host contract declares a row floor for every source package of every release of the distro-tracker overlays it requires (`overlay_ubuntu_min_package_rows`, `overlay_debian_min_package_rows`), and the gate checks that every `posture spine verify` command the runbook shows, and the check the nightly job runs after its publish, requires exactly the (release, package) pairs the contract's overlay scope declares, at the per-package floor the contract declares. The per-release coverage check (item 18) is a per-release question, and a per-release answer hides a per-package failure: the nightly job ingests each distro-tracker overlay per release and per source package, and the per-(release, package) refresh deletes the rows it is about to replace, so a source package whose tracker feed returned nothing ends up with no rows at all while the release as a whole still holds the other packages' rows and the per-release floor still passes. The published map already states, per release, which source packages contributed rows and how many, so the check can require the declared (release, package) pairs to be present and populated. A contract with no per-package floor for a required overlay, a runbook that requires the releases but not the packages inside them, and a nightly job that never checks the per-package coverage are all drift at check time, because the operator's question — does the map this host serves still carry, for every source package it claims to cover, the fix-status rows that clear NVD's unknown-fix false positives? — would otherwise have no answer.
 20. **Known-exploited coverage of the served map** — the host contract declares a row floor and a freshness allowance for the known-exploited set the served map must carry (`kev_min_rows`, `kev_max_age_days`), and the gate checks that every `posture spine verify` command the runbook shows, and the check the nightly job runs after its publish, requires exactly the floor and the allowance the contract declares. The overlay coverage checks above (items 16 to 19) bind the vendor fix-status overlays; none of them binds the known-exploited set, which is what the map says about what is being exploited in the wild and what the threat axis reads. The KEV ingest is a no-wipe full refresh of a static file, so a fetch that fails leaves the last-known-good rows in place: the served map stays intact, signed, fresh and consistent with its own manifest, every other check on it still passes, and the only thing that shows the known-exploited set stopped being refreshed is the age of its rows. The published map therefore states how many known-exploited entries it carries and when the newest of them was fetched, so the check can require the set to be present and fresh. A contract with no floor or no allowance, a runbook that checks the fix-status overlays but not the known-exploited set, and a nightly job that never checks it are all drift at check time, because the operator's question — does the map this host serves still say what is being exploited right now? — would otherwise have no answer.
+21. **Flat overlay coverage of the served map (Apple fix and EPSS)** — the host contract declares a row floor and a freshness allowance for the Apple fix overlay (`apple_fixes_min_rows`, `apple_fixes_max_age_days`) and for the EPSS exploitability-probability overlay (`epss_min_rows`, `epss_max_age_days`), and the gate checks that every `posture spine verify` command the runbook shows, and the check the nightly job runs after its publish, requires exactly the floor and the allowance the contract declares for each. The overlay coverage checks above (items 16 to 19) bind the distro-tracker overlays at every granularity; the known-exploited coverage check (item 20) binds the confirmed-exploited set; none of them binds the Apple fix overlay or the EPSS overlay, which are flat tables the export writes with no per-release or per-package structure. Both ingests are no-wipe on the caller side, so a failed fetch leaves the last-known-good rows in place: the served map stays intact, signed, fresh and consistent with its own manifest, every other check on it still passes, and only the age of those rows shows the overlay stopped being refreshed. The Apple fix overlay is what clears NVD's unknown-fix false positives on a fully-updated Apple host, and the EPSS overlay is the exploitability-probability signal that complements the known-exploited set. The published map therefore states how many entries each overlay carries and when the newest of them was fetched, so the check can require each overlay to be present and fresh. A contract with no floor or no allowance for either overlay, a runbook that checks the other overlays but not these, and a nightly job that never checks them are all drift at check time, because the operator's question — does the map this host serves still say which Apple packages are patched, and what is the exploitability likelihood of every CVE? — would otherwise have no answer.

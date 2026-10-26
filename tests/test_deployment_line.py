@@ -766,6 +766,10 @@ overlay_ubuntu_min_package_rows: 1
 overlay_debian_min_package_rows: 1
 kev_min_rows: 1000
 kev_max_age_days: 3
+apple_fixes_min_rows: 1
+apple_fixes_max_age_days: 7
+epss_min_rows: 100000
+epss_max_age_days: 3
 ```
 """
 
@@ -875,7 +879,9 @@ def _baseline_runbook(extra: str = "") -> str:
                  "--require-overlay-package debian_fixes:trixie:linux:1 "
                  "--require-overlay-package debian_fixes:bookworm:linux:1 "
                  "--require-overlay-max-age-days 2 "
-                 "--require-kev 1000 --require-kev-max-age-days 3")
+                 "--require-kev 1000 --require-kev-max-age-days 3 "
+                 "--require-apple-fixes 1 --require-apple-fixes-max-age-days 7 "
+                 "--require-epss 100000 --require-epss-max-age-days 3")
     lines.append("```")
     if extra:
         lines.append(extra)
@@ -2745,6 +2751,13 @@ def test_gate_reports_the_known_exploited_coverage_in_its_summary():
     assert "known-exploited coverage is checked" in result.stdout
 
 
+def test_gate_reports_the_flat_overlay_coverage_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Apple fix and EPSS overlay coverage is checked" in (
+        result.stdout)
+
+
 def test_gate_rejects_a_contract_with_no_known_exploited_row_floor(tmp_path):
     runbook = tmp_path / "deployment.md"
     body = _baseline_runbook().replace("kev_min_rows: 1000\n", "")
@@ -2810,3 +2823,188 @@ def test_gate_rejects_a_daily_job_that_drops_the_known_exploited_floor(
     assert "the daily job requires 1000 known-exploited row(s)" in (
         result.stdout), result.stdout
     assert "kev_min_rows floor is 2000" in result.stdout, result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Flat overlay coverage of the served map (dimension 4t) — Apple fix
+# ---------------------------------------------------------------------------
+
+
+def test_the_host_contract_declares_the_apple_fix_coverage():
+    body = RUNBOOK.read_text()
+    assert "apple_fixes_min_rows: 1" in body, (
+        "the host contract does not declare the Apple fix row floor")
+    assert "apple_fixes_max_age_days: 7" in body, (
+        "the host contract does not declare the Apple fix freshness "
+        "allowance")
+
+
+def test_the_runbook_requires_the_apple_fix_coverage():
+    body = RUNBOOK.read_text()
+    assert "--require-apple-fixes 1" in body, (
+        "the runbook does not require the Apple fix rows")
+    assert "--require-apple-fixes-max-age-days 7" in body, (
+        "the runbook does not require the Apple fix rows to be fresh")
+
+
+def test_the_daily_job_requires_the_apple_fix_coverage():
+    text = DAILY_SCRIPT.read_text()
+    assert "--require-apple-fixes 1" in text, (
+        "the daily job does not require the Apple fix rows")
+    assert "--require-apple-fixes-max-age-days 7" in text, (
+        "the daily job does not require the Apple fix rows to be fresh")
+
+
+def test_gate_rejects_a_contract_with_no_apple_fix_row_floor(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace("apple_fixes_min_rows: 1\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "declares no apple_fixes_min_rows" in result.stdout
+
+
+def test_gate_rejects_a_contract_with_no_apple_fix_freshness_allowance(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace("apple_fixes_max_age_days: 7\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "declares no apple_fixes_max_age_days" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_drops_the_apple_fix_requirement(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(" --require-apple-fixes 1", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "does not require the Apple fix rows" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_uses_a_different_apple_fix_floor(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace("--require-apple-fixes 1",
+                                       "--require-apple-fixes 5")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "apple_fixes_min_rows floor is 1" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_drops_the_apple_fix_freshness(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        " --require-apple-fixes-max-age-days 7", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "Apple fix rows to be fresh" in result.stdout
+
+
+def test_gate_rejects_a_daily_job_that_drops_the_apple_fix_floor(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace("apple_fixes_min_rows: 1",
+                                       "apple_fixes_min_rows: 50")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "the daily job requires 1 Apple fix row(s)" in result.stdout
+    assert "apple_fixes_min_rows floor is 50" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Flat overlay coverage of the served map (dimension 4t) — EPSS
+# ---------------------------------------------------------------------------
+
+
+def test_the_host_contract_declares_the_epss_coverage():
+    body = RUNBOOK.read_text()
+    assert "epss_min_rows: 100000" in body, (
+        "the host contract does not declare the EPSS row floor")
+    assert "epss_max_age_days: 3" in body, (
+        "the host contract does not declare the EPSS freshness allowance")
+
+
+def test_the_runbook_requires_the_epss_coverage():
+    body = RUNBOOK.read_text()
+    assert "--require-epss 100000" in body, (
+        "the runbook does not require the EPSS rows")
+    assert "--require-epss-max-age-days 3" in body, (
+        "the runbook does not require the EPSS rows to be fresh")
+
+
+def test_the_daily_job_requires_the_epss_coverage():
+    text = DAILY_SCRIPT.read_text()
+    assert "--require-epss 100000" in text, (
+        "the daily job does not require the EPSS rows")
+    assert "--require-epss-max-age-days 3" in text, (
+        "the daily job does not require the EPSS rows to be fresh")
+
+
+def test_gate_rejects_a_contract_with_no_epss_row_floor(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace("epss_min_rows: 100000\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "declares no epss_min_rows" in result.stdout
+
+
+def test_gate_rejects_a_contract_with_no_epss_freshness_allowance(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace("epss_max_age_days: 3\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "declares no epss_max_age_days" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_drops_the_epss_requirement(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(" --require-epss 100000", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "does not require the EPSS rows" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_uses_a_different_epss_floor(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace("--require-epss 100000",
+                                       "--require-epss 5")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "epss_min_rows floor is 100000" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_drops_the_epss_freshness(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        " --require-epss-max-age-days 3", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "EPSS rows to be fresh" in result.stdout
+
+
+def test_gate_rejects_a_daily_job_that_drops_the_epss_floor(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace("epss_min_rows: 100000",
+                                       "epss_min_rows: 500000")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "the daily job requires 100000 EPSS row(s)" in result.stdout
+    assert "epss_min_rows floor is 500000" in result.stdout

@@ -843,6 +843,45 @@ def _cmd_spine(args) -> int:
                 return 1
             kev_note = (f", known-exploited coverage OK "
                         f"({kev_coverage['rows']} row(s))")
+        # The Apple fix overlay is authoritative for iOS/iPadOS/macOS fix
+        # versions (NVD's Apple coverage is thin). The ingest is a per-product
+        # full refresh that is no-wipe on the caller side, so a failed fetch
+        # leaves the last-known-good rows serving while every other check
+        # still passes. The requirement says how many rows the host needs and
+        # how old they may be.
+        apple_note = ""
+        apple_min_rows = getattr(args, "require_apple_fixes", None)
+        apple_max_age_days = getattr(args, "require_apple_fixes_max_age_days",
+                                     None)
+        if apple_min_rows is not None or apple_max_age_days is not None:
+            try:
+                apple_coverage = _export.verify_apple_fixes_coverage(
+                    manifest, min_rows=apple_min_rows,
+                    max_age_days=apple_max_age_days)
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            apple_note = (f", Apple fix coverage OK "
+                          f"({apple_coverage['rows']} row(s))")
+        # The EPSS overlay scores every published CVE daily with a
+        # probability of exploitation. The ingest is a full refresh that is
+        # no-wipe on the caller side, so a failed fetch leaves the
+        # last-known-good rows serving while every other check still passes.
+        # The requirement says how many rows the host needs and how old they
+        # may be.
+        epss_note = ""
+        epss_min_rows = getattr(args, "require_epss", None)
+        epss_max_age_days = getattr(args, "require_epss_max_age_days", None)
+        if epss_min_rows is not None or epss_max_age_days is not None:
+            try:
+                epss_coverage = _export.verify_epss_coverage(
+                    manifest, min_rows=epss_min_rows,
+                    max_age_days=epss_max_age_days)
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            epss_note = (f", EPSS coverage OK "
+                         f"({epss_coverage['rows']} row(s))")
         ok_line = f"spine verify: OK — {len(manifest['files'])} shard(s), "
         ok_line += f"{manifest['counts']}"
         if signature_note:
@@ -852,6 +891,8 @@ def _cmd_spine(args) -> int:
         ok_line += release_note
         ok_line += package_note
         ok_line += kev_note
+        ok_line += apple_note
+        ok_line += epss_note
         print(ok_line)
         return 0
     # publish is the deployment line's serving path: export into a staging
@@ -1506,6 +1547,37 @@ def build_parser() -> argparse.ArgumentParser:
                          "row was fetched more than this many days ago (a "
                          "known-exploited set that stopped being refreshed "
                          "still satisfies the row floor)")
+    sp.add_argument("--require-apple-fixes", dest="require_apple_fixes",
+                    type=int, default=None, metavar="MIN_ROWS",
+                    help="verify: fail when the map carries fewer Apple fix "
+                         "(apple_fixes) rows than this (Apple's own "
+                         "advisories are authoritative for iOS/iPadOS/macOS "
+                         "fix versions; the ingest is a per-product full "
+                         "refresh that is no-wipe on the caller side, so a "
+                         "failed fetch leaves the last-known-good rows "
+                         "serving)")
+    sp.add_argument("--require-apple-fixes-max-age-days",
+                    dest="require_apple_fixes_max_age_days", type=float,
+                    default=None, metavar="DAYS",
+                    help="verify: fail when the map's newest Apple fix row "
+                         "was fetched more than this many days ago (an "
+                         "Apple fix overlay that stopped being refreshed "
+                         "still satisfies the row floor)")
+    sp.add_argument("--require-epss", dest="require_epss", type=int,
+                    default=None, metavar="MIN_ROWS",
+                    help="verify: fail when the map carries fewer EPSS "
+                         "(exploitability-probability) rows than this "
+                         "(FIRST.org scores every published CVE daily; "
+                         "the ingest is a full refresh that is no-wipe on "
+                         "the caller side, so a failed fetch leaves the "
+                         "last-known-good rows serving)")
+    sp.add_argument("--require-epss-max-age-days",
+                    dest="require_epss_max_age_days", type=float,
+                    default=None, metavar="DAYS",
+                    help="verify: fail when the map's newest EPSS row was "
+                         "fetched more than this many days ago (an EPSS "
+                         "overlay that stopped being refreshed still "
+                         "satisfies the row floor)")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_spine)
 
     # -- ingestion: CVE stream + incremental refresh + catalog ---------------
