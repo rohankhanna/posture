@@ -84,6 +84,7 @@ sign_key: /etc/posture/signing_key.pem
 sign_pub_key: /etc/posture/signing_pub.pem
 served_dir_owner: posture
 map_max_age_days: 2
+publish_cadence_days: 1
 ```
 
 The last two keys are the free-space thresholds the daily job applies to the
@@ -127,6 +128,20 @@ the map's contents still passes, and the only thing that shows the build
 has stopped is the map's own build timestamp. The contract declares the
 age the operator's verification step enforces, and the deployment-line
 gate checks that the runbook's verification uses exactly this number.
+
+`publish_cadence_days` is how often the host expects the publish timer to
+run a build, and it must be strictly less than `map_max_age_days`. The
+spine timer fires daily, so a build that succeeds keeps the served map
+within the two-day freshness allowance with a day of margin for a missed
+run; a timer that fired weekly against a two-day allowance would be a host
+that can never satisfy its own freshness rule, because a single missed run
+leaves the served map past its allowed age even when the next build
+succeeds. The deployment-line gate checks that the contract's
+`publish_cadence_days` is strictly less than `map_max_age_days`, and that
+the timer that schedules the publish actually fires at least as often as
+the contract declares, so a timer whose schedule is less frequent than the
+contract promises is reported at check time rather than discovered when the
+served map is already stale.
 
 The environment table below states a default for every knob the daily job
 reads. Those defaults live in the job itself, as the values it falls back
@@ -455,3 +470,14 @@ deployment line, and makes these kinds of drift loud:
     map that may have been frozen for a week, and a runbook that allows a
     different age than the contract declares describes a host the
     operator and the contract disagree about.
+15. **Publish cadence against the freshness allowance** — the host
+    contract declares how often the publish timer is expected to run
+    (`publish_cadence_days`) as well as how old the served map may be
+    (`map_max_age_days`). The cadence must be strictly less than the
+    maximum age, because a timer that fires at the same cadence as or
+    less often than the maximum map age is a host that can never keep the
+    served map within its own freshness allowance: even one missed run
+    pushes the map past the allowed age. The timer that schedules the
+    publish must fire at least as often as the contract declares, so a
+    timer whose nominal interval is greater than `publish_cadence_days`
+    is a host whose publish runs less often than the operator expects.

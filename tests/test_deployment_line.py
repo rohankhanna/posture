@@ -753,6 +753,7 @@ sign_key: /etc/posture/signing_key.pem
 sign_pub_key: /etc/posture/signing_pub.pem
 served_dir_owner: posture
 map_max_age_days: 2
+publish_cadence_days: 1
 ```
 """
 
@@ -2023,3 +2024,145 @@ def test_gate_rejects_a_contract_without_the_maximum_map_age(tmp_path):
     result = _run_gate_on([runbook])
     assert result.returncode == 1
     assert "map_max_age_days" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Publish cadence against the freshness allowance (dimension 4n)
+# ---------------------------------------------------------------------------
+
+
+def test_the_host_contract_declares_the_publish_cadence():
+    # The contract states how often the publish timer is expected to run,
+    # so the gate can check the timer against the freshness allowance.
+    body = RUNBOOK.read_text()
+    assert "publish_cadence_days: 1" in body, (
+        "the host contract does not declare how often the publish timer "
+        "is expected to run")
+
+
+def test_the_publish_cadence_is_strictly_less_than_the_maximum_map_age():
+    # A timer that fires at the same cadence as or less often than the
+    # maximum map age can never keep the served map within its freshness
+    # allowance.
+    body = RUNBOOK.read_text()
+    assert "publish_cadence_days: 1" in body
+    assert "map_max_age_days: 2" in body
+    assert 1 < 2
+
+
+def test_the_shipped_spine_timer_fires_at_least_as_often_as_the_declared_cadence():
+    # The spine timer fires daily; the contract declares a daily cadence,
+    # so the timer's nominal interval is no greater than the declared one.
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "the publish cadence is strictly less" in result.stdout
+
+
+def test_gate_reports_the_publish_cadence_dimension_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "the publish cadence is strictly less than the maximum map age" in (
+        result.stdout)
+    assert "the publish timer fires at least that often" in result.stdout
+
+
+def test_gate_rejects_a_contract_whose_publish_cadence_is_not_a_number(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "publish_cadence_days: 1", "publish_cadence_days: daily")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "publish_cadence_days" in result.stdout
+    assert "not a number of days" in result.stdout
+
+
+def test_gate_rejects_a_contract_whose_publish_cadence_is_not_positive(
+        tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "publish_cadence_days: 1", "publish_cadence_days: 0")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "publish_cadence_days" in result.stdout
+    assert "must be a positive number of days" in result.stdout
+
+
+def test_gate_rejects_a_publish_cadence_that_is_not_less_than_the_maximum_map_age(
+        tmp_path):
+    # A cadence equal to the maximum age has no margin for a missed run;
+    # a cadence greater than the maximum age can never satisfy freshness.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "publish_cadence_days: 1", "publish_cadence_days: 2")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "publish_cadence_days" in result.stdout
+    assert "strictly less than map_max_age_days" in result.stdout
+
+
+def test_gate_rejects_a_contract_without_the_publish_cadence(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace("publish_cadence_days: 1\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "publish_cadence_days" in result.stdout
+
+
+def _spine_timer_with(body: str, tmp_path) -> Path:
+    """A timer named posture-spine.timer with the given [Timer] body."""
+    return _write_timer(
+        tmp_path,
+        "[Timer]\n" + body +
+        "Unit=posture-spine.service\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n",
+        name="posture-spine.timer")
+
+
+def test_gate_rejects_a_publish_timer_that_fires_less_often_than_declared(
+        tmp_path):
+    # The contract declares a daily cadence; a weekly spine timer is a host
+    # whose publish runs less often than the contract promises, so the
+    # served map can age past the freshness allowance even when every build
+    # succeeds.
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook())
+    service = UNIT_DIR / "posture-spine.service"
+    timer = _spine_timer_with(
+        "OnCalendar=Mon *-*-* 03:07:00 UTC\n", tmp_path)
+    result = _run_gate_on([runbook, service, timer])
+    assert result.returncode == 1
+    assert "fires every 7" in result.stdout
+    assert "publish_cadence_days 1" in result.stdout
+
+
+def test_gate_accepts_a_monotonic_publish_timer_that_fires_more_often_than_declared(
+        tmp_path):
+    # A monotonic timer that fires every 12h against a daily declared cadence
+    # is more frequent than the contract promises, so the freshness
+    # relationship holds.
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook())
+    service = UNIT_DIR / "posture-spine.service"
+    timer = _spine_timer_with("OnUnitInactiveSec=12h\n", tmp_path)
+    result = _run_gate_on([runbook, service, timer])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_rejects_a_monotonic_publish_timer_that_fires_less_often_than_declared(
+        tmp_path):
+    # A monotonic timer that fires every 3 days against a daily declared
+    # cadence is less frequent than the contract promises.
+    runbook = tmp_path / "deployment.md"
+    runbook.write_text(_baseline_runbook())
+    service = UNIT_DIR / "posture-spine.service"
+    timer = _spine_timer_with("OnUnitInactiveSec=3d\n", tmp_path)
+    result = _run_gate_on([runbook, service, timer])
+    assert result.returncode == 1
+    assert "fires every 3" in result.stdout
+    assert "publish_cadence_days 1" in result.stdout

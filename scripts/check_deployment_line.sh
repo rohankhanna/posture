@@ -184,6 +184,23 @@
 #          week; one that allows a different age than the contract
 #          describes a host the operator and the contract disagree about.
 #
+#     4n. Publish cadence against the freshness allowance — the contract
+#         declares how often the host expects a publish to run
+#         (`publish_cadence_days`) as well as how old the served map may be
+#         (`map_max_age_days`). A cadence that is not strictly less than the
+#         maximum age describes a host that can never satisfy its own
+#         freshness rule: a timer that fires weekly against a two-day
+#         allowance leaves the map past its allowed age after a single
+#         missed run. The timer that schedules the publish must fire at
+#         least as often as the declared cadence, so a timer whose nominal
+#         interval is greater than `publish_cadence_days` is a host whose
+#         publish runs less often than the contract promises. The nominal
+#         interval is the base period of the timer's schedule (the
+#         `OnCalendar` expression or the repeating monotonic directive);
+#         `RandomizedDelaySec` jitter is ignored, because it moves the
+#         exact fire time within a window without changing how often the
+#         timer fires.
+#
 #     4k. Documented environment defaults — the runbook's environment table
 #         states a default for every knob the daily job reads: the state
 #         and export directories, the catalog and clone paths, the
@@ -917,6 +934,7 @@ _CONTRACT_KEYS = (
     "sign_pub_key",
     "served_dir_owner",
     "map_max_age_days",
+    "publish_cadence_days",
 )
 # The contract keys that name a path on the host.
 _CONTRACT_PATH_KEYS = (
@@ -1412,6 +1430,363 @@ def _validate_published_map_freshness(
                 f"{stated:g} day(s) old, but the host contract declares "
                 f"{allowed:g} day(s) (the contract states how stale a map may "
                 f"be before the operator is told the daily build has stopped)")
+
+
+# ---------------------------------------------------------------------------
+# Publish cadence against the freshness allowance (4n)
+# ---------------------------------------------------------------------------
+
+# The systemd duration units, mapped to seconds. These match the units the
+# duration regular expression above accepts, so a value that validates as a
+# systemd duration can be parsed into seconds here.
+_DURATION_UNIT_SECONDS = {
+    "us": 1e-6, "µs": 1e-6, "ms": 1e-3, "s": 1.0, "min": 60.0,
+    "h": 3600.0, "d": 86400.0, "w": 604800.0, "month": 2629800.0,
+    "year": 31557600.0,
+}
+_DURATION_TERM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(us|\u00b5s|ms|s|min|h|d|w|month|year)?")
+# The weekday names systemd accepts in an OnCalendar expression, mapped to
+# their day-of-week index (Monday=0). A weekday prefix restricts the calendar
+# event to those days, so the nominal interval between fires is the largest
+# gap between consecutive named days (wrapping past Sunday back to Monday).
+_WEEKDAY_INDEX = {
+    "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6,
+}
+
+
+def _duration_to_seconds(value: str) -> float | None:
+    """Parse a systemd duration string into seconds, or None if unparseable.
+
+    A bare number is a number of seconds. A sequence of number+unit terms
+    such as 1h 30min or 20h is summed. Whitespace between terms is
+    allowed; the duration regular expression has already validated the
+    shape when this is called from the timer path, but this parser is also
+    safe to call on an arbitrary string (it returns None rather than
+    raising).
+    """
+    value = value.strip()
+    if not value:
+        return None
+    total = 0.0
+    pos = 0
+    matched_any = False
+    while pos < len(value):
+        while pos < len(value) and value[pos].isspace():
+            pos += 1
+        if pos >= len(value):
+            break
+        m = _DURATION_TERM_RE.match(value, pos)
+        if not m or m.end() == pos:
+            return None
+        number = float(m.group(1))
+        unit = m.group(2)
+        if unit is None:
+            # A bare number is seconds.
+            total += number
+        else:
+            total += number * _DURATION_UNIT_SECONDS[unit]
+        pos = m.end()
+        matched_any = True
+    return total if matched_any else None
+
+
+def _weekday_max_gap(spec: str) -> float | None:
+    """The largest day-gap a weekday prefix in an OnCalendar expression implies.
+
+    Mon -> 7 (weekly). Mon..Fri -> 3 (Friday to Monday). Mon,Thu
+    -> 4 (Thursday to Monday). Returns None when the spec is not a weekday
+    prefix this parser recognises.
+    """
+    spec = spec.strip().lower()
+    days: list[int] = []
+    if ".." in spec:
+        a, b = spec.split("..", 1)
+        start = _WEEKDAY_INDEX.get(a.strip())
+        end = _WEEKDAY_INDEX.get(b.strip())
+        if start is None or end is None:
+            return None
+        i = start
+        days.append(i)
+        while i != end:
+            i = (i + 1) % 7
+            days.append(i)
+    elif "," in spec:
+        for part in spec.split(","):
+            idx = _WEEKDAY_INDEX.get(part.strip())
+            if idx is None:
+                return None
+            days.append(idx)
+    else:
+        idx = _WEEKDAY_INDEX.get(spec)
+        if idx is None:
+            return None
+        days.append(idx)
+    if not days:
+        return None
+    ordered = sorted(set(days))
+    if len(ordered) == 1:
+        return 7.0
+    max_gap = 0.0
+    for i in range(len(ordered)):
+        nxt = ordered[(i + 1) % len(ordered)]
+        gap = (nxt - ordered[i]) % 7
+        if gap > max_gap:
+            max_gap = float(gap)
+    return max_gap
+
+
+def _calendar_nominal_interval_days(expr: str) -> float | None:
+    """The nominal interval (in days) an OnCalendar expression fires at.
+
+    This is the base period of the calendar event, NOT the worst case
+    including RandomizedDelaySec jitter: jitter moves the exact fire
+    time within a window but does not change how often the timer fires,
+    so the freshness relationship rides on the base period. Returns None
+    when the expression's cadence cannot be determined (an expression
+    this parser does not recognise is reported by the gate rather than
+    silently accepted).
+    """
+    expr = expr.strip()
+    low = expr.lower()
+    if low == "hourly":
+        return 1.0 / 24.0
+    if low == "daily":
+        return 1.0
+    if low == "weekly":
+        return 7.0
+    if low == "monthly":
+        return 30.0
+    if low == "yearly":
+        return 365.0
+    # A calendar expression is whitespace-separated fields: an optional
+    # weekday prefix, a date component, a time component, and an optional
+    # timezone. The date component governs the base period when no weekday
+    # prefix restricts it; a weekday prefix governs the base period instead
+    # (it widens the gap between fires).
+    tokens = expr.split()
+    weekday_gap: float | None = None
+    date_gap: float | None = None
+    for token in tokens:
+        stripped = token.rstrip(",")
+        # A weekday field may be a list or a range; a date or time field
+        # contains a digit or an asterisk.
+        if all(p.lower() in _WEEKDAY_INDEX for p in
+               re.split(r"[,.]", stripped) if p):
+            gap = _weekday_max_gap(stripped)
+            if gap is None:
+                return None
+            if weekday_gap is None or gap > weekday_gap:
+                weekday_gap = gap
+            continue
+        if "*" in token and "-" in token and ":" not in token:
+            # A date component like *-*-* (every day) or *-*-01
+            # (a specific day of every month).
+            parts = token.split("-")
+            if len(parts) == 3 and parts[0] == "*" and parts[1] == "*":
+                if parts[2] == "*":
+                    date_gap = 1.0
+                else:
+                    # A specific day of every month: the largest gap is
+                    # the long month length (31 days), conservatively.
+                    date_gap = 31.0
+            elif len(parts) == 3 and parts[1] == "*" and parts[2] == "*":
+                # A specific month, every day: ~30 day gap annually.
+                date_gap = 365.0
+            else:
+                return None
+    if weekday_gap is not None:
+        return weekday_gap
+    if date_gap is not None:
+        return date_gap
+    return None
+
+
+def _timer_nominal_interval_days(sections: dict) -> float | None:
+    """The nominal interval (in days) a timer fires at, or None if unknown.
+
+    A calendar timer's nominal interval is the base period of its
+    OnCalendar expression. A monotonic timer's nominal interval is the
+    repeating gap it declares (OnUnitInactiveSec or
+    OnUnitActiveSec); OnBootSec alone is one-shot and carries no
+    repeating cadence, so it returns None. RandomizedDelaySec and
+    AccuracySec are jitter, not cadence, and are ignored.
+    """
+    calendars = _directive_values(sections, "Timer", "OnCalendar")
+    if calendars:
+        return _calendar_nominal_interval_days(calendars[-1])
+    for directive in ("OnUnitInactiveSec", "OnUnitActiveSec"):
+        values = _directive_values(sections, "Timer", directive)
+        if values:
+            seconds = _duration_to_seconds(values[-1])
+            if seconds is not None:
+                return seconds / 86400.0
+    return None
+
+
+def _publish_timer(
+    timer_paths: list[str],
+    unit_paths: list[str],
+) -> tuple[str | None, str | None]:
+    """The timer that schedules the service that publishes the map.
+
+    The publish service is the service whose ExecStart runs the daily
+    spine script (scripts/vps_spine.sh); the publish timer is the
+    timer whose Unit= targets that service (or, when Unit= is
+    omitted, defaults to the matching <timer-stem>.service). Returns
+    (timer_path, timer_text) or (None, None) when no publish
+    timer is in scope.
+    """
+    publish_services: set[str] = set()
+    for spath in unit_paths:
+        try:
+            stext = open(spath, encoding="utf-8").read()
+        except OSError:
+            continue
+        for value in _unit_exec_values(stext):
+            if "vps_spine.sh" in value:
+                publish_services.add(Path(spath).name)
+                break
+    if not publish_services:
+        return None, None
+    for tpath in timer_paths:
+        try:
+            ttext = open(tpath, encoding="utf-8").read()
+        except OSError:
+            continue
+        sections = _unit_sections(ttext)
+        target = _directive_value(sections, "Timer", "Unit")
+        if target is None:
+            target = Path(tpath).name.replace(".timer", ".service")
+        if target in publish_services:
+            return tpath, ttext
+    return None, None
+
+
+def _contract_days_value(
+    contract: dict[str, str], key: str,
+) -> tuple[float | None, str | None]:
+    """Parse a contract key that names a number of days.
+
+    Returns (value, error) where exactly one is set: value is the
+    parsed float when the key is present and numeric, and error is a
+    ready-to-report failure message when the key is missing, non-numeric,
+    or not positive. A missing key is reported by the contract-key check,
+    so the caller decides whether a missing key is its own failure.
+    """
+    raw = contract.get(key, "").strip()
+    if not raw:
+        return None, None
+    try:
+        return float(raw), None
+    except ValueError:
+        return None, (
+            f"the host contract's {key} ({raw}) is not a number of days "
+            f"(the contract states a cadence or an age in days)")
+
+
+def _validate_publish_cadence_contract(
+    path: str,
+    text: str,
+    contract: dict[str, str] | None,
+    failures: list[str],
+) -> None:
+    """Check the contract's publish cadence against the freshness allowance.
+
+    The publish is atomic, so a daily build that succeeds keeps the served
+    map within the freshness allowance only when the timer that publishes
+    fires more often than the map is allowed to age. The contract declares
+    both: publish_cadence_days (how often the host expects a publish to
+    run) and map_max_age_days (how old the served map may be). A
+    cadence that is not strictly less than the maximum age describes a host
+    that can never satisfy its own freshness rule: a timer that fires
+    weekly against a two-day allowance leaves the map past its allowed age
+    after a single missed run, and a timer that fires exactly at the
+    allowance has no margin for a build that runs late in its window.
+    """
+    if contract is None:
+        return
+    cadence, err = _contract_days_value(contract, "publish_cadence_days")
+    if err is not None:
+        failures.append(f"{path}: {err}")
+        return
+    if cadence is None:
+        # The missing contract key is reported by the contract-key check.
+        return
+    if cadence <= 0:
+        failures.append(
+            f"{path}: the host contract's publish_cadence_days "
+            f"({contract.get('publish_cadence_days', '').strip()}) must "
+            f"be a positive number of days (a cadence of zero or less means "
+            f"the timer never publishes, so the served map can never stay "
+            f"within its freshness allowance)")
+        return
+    age, age_err = _contract_days_value(contract, "map_max_age_days")
+    if age_err is not None:
+        # The malformed age is reported by dimension 4m.
+        return
+    if age is None or age <= 0:
+        # The missing or non-positive age is reported by dimension 4m.
+        return
+    if cadence >= age:
+        failures.append(
+            f"{path}: the host contract's publish_cadence_days "
+            f"({cadence:g}) must be strictly less than map_max_age_days "
+            f"({age:g}) (a timer that fires at the same cadence as or less "
+            f"often than the maximum map age is a host that can never keep "
+            f"the served map within its own freshness allowance: the last "
+            f"good map keeps serving while the data behind it grows stale, "
+            f"and even one missed run pushes the map past the allowed age)")
+
+
+def _validate_publish_cadence_timer(
+    contract: dict[str, str] | None,
+    contract_source: str | None,
+    timer_paths: list[str],
+    unit_paths: list[str],
+    failures: list[str],
+) -> None:
+    """Check the publish timer's actual cadence against the declared one.
+
+    The contract declares how often the host expects a publish to run
+    (publish_cadence_days); the timer that schedules the publish must
+    fire at least that often. A timer whose nominal interval is greater
+    than the declared cadence is a host whose publish runs less often
+    than the contract promises, so the served map can age past the
+    freshness allowance even when every build succeeds.
+    """
+    if contract is None or not timer_paths:
+        return
+    cadence, err = _contract_days_value(contract, "publish_cadence_days")
+    if err is not None or cadence is None or cadence <= 0:
+        # Reported by the contract-level cadence check (or the contract-key
+        # check); do not double-report against the timer.
+        return
+    timer_path, timer_text = _publish_timer(timer_paths, unit_paths)
+    if timer_path is None or timer_text is None:
+        # No publish timer in scope: nothing to check here. A shipped
+        # publish timer that is not in scope is not this dimension's
+        # concern (the service-coverage dimension governs that).
+        return
+    sections = _unit_sections(timer_text)
+    interval = _timer_nominal_interval_days(sections)
+    if interval is None:
+        failures.append(
+            f"{timer_path}: the publish timer's schedule cannot be turned "
+            f"into a cadence this gate can compare to the host contract's "
+            f"publish_cadence_days ({cadence:g}) (the OnCalendar expression "
+            f"or monotonic directive does not resolve to a nominal interval "
+            f"in days, so the gate cannot verify the timer fires often "
+            f"enough to keep the served map within its freshness allowance)")
+        return
+    if interval > cadence:
+        failures.append(
+            f"{timer_path}: the publish timer fires every {interval:g} "
+            f"day(s) but the host contract declares "
+            f"publish_cadence_days {cadence:g} (a timer less frequent than "
+            f"the contract declares is a host whose publish runs less often "
+            f"than the operator expects, so the served map can age past the "
+            f"freshness allowance {contract_source or 'the host contract'} "
+            f"declares even when every build succeeds)")
 
 
 # ---------------------------------------------------------------------------
@@ -2201,6 +2576,17 @@ def main(paths: list[str]) -> int:
     #     a timer in scope.
     _check_service_coverage(unit_paths, timer_paths, failures)
 
+    # 4n (timer side). The publish timer's actual cadence against the
+    #     cadence the host contract declares. The contract-level half of
+    #     this dimension (cadence strictly less than the maximum map age)
+    #     is checked per runbook above; this half needs the timer that
+    #     schedules the publish, so it runs here against the first contract
+    #     in scope (or the repository's own runbook when no runbook is in
+    #     scope).
+    if contract is not None:
+        _validate_publish_cadence_timer(
+            contract, contract_source, timer_paths, unit_paths, failures)
+
     # 4h. The daily job's growth-guard thresholds against the contract.
     #     The daily job is always checked, even when the gate is run on
     #     the runbook alone, because the contract describes the job's
@@ -2249,6 +2635,8 @@ def main(paths: list[str]) -> int:
             _validate_published_map_verification(
                 path, text, runbook_contracts.get(path), failures)
             _validate_published_map_freshness(
+                path, text, runbook_contracts.get(path), failures)
+            _validate_publish_cadence_contract(
                 path, text, runbook_contracts.get(path), failures)
             checked += _validate_runbook_host_commands(
                 path, text, runbook_contracts.get(path), failures)
@@ -2300,6 +2688,9 @@ def main(paths: list[str]) -> int:
                         "(including the signature check when it is signed)")
         ok_parts.append("the served map's freshness is checked against the "
                         "contract's maximum age")
+        ok_parts.append("the publish cadence is strictly less than the "
+                        "maximum map age and the publish timer fires at "
+                        "least that often")
     if contract is not None:
         ok_parts.append("the growth-guard thresholds match the contract")
     if runbook_paths and daily_script_text:
