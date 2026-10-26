@@ -241,7 +241,7 @@ import sys
 from pathlib import Path
 
 from posture.cli import build_parser
-from posture.export import DEFECTS_DIR, MANIFEST_NAME, SPINE_DIR
+from posture.export import DEFECTS_DIR, MANIFEST_NAME, OVERLAY_TABLES, SPINE_DIR
 
 # A `posture` invocation at the start of a command line in the script.
 _CALL = re.compile(r"^\s*posture\s+([^\n;&|]*)", re.MULTILINE)
@@ -935,6 +935,7 @@ _CONTRACT_KEYS = (
     "served_dir_owner",
     "map_max_age_days",
     "publish_cadence_days",
+    "required_overlays",
 )
 # The contract keys that name a path on the host.
 _CONTRACT_PATH_KEYS = (
@@ -1790,6 +1791,151 @@ def _validate_publish_cadence_timer(
 
 
 # ---------------------------------------------------------------------------
+# Overlay coverage of the served map (4o)
+# ---------------------------------------------------------------------------
+
+
+def _contract_overlays(contract: dict[str, str]) -> list[str]:
+    """The overlay tables the host contract requires the map to carry.
+
+    The contract states them as one comma-separated value; each name is
+    one overlay table of the published map.
+    """
+    raw = contract.get("required_overlays", "")
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _option_values(invocation_text: str, option: str) -> list[str]:
+    """Every value an option carries in an invocation string.
+
+    A repeatable option carries one value per use, so the values are
+    collected in the order they appear. An option present without a value
+    contributes an empty string.
+    """
+    values: list[str] = []
+    tokens = invocation_text.split()
+    for index, token in enumerate(tokens):
+        token = token.strip("\"'")
+        if token == option:
+            if index + 1 < len(tokens):
+                values.append(tokens[index + 1].strip("\"'"))
+            else:
+                values.append("")
+        elif token.startswith(option + "="):
+            values.append(token[len(option) + 1:].strip("\"'"))
+    return values
+
+
+def _validate_overlay_coverage_contract(
+    path: str,
+    contract: dict[str, str] | None,
+    failures: list[str],
+) -> None:
+    """Check the contract's declared overlay coverage (dimension 4o).
+
+    The contract names the overlay tables the published map must carry. A
+    contract that names a table the map cannot carry describes a
+    requirement that can never be met, and a requirement that names
+    nothing describes a host that is happy with a map missing the rows
+    that say which packages are patched.
+    """
+    if contract is None:
+        return
+    raw = contract.get("required_overlays", "").strip()
+    if not raw:
+        # The missing contract key is reported by the contract-key check.
+        return
+    for name in _contract_overlays(contract):
+        if name not in OVERLAY_TABLES:
+            failures.append(
+                f"{path}: the host contract's required_overlays names "
+                f"{name}, which is not an overlay table the published map can "
+                f"carry (the overlay tables are: {', '.join(OVERLAY_TABLES)})")
+
+
+def _validate_overlay_coverage_verification(
+    path: str,
+    text: str,
+    contract: dict[str, str] | None,
+    failures: list[str],
+) -> None:
+    """Check the runbook's overlay-coverage requirement (dimension 4o).
+
+    The publish is atomic, so a map that lost its vendor fix-status rows
+    keeps serving: intact, consistent with its own manifest, correctly
+    signed and fresh. Every check on that map still passes, and only the
+    map's own row counts show that the rows are gone. The runbook's
+    verification must therefore require the overlays the contract
+    declares, or the operator's confirmation of the served map says
+    nothing about the rows that say which packages are patched.
+    """
+    if contract is None:
+        return
+    required = _contract_overlays(contract)
+    if not required:
+        return
+    commands = _runbook_spine_verify_commands(text)
+    if not commands:
+        # The missing verification is reported by dimension 4l.
+        return
+    for invocation in commands:
+        stated = _option_values(invocation, "--require-overlay")
+        missing = [name for name in required if name not in stated]
+        if missing:
+            failures.append(
+                f"{path}: the runbook verifies the served map but does not "
+                f"require the overlay rows the host contract declares "
+                f"({', '.join(missing)}); the command must carry "
+                f"`--require-overlay <table>` for each of them (a map that "
+                f"lost its vendor fix-status rows keeps serving intact, "
+                f"signed and fresh, so only the overlay check shows that "
+                f"the rows are gone)")
+
+
+def _validate_overlay_coverage_job(
+    path: str,
+    script_text: str,
+    contract: dict[str, str] | None,
+    failures: list[str],
+) -> None:
+    """Check the nightly job's overlay-coverage check (dimension 4o).
+
+    The operator checks the served map by hand; the nightly job is the
+    thing that builds it. A job that publishes a map without the vendor
+    fix-status rows and never looks is a quiet success every night, and
+    the operator finds out only when a patched kernel is reported as
+    unpatched. The job must make the same check the runbook shows, right
+    after it publishes.
+    """
+    if contract is None or not script_text:
+        return
+    required = _contract_overlays(contract)
+    if not required:
+        return
+    commands = [invocation for words, invocation in _invocations(script_text)
+                if words[:2] == ["spine", "verify"]]
+    if not commands:
+        failures.append(
+            f"{path}: the daily job never checks the served map's overlay "
+            f"coverage, so a build that publishes a map without the vendor "
+            f"fix-status rows the host contract declares "
+            f"({', '.join(required)}) is a quiet success instead of a "
+            f"degraded run")
+        return
+    for invocation in commands:
+        stated = _option_values(invocation, "--require-overlay")
+        missing = [name for name in required if name not in stated]
+        if missing:
+            failures.append(
+                f"{path}: the daily job checks the served map but does not "
+                f"require the overlay rows the host contract declares "
+                f"({', '.join(missing)}); the check must carry "
+                f"`--require-overlay <table>` for each of them (a build that "
+                f"publishes a map without the vendor fix-status rows would "
+                f"otherwise be a quiet success)")
+
+
+# ---------------------------------------------------------------------------
 # Host command contract (4g)
 # ---------------------------------------------------------------------------
 
@@ -2638,11 +2784,21 @@ def main(paths: list[str]) -> int:
                 path, text, runbook_contracts.get(path), failures)
             _validate_publish_cadence_contract(
                 path, text, runbook_contracts.get(path), failures)
+            _validate_overlay_coverage_contract(
+                path, runbook_contracts.get(path), failures)
+            _validate_overlay_coverage_verification(
+                path, text, runbook_contracts.get(path), failures)
             checked += _validate_runbook_host_commands(
                 path, text, runbook_contracts.get(path), failures)
             if daily_script_text:
                 _validate_documented_defaults(
                     path, text, daily_script_text, failures)
+
+    # The nightly job is the thing that builds the map the operator checks,
+    # so it must make the same overlay-coverage check the runbook shows.
+    if daily_script_text and contract is not None:
+        _validate_overlay_coverage_job(
+            "scripts/vps_spine.sh", daily_script_text, contract, failures)
 
     for failure in failures:
         print(f"check_deployment_line: FAIL — {failure}")
@@ -2691,6 +2847,8 @@ def main(paths: list[str]) -> int:
         ok_parts.append("the publish cadence is strictly less than the "
                         "maximum map age and the publish timer fires at "
                         "least that often")
+        ok_parts.append("the served map's overlay coverage is checked "
+                        "against the contract's required overlays")
     if contract is not None:
         ok_parts.append("the growth-guard thresholds match the contract")
     if runbook_paths and daily_script_text:

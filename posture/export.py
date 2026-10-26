@@ -95,6 +95,16 @@ PREVIOUS_DIR_NAME = ".spine-previous"
 FLAT_TABLES = ("crosswalk", "candidates", "distrust_marks", "seen_defects", "kev",
                "apple_fixes", "debian_fixes", "ubuntu_fixes", "epss")
 
+# The overlay tables of the map: the peer overlays a host may require its
+# published map to carry. The vendor fix-status overlays (Ubuntu, Debian,
+# Apple) are the ones that clear NVD's unknown-fix false positives on a
+# fully-updated host, and the known-exploited set says which defects are
+# being exploited. A map can be intact, consistent with its own manifest,
+# correctly signed and fresh while one of these tables is empty: the
+# overlay rows are missing, and the map is quietly wrong about which
+# packages are patched.
+OVERLAY_TABLES = ("kev", "apple_fixes", "debian_fixes", "ubuntu_fixes")
+
 
 def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
@@ -571,6 +581,71 @@ def verify_manifest_freshness(manifest: dict, max_age_days: float,
             f"day(s) allowed (the daily build has not published a newer map; "
             f"the last good map is still serving)")
     return age
+
+
+# ---------------------------------------------------------------------------
+# verify (overlay coverage — does the map still carry the overlay rows?)
+# ---------------------------------------------------------------------------
+
+
+def verify_overlay_coverage(
+        manifest: dict,
+        required_overlays: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, int]:
+    """Check that a published map still carries the overlay rows it must.
+
+    A map is published atomically, so a build that produced a map without
+    the vendor fix-status overlays leaves the previously published map
+    serving: intact, consistent with its own manifest, correctly signed and
+    fresh. Every check on that map passes, and the only thing that shows
+    the overlay rows are gone is the map's own row counts. The overlay rows
+    are what clear NVD's unknown-fix false positives on a fully-updated
+    host, so their absence is a map that reports patched packages as
+    unpatched, not a map that is merely incomplete.
+
+    required_overlays names the overlay tables the host requires. Each
+    one must be an overlay table the map can carry (:data:`OVERLAY_TABLES`),
+    and each must hold at least one row. Returns the row count of every
+    required overlay. Raises ValueError when a required overlay is not
+    a known overlay table, when the map's manifest carries no row counts at
+    all, or when a required overlay is absent from the map or empty.
+    """
+    if not required_overlays:
+        return {}
+    counts = manifest.get("counts")
+    if not isinstance(counts, dict):
+        raise ValueError(
+            "the published map's manifest carries no row counts, so its "
+            "overlay coverage cannot be established")
+    coverage: dict[str, int] = {}
+    missing: list[str] = []
+    for name in required_overlays:
+        if name not in OVERLAY_TABLES:
+            raise ValueError(
+                f"{name} is not an overlay table the published map can carry "
+                f"(the overlay tables are: {', '.join(OVERLAY_TABLES)})")
+        count = counts.get(name)
+        if count is None:
+            missing.append(f"{name} (the map carries no {name} table at all)")
+            continue
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"the published map's manifest states an unreadable row "
+                f"count for the {name} overlay ({count!r})") from None
+        if count <= 0:
+            missing.append(f"{name} (the map's {name} overlay is empty)")
+            continue
+        coverage[name] = count
+    if missing:
+        raise ValueError(
+            "the published map does not carry the overlay rows the host "
+            "requires: " + "; ".join(missing) + " (the vendor fix-status "
+            "overlays are what clear NVD's unknown-fix false positives on a "
+            "fully-updated host, so a map without them reports patched "
+            "packages as unpatched)")
+    return coverage
 
 
 # ---------------------------------------------------------------------------

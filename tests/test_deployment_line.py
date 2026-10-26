@@ -754,6 +754,7 @@ sign_pub_key: /etc/posture/signing_pub.pem
 served_dir_owner: posture
 map_max_age_days: 2
 publish_cadence_days: 1
+required_overlays: ubuntu_fixes,debian_fixes
 ```
 """
 
@@ -844,7 +845,8 @@ def _baseline_runbook(extra: str = "") -> str:
     lines.append("```")
     lines.append("```bash")
     lines.append("posture spine verify --from /var/lib/posture "
-                 "--max-age-days 2")
+                 "--max-age-days 2 --require-overlay ubuntu_fixes "
+                 "--require-overlay debian_fixes")
     lines.append("```")
     if extra:
         lines.append(extra)
@@ -1823,7 +1825,8 @@ def test_gate_rejects_a_runbook_that_only_lists_the_published_map(tmp_path):
     # truncated or tampered shard, so it is not a verification.
     runbook = tmp_path / "deployment.md"
     body = _baseline_runbook().replace(
-        "posture spine verify --from /var/lib/posture --max-age-days 2\n",
+        "posture spine verify --from /var/lib/posture --max-age-days 2 "
+        "--require-overlay ubuntu_fixes --require-overlay debian_fixes\n",
         "")
     runbook.write_text(body)
     result = _run_gate_on([runbook])
@@ -2166,3 +2169,95 @@ def test_gate_rejects_a_monotonic_publish_timer_that_fires_less_often_than_decla
     assert result.returncode == 1
     assert "fires every 3" in result.stdout
     assert "publish_cadence_days 1" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Overlay coverage of the served map (dimension 4o)
+# ---------------------------------------------------------------------------
+
+
+def test_the_host_contract_declares_the_required_overlays():
+    # The contract states which overlay tables the published map must carry:
+    # the vendor fix-status rows are what clear NVD's unknown-fix false
+    # positives on a fully-updated host.
+    body = RUNBOOK.read_text()
+    assert "required_overlays: ubuntu_fixes,debian_fixes" in body, (
+        "the host contract does not declare which overlay tables the "
+        "published map must carry")
+
+
+def test_the_shipped_runbook_requires_the_contract_s_overlays():
+    body = RUNBOOK.read_text()
+    assert ("--require-overlay ubuntu_fixes --require-overlay debian_fixes"
+            in body), (
+        "the runbook verifies the served map without requiring the overlay "
+        "rows the contract declares, so a map that lost them still passes")
+
+
+def test_the_daily_job_checks_the_served_maps_overlay_coverage():
+    # The operator checks the map by hand; the nightly job is the thing that
+    # builds it, so the job must make the same check after its publish.
+    text = DAILY_SCRIPT.read_text()
+    assert "--require-overlay ubuntu_fixes" in text
+    assert "--require-overlay debian_fixes" in text
+    assert text.index("posture spine publish") < text.index(
+        "--require-overlay ubuntu_fixes")
+
+
+def test_gate_reports_the_overlay_coverage_dimension_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "the served map's overlay coverage is checked" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_never_requires_the_overlays(tmp_path):
+    # A runbook that verifies the map's digests but not its overlay rows
+    # confirms a map that may no longer say which packages are patched.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        " --require-overlay ubuntu_fixes --require-overlay debian_fixes", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "does not require the overlay rows" in result.stdout
+    assert "ubuntu_fixes" in result.stdout
+
+
+def test_gate_rejects_a_contract_naming_an_overlay_the_map_cannot_carry(
+        tmp_path):
+    # A contract that names a table the published map cannot carry describes
+    # a requirement that can never be met.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "required_overlays: ubuntu_fixes,debian_fixes",
+        "required_overlays: ubuntu_fixes,not_a_table")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "not an overlay table the published map can carry" in result.stdout
+
+
+def test_gate_rejects_a_contract_without_the_required_overlays(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "required_overlays: ubuntu_fixes,debian_fixes\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "required_overlays" in result.stdout
+
+
+def test_gate_rejects_a_contract_whose_overlays_the_daily_job_never_checks(
+        tmp_path):
+    # The nightly job builds the map the operator checks; a contract that
+    # requires an overlay the job never requires describes a job that
+    # publishes a map the operator would not accept.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "required_overlays: ubuntu_fixes,debian_fixes",
+        "required_overlays: ubuntu_fixes,debian_fixes,kev")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "the daily job checks the served map but does not require" in (
+        result.stdout)

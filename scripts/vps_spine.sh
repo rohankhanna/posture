@@ -165,6 +165,18 @@ fi
 SIGN_KEY="${POSTURE_SIGN_KEY:-}"
 posture spine publish --db "$DB_PATH" --out "$EXPORT_DIR" ${SIGN_KEY:+--sign-key "$SIGN_KEY"}
 
+# 7b) The published map must still carry the vendor fix-status overlay rows.
+#     The publish is atomic, so a build that produced a map without those
+#     rows leaves the previously published map serving: intact, consistent
+#     with its own manifest, correctly signed and fresh. Every check on it
+#     still passes, and the only thing that shows the rows are gone is the
+#     map's own row counts. Those rows are what clear NVD's unknown-fix
+#     false positives on a fully-updated host, so their absence is a
+#     degradation the operator must see, not a quiet success.
+posture spine verify --from "$EXPORT_DIR" \
+  --require-overlay ubuntu_fixes --require-overlay debian_fixes \
+  || degrade "the published map does not carry the vendor fix-status overlay rows"
+
 # 8) Periodic git clone maintenance. The advisory-database and cvelistV5
 #    clones accumulate pack objects from every fetch; a weekly gc + remote
 #    prune reclaims that bloat. The ghsa clone in particular carries thousands

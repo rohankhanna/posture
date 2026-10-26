@@ -689,11 +689,28 @@ def _cmd_spine(args) -> int:
             freshness_note = (
                 f", generated {manifest['generated_at']} "
                 f"({age:.1f} day(s) old)")
+        # The map can be intact, signed, fresh and consistent with its own
+        # manifest while an overlay table is empty: the vendor fix-status
+        # rows are simply gone, and the map is quietly wrong about which
+        # packages are patched. A host that requires those rows says so,
+        # and the check fails loudly instead of passing.
+        required_overlays = getattr(args, "require_overlay", None) or []
+        overlay_note = ""
+        if required_overlays:
+            try:
+                coverage = _export.verify_overlay_coverage(manifest,
+                                                           required_overlays)
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            overlay_note = ", overlay coverage OK (" + ", ".join(
+                f"{name} {count} row(s)" for name, count in coverage.items()) + ")"
         ok_line = f"spine verify: OK — {len(manifest['files'])} shard(s), "
         ok_line += f"{manifest['counts']}"
         if signature_note:
             ok_line += f", {signature_note}"
         ok_line += freshness_note
+        ok_line += overlay_note
         print(ok_line)
         return 0
     # publish is the deployment line's serving path: export into a staging
@@ -1297,6 +1314,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="verify/import: fail when the map's manifest is older than this "
                          "many days (the daily build keeps the last good map serving, so a "
                          "stale map means the build has stopped)")
+    sp.add_argument("--require-overlay", dest="require_overlay", action="append",
+                    default=None, metavar="TABLE",
+                    help="verify: fail when the map does not carry this overlay table's "
+                         "rows (repeatable; the overlay tables are: "
+                         + ", ".join(_export.OVERLAY_TABLES) + ")")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_spine)
 
     # -- ingestion: CVE stream + incremental refresh + catalog ---------------

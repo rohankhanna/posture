@@ -314,8 +314,23 @@ def test_the_daily_job_publishes_through_the_verified_path(tmp_path):
     assert "--out" in publishes[0]
     # the job must not export straight into the served directory any more
     assert not [c for c in calls if c.startswith("spine export")], calls
-    # publishing is the LAST step: it is the thing that hands the map over
-    assert calls[-1].startswith("spine publish"), calls
+    # publishing is the last step that hands the map over: nothing after it
+    # publishes anything. What follows it only verifies the map that was
+    # just handed over.
+    publishing = [c for c in calls
+                  if c.startswith("spine publish")
+                  or c.startswith("spine export")]
+    assert publishing[-1].startswith("spine publish"), calls
+    after_publish = calls[calls.index(publishing[-1]) + 1:]
+    assert not [c for c in after_publish
+                if c.startswith("spine publish")
+                or c.startswith("spine export")], calls
+    # the map that was handed over is checked for the vendor fix-status rows
+    # the host requires, so a map that lost them is a loud failure
+    verifies = [c for c in calls if c.startswith("spine verify")]
+    assert verifies, calls
+    assert "--require-overlay ubuntu_fixes" in verifies[-1], calls
+    assert "--require-overlay debian_fixes" in verifies[-1], calls
     # the map is published after the data plane and the overlays
     assert any(c.startswith("ingest ubuntu") for c in calls), calls
     assert any(c.startswith("ingest debian") for c in calls), calls

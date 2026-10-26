@@ -85,6 +85,7 @@ sign_pub_key: /etc/posture/signing_pub.pem
 served_dir_owner: posture
 map_max_age_days: 2
 publish_cadence_days: 1
+required_overlays: ubuntu_fixes,debian_fixes
 ```
 
 The last two keys are the free-space thresholds the daily job applies to the
@@ -142,6 +143,20 @@ the timer that schedules the publish actually fires at least as often as
 the contract declares, so a timer whose schedule is less frequent than the
 contract promises is reported at check time rather than discovered when the
 served map is already stale.
+
+`required_overlays` is the list of overlay tables the published map must
+carry: the vendor fix-status overlays this host serves. The Ubuntu and
+Debian tracker overlays are what clear NVD's unknown-fix false positives
+on a fully-updated host, so a map without them reports patched packages
+as unpatched. The publish is atomic, so a build that produced a map
+without those rows leaves the previously published map serving: intact,
+consistent with its own manifest, correctly signed and fresh. Every check
+on that map still passes, and the only thing that shows the rows are gone
+is the map's own row counts. The contract therefore declares which
+overlays the host requires, the verification step below requires them,
+the nightly job checks them after every publish, and the deployment-line
+gate checks that the runbook and the job still require exactly the
+overlays the contract declares.
 
 The environment table below states a default for every knob the daily job
 reads. Those defaults live in the job itself, as the values it falls back
@@ -287,7 +302,7 @@ shards, and the previous map is gone only because the swap succeeded.
 ```bash
 posture health --db /var/lib/posture/posture.db
 posture catalog --db /var/lib/posture/posture.db --limit 5
-posture spine verify --from /var/lib/posture --max-age-days 2
+posture spine verify --from /var/lib/posture --max-age-days 2 --require-overlay ubuntu_fixes --require-overlay debian_fixes
 sudo ls -l /var/lib/posture/spine/manifest.json
 sudo ls -l /var/lib/posture/spine/defects
 ```
@@ -312,6 +327,17 @@ serving, so every content check on it still passes while the data behind
 it grows stale. When this check fails, read the last run's journal before
 doing anything else; the served map is still the last good one.
 
+`--require-overlay ubuntu_fixes --require-overlay debian_fixes` are the
+contract's `required_overlays`: the vendor fix-status rows the map must
+carry. The check reads the map's own row counts and fails when a required
+overlay table is missing or empty. A map without those rows is not a
+broken map: it is an intact, fresh, correctly signed map that is quietly
+wrong about which packages are patched, because the tracker overlays that
+clear NVD's unknown-fix false positives on a fully-updated host are not in
+it. When this check fails, read the last run's journal: the nightly job
+makes the same check after every publish and reports the same failure as
+a degraded run.
+
 A client that pulls the map verifies the manifest's shard digests before it
 imports anything, so a half-written map is refused rather than believed.
 
@@ -327,7 +353,7 @@ map alone. The map that is up is still the last good one the daily job
 published and signed.
 
 ```bash
-posture spine verify --from /var/lib/posture --verify-sig --signature-key /etc/posture/signing_pub.pem --max-age-days 2
+posture spine verify --from /var/lib/posture --verify-sig --signature-key /etc/posture/signing_pub.pem --max-age-days 2 --require-overlay ubuntu_fixes --require-overlay debian_fixes
 ```
 
 ## Step 8 — check the tree before you deploy it
@@ -481,3 +507,17 @@ deployment line, and makes these kinds of drift loud:
     publish must fire at least as often as the contract declares, so a
     timer whose nominal interval is greater than `publish_cadence_days`
     is a host whose publish runs less often than the operator expects.
+16. **Overlay coverage of the served map** — the host contract declares
+    which overlay tables the published map must carry
+    (`required_overlays`), and the gate checks that every
+    `posture spine verify` command the runbook shows, and the check the
+    nightly job runs after its publish, requires exactly those overlays.
+    The publish is atomic, so a map that lost its vendor fix-status rows
+    keeps serving intact, signed and fresh, and every other check on it
+    still passes: only the map's own row counts show that the rows are
+    gone. A contract that names an overlay table the map cannot carry, a
+    runbook that verifies the map without requiring the overlays the
+    contract declares, and a nightly job that never checks them are all
+    drift at check time, because the operator's question — does the map
+    this host serves still say which packages are patched? — would
+    otherwise have no answer.
