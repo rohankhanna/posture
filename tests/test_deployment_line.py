@@ -3389,3 +3389,72 @@ def test_gate_rejects_a_contract_with_an_out_of_range_band(tmp_path):
     result = _run_gate_on([runbook])
     assert result.returncode == 1
     assert "outside the 0..1 range" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Systemd command-prefix handling: a leading '-' on an ExecStart tells
+# systemd to ignore the exit status of that command. The gate must strip
+# this prefix before checking whether the invocation targets the posture
+# CLI, otherwise a '-'-prefixed ExecStart is not recognized and the gate
+# silently skips its command and option validation.
+# ---------------------------------------------------------------------------
+
+def test_gate_accepts_a_dash_prefixed_exec_start(tmp_path):
+    # A '-'-prefixed ExecStart must still be recognized as a posture
+    # invocation and validated against the CLI. If the gate does not
+    # strip the '-' prefix, it would not find the posture command and
+    # would silently skip validation.
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=-/usr/bin/env posture stream\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gate_rejects_an_unknown_command_in_a_dash_prefixed_exec_start(tmp_path):
+    # A '-'-prefixed ExecStart with an unknown command must still be
+    # rejected. If the gate does not strip the '-' prefix, it would not
+    # find the posture command and would silently pass.
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=-/usr/bin/env posture not-a-command\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "not-a-command" in result.stdout
+
+
+def test_gate_rejects_an_unknown_option_in_a_dash_prefixed_exec_start(tmp_path):
+    unit = _write_unit(tmp_path, (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=-/usr/bin/env posture purge --bogus-option\n"))
+    result = _run_gate_on([unit])
+    assert result.returncode == 1
+    assert "--bogus-option" in result.stdout
+
+
+def test_reconcile_service_monitor_run_has_ignore_failure_prefix():
+    # The posture-reconcile.service runs two ExecStart lines under
+    # Type=oneshot: monitor run then repair reconcile. With Type=oneshot,
+    # systemd stops at the first ExecStart that exits non-zero and does
+    # not run the remaining lines. Without a '-' (ignore-exit-status)
+    # prefix on the monitor run ExecStart, a vocab scan failure silently
+    # skips the reconcile step — the more important drift-proposal pass.
+    # The '-' prefix ensures reconcile always runs regardless of whether
+    # the vocab scan succeeded.
+    text = (UNIT_DIR / "posture-reconcile.service").read_text()
+    # Find the ExecStart line for monitor run.
+    monitor_line = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("ExecStart=") and "monitor run" in stripped:
+            monitor_line = stripped
+            break
+    assert monitor_line is not None, (
+        "posture-reconcile.service has no ExecStart line for monitor run")
+    assert monitor_line.startswith("ExecStart=-"), (
+        f"the monitor run ExecStart in posture-reconcile.service must carry "
+        f"a '-' (ignore-exit-status) prefix so a vocab scan failure does "
+        f"not silently skip the reconcile step; found: {monitor_line}")

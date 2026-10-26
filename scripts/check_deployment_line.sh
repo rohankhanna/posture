@@ -414,8 +414,23 @@ def _is_timer_file(path: str) -> bool:
 
 
 def _strip_runner_prefix(value: str) -> str:
-    """Strip /usr/bin/env or /usr/bin/ runner prefixes from an ExecStart value."""
+    """Strip systemd command prefixes and /usr/bin/env or /usr/bin/ runner
+    prefixes from an ExecStart or ExecStartPre value.
+
+    systemd allows a leading command-prefix character before the executable
+    path: '-' (ignore exit status), '@' (separate session), ':' (privileged
+    but no cgroup), '+' (full privileges), '!' (elevated privileges). These
+    prefixes are not part of the command path and must be stripped before
+    checking whether the invocation targets the posture CLI, otherwise a
+    '-'-prefixed ExecStart (e.g. an ignore-failure maintenance command) is
+    not recognized and the gate silently skips its command and option
+    validation.
+    """
     value = value.strip()
+    # Strip any leading systemd command-prefix characters. Multiple
+    # prefixes may appear in any order (e.g. '-@' or '@-').
+    while value and value[0] in "-@:+!":
+        value = value[1:].lstrip()
     for prefix in ("/usr/bin/env ", "/usr/bin/", "env "):
         if value.startswith(prefix):
             return value[len(prefix):].strip()

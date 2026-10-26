@@ -32,10 +32,17 @@ EnvironmentFile=%h/.config/posture/env
 # DB path convention: the default (~/.local/share/posture/posture.db), same
 # as posture-stream.service. No --db flag so the units stay in sync if the
 # default ever moves.
-# Type=oneshot allows multiple ExecStart lines, run sequentially. Each exits
-# 0 before the next starts; a failure in the vocab scan still lets reconcile
-# run (use `posture-reconcile.service`'s exit code as the overall signal).
-ExecStart=/usr/bin/env posture monitor run
+# Type=oneshot allows multiple ExecStart lines, run sequentially. With
+# Type=oneshot, systemd stops at the first ExecStart that exits non-zero
+# and does not run the remaining lines, so a bare two-line setup would
+# silently skip the reconcile step when the vocab scan fails. The '-'
+# prefix on the monitor run ExecStart tells systemd to ignore its exit
+# status, so the reconcile step always runs regardless of whether the
+# vocab scan succeeded. The service's exit code then reflects the
+# reconcile step's result (the more important drift-proposal pass); a
+# monitor run failure is still visible in the journal via
+# StandardOutput/StandardError.
+ExecStart=-/usr/bin/env posture monitor run
 ExecStart=/usr/bin/env posture repair reconcile
 StandardOutput=journal
 StandardError=journal
