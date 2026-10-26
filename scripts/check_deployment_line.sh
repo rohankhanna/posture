@@ -958,6 +958,9 @@ _CONTRACT_KEYS = (
     "overlay_ubuntu_packages",
     "overlay_debian_releases",
     "overlay_debian_packages",
+    "overlay_ubuntu_min_rows",
+    "overlay_debian_min_rows",
+    "overlay_max_age_days",
 )
 # The contract keys that name a path on the host.
 _CONTRACT_PATH_KEYS = (
@@ -2145,6 +2148,292 @@ def _validate_overlay_ingest_scope_job(
 
 
 # ---------------------------------------------------------------------------
+# Per-release overlay coverage of the served map (4q)
+# ---------------------------------------------------------------------------
+
+def _contract_overlay_min_rows(contract: dict[str, str]) -> dict[str, int]:
+    """The per-release row floor the contract declares for each distro.
+
+    The contract states one floor per distro-tracker overlay it requires:
+    every release of that overlay's declared scope must carry at least
+    this many rows in the served map. A floor is a number of rows, not a
+    per-release number, because the host's own expectation is "this
+    release is present and populated", and the operator can raise the
+    floor to the count observed on the host once it is known.
+    """
+    floors: dict[str, int] = {}
+    for distro in _OVERLAY_INGEST_DISTROS:
+        raw = contract.get(f"overlay_{distro}_min_rows", "").strip()
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            continue  # reported by the contract-level check
+        floors[distro] = value
+    return floors
+
+
+def _contract_overlay_max_age_days(contract: dict[str, str]) -> float | None:
+    """The freshness allowance the contract declares for the overlay rows."""
+    raw = contract.get("overlay_max_age_days", "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None  # reported by the contract-level check
+
+
+def _expected_release_requirements(
+        contract: dict[str, str]) -> list[tuple[str, str, int]]:
+    """The (table, release, min_rows) requirements the contract implies.
+
+    Every release of every required distro-tracker overlay's declared
+    ingest scope must carry at least the floor the contract declares for
+    that overlay.
+    """
+    floors = _contract_overlay_min_rows(contract)
+    declared = _declared_overlay_scope(contract)
+    requirements: list[tuple[str, str, int]] = []
+    for distro in _required_overlay_distros(contract):
+        floor = floors.get(distro)
+        if floor is None:
+            continue
+        for release in declared.get(distro, {}).get("releases", []):
+            requirements.append((f"{distro}_fixes", release, floor))
+    return requirements
+
+
+def _stated_release_requirements(
+        invocation: str) -> list[tuple[str, str, int]]:
+    """The (table, release, min_rows) requirements an invocation states."""
+    stated: list[tuple[str, str, int]] = []
+    for value in _option_values(invocation, "--require-overlay-release"):
+        parts = value.split(":")
+        if len(parts) != 3:
+            continue
+        try:
+            min_rows = int(parts[2])
+        except ValueError:
+            continue
+        stated.append((parts[0].strip(), parts[1].strip(), min_rows))
+    return stated
+
+
+def _validate_overlay_release_coverage_contract(
+        path: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the contract's declared per-release overlay coverage (4q).
+
+    The contract declares the ingest scope of every distro-tracker overlay
+    it requires (4p), and the served map's overlay coverage is checked
+    against the contract's required overlays (4o). Neither binds the map's
+    ROWS to the scope: a release whose tracker feed returned nothing ends
+    up with no rows (the per-(release, package) refresh deletes the rows
+    it replaces), while the table as a whole still holds the other
+    releases' rows and the presence check still passes. The contract
+    therefore declares a row floor per required overlay and a freshness
+    allowance for the overlay rows, so the per-release coverage of the
+    served map can be required rather than assumed.
+    """
+    if contract is None:
+        return
+    required_distros = _required_overlay_distros(contract)
+    for distro in required_distros:
+        raw = contract.get(f"overlay_{distro}_min_rows", "").strip()
+        if not raw:
+            failures.append(
+                f"{path}: the host contract requires the {distro}_fixes "
+                f"overlay but declares no overlay_{distro}_min_rows, so the "
+                f"gate cannot require the served map to carry a per-release "
+                f"row floor for it (a release whose tracker feed returned "
+                f"nothing leaves the overlay table populated with the other "
+                f"releases' rows, so the presence check still passes while "
+                f"the missing release reports patched packages as unpatched)")
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            failures.append(
+                f"{path}: the host contract's overlay_{distro}_min_rows is "
+                f"{raw!r}, which is not a row count")
+            continue
+        if value < 1:
+            failures.append(
+                f"{path}: the host contract's overlay_{distro}_min_rows is "
+                f"{value}, which is not a positive row count")
+    for distro in _OVERLAY_INGEST_DISTROS:
+        if distro in required_distros:
+            continue
+        if contract.get(f"overlay_{distro}_min_rows", "").strip():
+            failures.append(
+                f"{path}: the host contract declares overlay_{distro}_min_rows "
+                f"but does not require the {distro}_fixes overlay, so it "
+                f"describes a row floor for an overlay the host does not "
+                f"serve")
+    raw_age = contract.get("overlay_max_age_days", "").strip()
+    if not raw_age:
+        failures.append(
+            f"{path}: the host contract declares no overlay_max_age_days, so "
+            f"the gate cannot require the overlay rows of a required release "
+            f"to be fresh (a release the nightly job stopped ingesting "
+            f"keeps its last-known-good rows, so only their age shows that "
+            f"they stopped being refreshed)")
+    else:
+        try:
+            age = float(raw_age)
+        except ValueError:
+            failures.append(
+                f"{path}: the host contract's overlay_max_age_days is "
+                f"{raw_age!r}, which is not a number of days")
+        else:
+            if age <= 0:
+                failures.append(
+                    f"{path}: the host contract's overlay_max_age_days is "
+                    f"{age:g}, which is not a positive number of days")
+
+
+def _validate_overlay_release_coverage_verification(
+        path: str,
+        text: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the runbook's per-release overlay coverage (dimension 4q).
+
+    The operator's confirmation of the served map is the check the runbook
+    shows. A runbook that requires the overlay tables but not the releases
+    inside them confirms a map that may be quietly narrow: the missing
+    release's fix-status rows are the ones that clear NVD's unknown-fix
+    false positives on that release, and their absence is invisible to a
+    per-table check.
+    """
+    if contract is None:
+        return
+    expected = _expected_release_requirements(contract)
+    if not expected:
+        return
+    max_age = _contract_overlay_max_age_days(contract)
+    commands = _runbook_spine_verify_commands(text)
+    if not commands:
+        # The missing verification is reported by dimension 4l.
+        return
+    for invocation in commands:
+        stated = _stated_release_requirements(invocation)
+        for table, release, min_rows in expected:
+            matching = [s for s in stated
+                        if s[0] == table and s[1] == release]
+            if not matching:
+                failures.append(
+                    f"{path}: the runbook verifies the served map but does "
+                    f"not require the {table} rows of release {release}, "
+                    f"which the host contract's overlay scope declares (the "
+                    f"command must carry "
+                    f"`--require-overlay-release {table}:{release}:{min_rows}`; "
+                    f"a release whose tracker feed returned nothing leaves "
+                    f"the table populated with the other releases' rows, so "
+                    f"the per-table check still passes)")
+            elif min_rows not in [s[2] for s in matching]:
+                failures.append(
+                    f"{path}: the runbook requires {min_rows} row(s) of "
+                    f"{table} release {release} where the host contract's "
+                    f"overlay_{table[:-len('_fixes')]}_min_rows floor is "
+                    f"{[s[2] for s in matching][0]}")
+        for table, release, min_rows in stated:
+            if (table, release) not in [(t, r) for t, r, _ in expected]:
+                failures.append(
+                    f"{path}: the runbook requires the {table} rows of "
+                    f"release {release}, which the host contract's overlay "
+                    f"scope does not declare, so the runbook describes a "
+                    f"different scope than the contract")
+        if max_age is not None:
+            stated_age = _option_values(invocation,
+                                        "--require-overlay-max-age-days")
+            if not stated_age:
+                failures.append(
+                    f"{path}: the runbook verifies the served map but does "
+                    f"not require the overlay rows to be fresh within the "
+                    f"host contract's overlay_max_age_days "
+                    f"({max_age:g} day(s)); the command must carry "
+                    f"`--require-overlay-max-age-days {max_age:g}` (a "
+                    f"release the nightly job stopped ingesting keeps its "
+                    f"last-known-good rows, so only their age shows that "
+                    f"they went stale)")
+
+
+def _validate_overlay_release_coverage_job(
+        path: str,
+        script_text: str,
+        contract: dict[str, str] | None,
+        failures: list[str],
+) -> None:
+    """Check the nightly job's per-release overlay coverage (dimension 4q).
+
+    The nightly job is the thing that builds the map; the operator checks
+    it by hand. A job that publishes a map whose overlay rows no longer
+    cover every required release, and never looks, is a quiet success every
+    night: the map stays intact, signed and fresh, and only the missing
+    release's fix-status rows are gone. The job must make the same
+    per-release check the runbook shows, right after it publishes.
+    """
+    if contract is None or not script_text:
+        return
+    expected = _expected_release_requirements(contract)
+    if not expected:
+        return
+    max_age = _contract_overlay_max_age_days(contract)
+    commands = [invocation for words, invocation in _invocations(script_text)
+                if words[:2] == ["spine", "verify"]]
+    if not commands:
+        failures.append(
+            f"{path}: the daily job never checks the served map's per-release "
+            f"overlay coverage, so a build that publishes a map whose "
+            f"overlay rows no longer cover every required release is a "
+            f"quiet success instead of a degraded run")
+        return
+    for invocation in commands:
+        stated = _stated_release_requirements(invocation)
+        for table, release, min_rows in expected:
+            matching = [s for s in stated
+                        if s[0] == table and s[1] == release]
+            if not matching:
+                failures.append(
+                    f"{path}: the daily job checks the served map but does "
+                    f"not require the {table} rows of release {release}, "
+                    f"which the host contract's overlay scope declares (the "
+                    f"check must carry "
+                    f"`--require-overlay-release {table}:{release}:{min_rows}`; "
+                    f"a release whose tracker feed returned nothing leaves "
+                    f"the table populated with the other releases' rows, so "
+                    f"the per-table check still passes)")
+            elif min_rows not in [s[2] for s in matching]:
+                failures.append(
+                    f"{path}: the daily job requires "
+                    f"{[s[2] for s in matching][0]} row(s) of {table} release "
+                    f"{release} where the host contract's overlay scope floor "
+                    f"is {min_rows}")
+        for table, release, min_rows in stated:
+            if (table, release) not in [(t, r) for t, r, _ in expected]:
+                failures.append(
+                    f"{path}: the daily job requires the {table} rows of "
+                    f"release {release}, which the host contract's overlay "
+                    f"scope does not declare")
+        if max_age is not None:
+            stated_age = _option_values(invocation,
+                                        "--require-overlay-max-age-days")
+            if not stated_age:
+                failures.append(
+                    f"{path}: the daily job checks the served map but does "
+                    f"not require the overlay rows to be fresh within the "
+                    f"host contract's overlay_max_age_days "
+                    f"({max_age:g} day(s)); the check must carry "
+                    f"`--require-overlay-max-age-days {max_age:g}`")
+
+
+# ---------------------------------------------------------------------------
 # Host command contract (4g)
 # ---------------------------------------------------------------------------
 
@@ -2999,6 +3288,10 @@ def main(paths: list[str]) -> int:
                 path, text, runbook_contracts.get(path), failures)
             _validate_overlay_ingest_scope_contract(
                 path, runbook_contracts.get(path), failures)
+            _validate_overlay_release_coverage_contract(
+                path, runbook_contracts.get(path), failures)
+            _validate_overlay_release_coverage_verification(
+                path, text, runbook_contracts.get(path), failures)
             checked += _validate_runbook_host_commands(
                 path, text, runbook_contracts.get(path), failures)
             if daily_script_text:
@@ -3017,6 +3310,14 @@ def main(paths: list[str]) -> int:
     #     loud at check time.
     if daily_script_text and contract is not None:
         _validate_overlay_ingest_scope_job(
+            "scripts/vps_spine.sh", daily_script_text, contract, failures)
+
+    # 4q (job side). The nightly job's per-release overlay coverage must be
+    #     the one the contract declares, so a release whose tracker feed
+    #     returned nothing (or whose rows stopped being refreshed) is loud
+    #     at check time instead of a quietly narrow overlay.
+    if daily_script_text and contract is not None:
+        _validate_overlay_release_coverage_job(
             "scripts/vps_spine.sh", daily_script_text, contract, failures)
 
     for failure in failures:
@@ -3071,6 +3372,9 @@ def main(paths: list[str]) -> int:
         ok_parts.append("the nightly job's overlay ingest scope matches "
                         "the contract's declared per-distro releases and "
                         "packages")
+        ok_parts.append("the served map's per-release overlay coverage is "
+                        "checked against the contract's row floor and "
+                        "freshness allowance")
     if contract is not None:
         ok_parts.append("the growth-guard thresholds match the contract")
     if runbook_paths and daily_script_text:

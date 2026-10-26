@@ -105,6 +105,16 @@ FLAT_TABLES = ("crosswalk", "candidates", "distrust_marks", "seen_defects", "kev
 # packages are patched.
 OVERLAY_TABLES = ("kev", "apple_fixes", "debian_fixes", "ubuntu_fixes")
 
+# The overlay tables whose rows are keyed by a release (a distribution
+# codename) and a source package. Their coverage is a per-release question,
+# not a per-table one: a table that still holds rows for three of the four
+# releases the host requires is a map that is quietly narrow, and the
+# vendor fix-status rows of the missing release are the ones that clear
+# NVD's unknown-fix false positives on that release. The published manifest
+# therefore states, per release, how many rows the map carries and when the
+# most recent of them was fetched.
+RELEASE_KEYED_OVERLAY_TABLES = ("ubuntu_fixes", "debian_fixes")
+
 
 def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
@@ -297,6 +307,33 @@ def _read_jsonl(path: Path):
 # export
 # ---------------------------------------------------------------------------
 
+def _tally_release_coverage(coverage: dict, row: dict) -> None:
+    """Fold one release-keyed overlay row into the per-release coverage.
+
+    The coverage states three things per release: how many rows the map
+    carries for it, which source packages contributed them, and when the
+    most recent of them was fetched. The fetch time is what tells a live
+    release from a retained one: the per-(release, package) refresh deletes
+    the rows it is about to replace, so a release whose tracker feed
+    returned nothing ends up with no rows at all, while a release the
+    nightly job stopped ingesting keeps its last-known-good rows and goes
+    quietly stale.
+    """
+    release = str(row.get("release") or "").strip()
+    if not release:
+        return
+    entry = coverage.setdefault(release, {
+        "rows": 0, "newest_fetched_at": None, "packages": {}})
+    entry["rows"] += 1
+    package = str(row.get("package") or "").strip()
+    if package:
+        packages = entry["packages"]
+        packages[package] = packages.get(package, 0) + 1
+    fetched_at = str(row.get("fetched_at") or "").strip()
+    if fetched_at and fetched_at > (entry["newest_fetched_at"] or ""):
+        entry["newest_fetched_at"] = fetched_at
+
+
 def export_spine(conn, out_dir: os.PathLike | str = ".",
                  policy_version: str = "",
                  source_version: dict | None = None,
@@ -345,6 +382,8 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
         "ubuntu_fixes": _store.ubuntu_fixes_iter,
         "epss": _store.epss_iter,
     }
+    release_coverage: dict[str, dict] = {
+        name: {} for name in RELEASE_KEYED_OVERLAY_TABLES}
     for name in FLAT_TABLES:
         # Same size cap as the defect shards: a flat table that outgrows the
         # cap becomes numbered parts instead of one unbounded file, so no
@@ -352,6 +391,8 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
         writer = _ShardWriter(root, name, MAX_FLAT_SHARD_BYTES)
         for row in loaders[name](conn):
             writer.write(row)
+            if name in release_coverage:
+                _tally_release_coverage(release_coverage[name], row)
         files.extend(writer.finish())
         counts[name] = writer.total
 
@@ -384,6 +425,7 @@ def export_spine(conn, out_dir: os.PathLike | str = ".",
         "source_version": src,
         "counts": counts,
         "files": files,
+        "release_coverage": release_coverage,
     }
     (root / MANIFEST_NAME).write_text(
         json.dumps(manifest, sort_keys=True, indent=2) + "\n"
@@ -646,6 +688,136 @@ def verify_overlay_coverage(
             "fully-updated host, so a map without them reports patched "
             "packages as unpatched)")
     return coverage
+
+
+# ---------------------------------------------------------------------------
+# verify (per-release overlay coverage — does the map still carry every
+# release the host requires?)
+# ---------------------------------------------------------------------------
+
+
+def _parse_timestamp(value: str) -> _dt.datetime | None:
+    """An ISO-8601 timestamp as an aware datetime, or None when unreadable."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = _dt.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+    return parsed
+
+
+def verify_overlay_release_coverage(
+        manifest: dict,
+        requirements: list[tuple[str, str, int]] | None = None,
+        max_age_days: float | None = None,
+        now: str | None = None,
+) -> dict[str, dict]:
+    """Check that a published map still carries every required overlay release.
+
+    The overlay coverage check (:func:`verify_overlay_coverage`) asks whether
+    an overlay table holds rows at all. That is a per-table question, and a
+    per-table answer hides a per-release failure: the nightly job's
+    per-(release, package) refresh deletes the rows it is about to replace,
+    so a release whose tracker feed returned nothing ends up with no rows
+    at all, while the table as a whole still holds the other releases' rows
+    and the presence check still passes. The map is then quietly narrow: the
+    missing release reports patched packages as unpatched, which is exactly
+    the false positive the vendor fix-status overlay exists to clear.
+
+    requirements is a list of (table, release, min_rows) triples: the
+    map must carry at least min_rows rows for that release of that
+    release-keyed overlay table. max_age_days additionally requires every
+    required release to have been fetched within that many days, which
+    catches the other silent direction — a release the nightly job stopped
+    ingesting keeps its last-known-good rows, so only their age shows that
+    they stopped being refreshed.
+
+    Returns the per-release coverage that was checked. Raises
+    ValueError when a requirement names a table that is not a
+    release-keyed overlay table, when the manifest carries no per-release
+    coverage at all (a map published before the manifest recorded it), when
+    a required release is absent or below its floor, or when a required
+    release is older than the freshness allowance.
+    """
+    requirements = list(requirements or [])
+    if not requirements and max_age_days is None:
+        return {}
+    for table, release, min_rows in requirements:
+        if table not in RELEASE_KEYED_OVERLAY_TABLES:
+            raise ValueError(
+                f"{table} is not a release-keyed overlay table "
+                f"(the release-keyed overlay tables are: "
+                f"{', '.join(RELEASE_KEYED_OVERLAY_TABLES)})")
+        if not str(release).strip():
+            raise ValueError(
+                f"the {table} overlay coverage requirement names no release")
+        if int(min_rows) < 1:
+            raise ValueError(
+                f"the {table} overlay coverage requirement for release "
+                f"{release} asks for {min_rows} row(s); the minimum is one")
+    coverage = manifest.get("release_coverage")
+    if not isinstance(coverage, dict):
+        raise ValueError(
+            "the published map's manifest carries no per-release overlay "
+            "coverage, so the releases the host requires cannot be "
+            "established (the map was published before the manifest "
+            "recorded it)")
+    now_dt = _parse_timestamp(now) if now else _dt.datetime.now(_dt.timezone.utc)
+    checked: dict[str, dict] = {}
+    missing: list[str] = []
+    for table, release, min_rows in requirements:
+        release = str(release).strip()
+        per_table = coverage.get(table)
+        if not isinstance(per_table, dict):
+            missing.append(
+                f"{table} (the map's manifest records no per-release "
+                f"coverage for it)")
+            continue
+        entry = per_table.get(release)
+        if not isinstance(entry, dict):
+            missing.append(
+                f"{table} release {release} (the map carries no rows for "
+                f"that release at all)")
+            continue
+        rows = int(entry.get("rows") or 0)
+        if rows < int(min_rows):
+            missing.append(
+                f"{table} release {release} (the map carries {rows} row(s), "
+                f"fewer than the {int(min_rows)} the host requires)")
+            continue
+        if max_age_days is not None:
+            newest = _parse_timestamp(entry.get("newest_fetched_at") or "")
+            if newest is None:
+                missing.append(
+                    f"{table} release {release} (the map records no fetch "
+                    f"time for it, so its freshness cannot be established)")
+                continue
+            age_days = (now_dt - newest).total_seconds() / 86400.0
+            if age_days > max_age_days:
+                missing.append(
+                    f"{table} release {release} (its newest row was fetched "
+                    f"{age_days:.1f} day(s) ago, older than the "
+                    f"{max_age_days:g} day(s) the host allows, so the "
+                    f"release's fix-status rows stopped being refreshed)")
+                continue
+        checked.setdefault(table, {})[release] = {
+            "rows": rows,
+            "newest_fetched_at": entry.get("newest_fetched_at"),
+        }
+    if missing:
+        raise ValueError(
+            "the published map does not carry the per-release overlay "
+            "coverage the host requires: " + "; ".join(missing) +
+            " (the vendor fix-status overlays are what clear NVD's "
+            "unknown-fix false positives on a fully-updated host, so a map "
+            "without them reports patched packages as unpatched)")
+    return checked
 
 
 # ---------------------------------------------------------------------------

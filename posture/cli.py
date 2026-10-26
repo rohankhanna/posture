@@ -627,6 +627,36 @@ def _max_age_days(value: str) -> float:
     return days
 
 
+def _parse_overlay_release_requirements(
+        values: list[str] | None) -> list[tuple[str, str, int]]:
+    """Parse the --require-overlay-release values into requirements.
+
+    Each value names the overlay table, the release, and the minimum number
+    of rows the map must carry for that release: TABLE:RELEASE:MIN_ROWS.
+    A malformed value is a mistake on the command line, so it is refused
+    while the arguments are parsed rather than after the map is read.
+    """
+    requirements: list[tuple[str, str, int]] = []
+    for value in values or []:
+        parts = str(value).split(":")
+        if len(parts) != 3 or not parts[0].strip() or not parts[1].strip():
+            raise ValueError(
+                f"{value!r} is not a release coverage requirement; the form "
+                f"is TABLE:RELEASE:MIN_ROWS (for example "
+                f"ubuntu_fixes:noble:100)")
+        try:
+            min_rows = int(parts[2])
+        except ValueError:
+            raise ValueError(
+                f"{value!r} does not name a row count; MIN_ROWS must be a "
+                f"whole number") from None
+        if min_rows < 1:
+            raise ValueError(
+                f"{value!r} asks for fewer than one row; the minimum is one")
+        requirements.append((parts[0].strip(), parts[1].strip(), min_rows))
+    return requirements
+
+
 def _cmd_spine(args) -> int:
     # export is read-only over the DB and produces no trust change; it serializes
     # the catalog (the MAP) to sharded JSONL + a manifest that CI cosign-signs.
@@ -705,12 +735,39 @@ def _cmd_spine(args) -> int:
                 return 1
             overlay_note = ", overlay coverage OK (" + ", ".join(
                 f"{name} {count} row(s)" for name, count in coverage.items()) + ")"
+        # The per-table overlay check above cannot see a release that is
+        # missing while the table as a whole still holds rows: the
+        # per-(release, package) refresh deletes the rows it replaces, so a
+        # release whose tracker feed returned nothing ends up empty while
+        # the presence check still passes. The per-release requirement says
+        # which releases the host needs and how many rows each must carry.
+        release_note = ""
+        try:
+            release_requirements = _parse_overlay_release_requirements(
+                getattr(args, "require_overlay_release", None))
+        except ValueError as exc:
+            print(f"spine verify: FAILED — {exc}")
+            return 1
+        overlay_max_age_days = getattr(args, "require_overlay_max_age_days", None)
+        if release_requirements or overlay_max_age_days is not None:
+            try:
+                release_coverage = _export.verify_overlay_release_coverage(
+                    manifest, release_requirements,
+                    max_age_days=overlay_max_age_days)
+            except ValueError as exc:
+                print(f"spine verify: FAILED — {exc}")
+                return 1
+            release_note = ", per-release overlay coverage OK (" + ", ".join(
+                f"{table} {release} {entry['rows']} row(s)"
+                for table, releases in release_coverage.items()
+                for release, entry in releases.items()) + ")"
         ok_line = f"spine verify: OK — {len(manifest['files'])} shard(s), "
         ok_line += f"{manifest['counts']}"
         if signature_note:
             ok_line += f", {signature_note}"
         ok_line += freshness_note
         ok_line += overlay_note
+        ok_line += release_note
         print(ok_line)
         return 0
     # publish is the deployment line's serving path: export into a staging
@@ -1319,6 +1376,25 @@ def build_parser() -> argparse.ArgumentParser:
                     help="verify: fail when the map does not carry this overlay table's "
                          "rows (repeatable; the overlay tables are: "
                          + ", ".join(_export.OVERLAY_TABLES) + ")")
+    sp.add_argument("--require-overlay-release", dest="require_overlay_release",
+                    action="append", default=None,
+                    metavar="TABLE:RELEASE:MIN_ROWS",
+                    help="verify: fail when the map does not carry at least "
+                         "MIN_ROWS rows for a release of a release-keyed overlay "
+                         "table (repeatable; the release-keyed overlay tables "
+                         "are: " + ", ".join(_export.RELEASE_KEYED_OVERLAY_TABLES)
+                         + "; a release whose tracker feed returned nothing "
+                         "leaves the table populated with the other "
+                         "releases' rows, which the presence-only check "
+                         "cannot see)")
+    sp.add_argument("--require-overlay-max-age-days",
+                    dest="require_overlay_max_age_days", type=float,
+                    default=None, metavar="DAYS",
+                    help="verify: fail when the newest row of a required "
+                         "overlay release was fetched more than this many "
+                         "days ago (a release the nightly job stopped "
+                         "ingesting keeps its last-known-good rows, so only "
+                         "their age shows that they went stale)")
     db_arg(sp); pol_arg(sp); sp.set_defaults(func=_cmd_spine)
 
     # -- ingestion: CVE stream + incremental refresh + catalog ---------------

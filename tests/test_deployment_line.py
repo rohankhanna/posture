@@ -759,6 +759,9 @@ overlay_ubuntu_releases: resolute,noble,jammy,focal
 overlay_ubuntu_packages: linux,linux-nvidia
 overlay_debian_releases: trixie,bookworm
 overlay_debian_packages: linux
+overlay_ubuntu_min_rows: 1
+overlay_debian_min_rows: 1
+overlay_max_age_days: 2
 ```
 """
 
@@ -850,7 +853,14 @@ def _baseline_runbook(extra: str = "") -> str:
     lines.append("```bash")
     lines.append("posture spine verify --from /var/lib/posture "
                  "--max-age-days 2 --require-overlay ubuntu_fixes "
-                 "--require-overlay debian_fixes")
+                 "--require-overlay debian_fixes "
+                 "--require-overlay-release ubuntu_fixes:resolute:1 "
+                 "--require-overlay-release ubuntu_fixes:noble:1 "
+                 "--require-overlay-release ubuntu_fixes:jammy:1 "
+                 "--require-overlay-release ubuntu_fixes:focal:1 "
+                 "--require-overlay-release debian_fixes:trixie:1 "
+                 "--require-overlay-release debian_fixes:bookworm:1 "
+                 "--require-overlay-max-age-days 2")
     lines.append("```")
     if extra:
         lines.append(extra)
@@ -1828,10 +1838,9 @@ def test_gate_rejects_a_runbook_that_only_lists_the_published_map(tmp_path):
     # Listing the manifest file shows that a file exists; it cannot see a
     # truncated or tampered shard, so it is not a verification.
     runbook = tmp_path / "deployment.md"
-    body = _baseline_runbook().replace(
-        "posture spine verify --from /var/lib/posture --max-age-days 2 "
-        "--require-overlay ubuntu_fixes --require-overlay debian_fixes\n",
-        "")
+    body = "\n".join(
+        line for line in _baseline_runbook().splitlines()
+        if not line.startswith("posture spine verify"))
     runbook.write_text(body)
     result = _run_gate_on([runbook])
     assert result.returncode == 1
@@ -2393,3 +2402,134 @@ def test_gate_rejects_a_contract_that_declares_scope_for_an_unrequired_distro(
     result = _run_gate_on([runbook])
     assert result.returncode == 1
     assert "does not require the ubuntu_fixes overlay" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Per-release overlay coverage of the served map (dimension 4q)
+# ---------------------------------------------------------------------------
+
+
+def test_the_host_contract_declares_the_per_release_overlay_floor():
+    # The contract states a row floor for every distro-tracker overlay it
+    # requires, and a freshness allowance for the overlay rows, so the gate
+    # can require the served map's per-release coverage.
+    body = RUNBOOK.read_text()
+    assert "overlay_ubuntu_min_rows: 1" in body, (
+        "the host contract does not declare the Ubuntu overlay row floor")
+    assert "overlay_debian_min_rows: 1" in body, (
+        "the host contract does not declare the Debian overlay row floor")
+    assert "overlay_max_age_days: 2" in body, (
+        "the host contract does not declare the overlay freshness allowance")
+
+
+def test_the_runbook_requires_every_declared_release():
+    # The runbook's verification must require the rows of every release the
+    # contract's overlay scope declares: a per-table check cannot see a
+    # release that is missing while the table still holds other releases.
+    body = RUNBOOK.read_text()
+    for table, release in (("ubuntu_fixes", "resolute"),
+                            ("ubuntu_fixes", "noble"),
+                            ("ubuntu_fixes", "jammy"),
+                            ("ubuntu_fixes", "focal"),
+                            ("debian_fixes", "trixie"),
+                            ("debian_fixes", "bookworm")):
+        assert f"--require-overlay-release {table}:{release}:1" in body, (
+            f"the runbook does not require the {table} rows of release "
+            f"{release}")
+    assert "--require-overlay-max-age-days 2" in body, (
+        "the runbook does not require the overlay rows to be fresh")
+
+
+def test_the_daily_job_requires_every_declared_release():
+    # The nightly job builds the map; it must make the same per-release
+    # check the runbook shows, right after it publishes.
+    text = DAILY_SCRIPT.read_text()
+    for table, release in (("ubuntu_fixes", "resolute"),
+                            ("ubuntu_fixes", "noble"),
+                            ("ubuntu_fixes", "jammy"),
+                            ("ubuntu_fixes", "focal"),
+                            ("debian_fixes", "trixie"),
+                            ("debian_fixes", "bookworm")):
+        assert f"--require-overlay-release {table}:{release}:1" in text, (
+            f"the daily job does not require the {table} rows of release "
+            f"{release}")
+    assert "--require-overlay-max-age-days 2" in text, (
+        "the daily job does not require the overlay rows to be fresh")
+
+
+def test_gate_reports_the_per_release_overlay_coverage_in_its_summary():
+    result = _run_gate_on([])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "per-release overlay coverage is checked" in result.stdout
+
+
+def test_gate_rejects_a_contract_with_no_row_floor_for_a_required_overlay(
+        tmp_path):
+    # Without a floor the gate has nothing to require of the map's rows.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "overlay_ubuntu_min_rows: 1\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "declares no overlay_ubuntu_min_rows" in result.stdout
+
+
+def test_gate_rejects_a_contract_with_no_freshness_allowance(tmp_path):
+    # Without an allowance the gate cannot tell a live release from one the
+    # nightly job stopped ingesting.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "overlay_max_age_days: 2\n", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "declares no overlay_max_age_days" in result.stdout
+
+
+def test_gate_rejects_a_contract_with_a_row_floor_for_an_unrequired_overlay(
+        tmp_path):
+    # A floor for an overlay the host does not serve describes a
+    # requirement about rows the map never carries.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "required_overlays: ubuntu_fixes,debian_fixes",
+        "required_overlays: debian_fixes")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "does not require the ubuntu_fixes overlay" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_drops_a_release_requirement(tmp_path):
+    # A runbook that requires the overlay tables but not the releases
+    # inside them confirms a map that may be quietly narrow.
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        " --require-overlay-release ubuntu_fixes:jammy:1", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "does not require the ubuntu_fixes rows of release jammy" in (
+        result.stdout)
+
+
+def test_gate_rejects_a_runbook_that_drops_the_freshness_allowance(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        " --require-overlay-max-age-days 2", "")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "does not require the overlay rows to be fresh" in result.stdout
+
+
+def test_gate_rejects_a_runbook_that_uses_a_different_row_floor(tmp_path):
+    runbook = tmp_path / "deployment.md"
+    body = _baseline_runbook().replace(
+        "--require-overlay-release ubuntu_fixes:noble:1",
+        "--require-overlay-release ubuntu_fixes:noble:9")
+    runbook.write_text(body)
+    result = _run_gate_on([runbook])
+    assert result.returncode == 1
+    assert "overlay_ubuntu_min_rows floor" in result.stdout

@@ -173,8 +173,24 @@ posture spine publish --db "$DB_PATH" --out "$EXPORT_DIR" ${SIGN_KEY:+--sign-key
 #     map's own row counts. Those rows are what clear NVD's unknown-fix
 #     false positives on a fully-updated host, so their absence is a
 #     degradation the operator must see, not a quiet success.
+#     The per-table check above cannot see a release that is missing while
+#     the table still holds the other releases' rows: the per-(release,
+#     package) refresh deletes the rows it replaces, so a release whose
+#     tracker feed returned nothing ends up empty while the table as a whole
+#     is still populated. The per-release requirement says which releases
+#     the host needs and how many rows each must carry, and the freshness
+#     allowance catches the other silent direction — a release the nightly
+#     job stopped ingesting keeps its last-known-good rows, so only their
+#     age shows that they stopped being refreshed.
 posture spine verify --from "$EXPORT_DIR" \
   --require-overlay ubuntu_fixes --require-overlay debian_fixes \
+  --require-overlay-release ubuntu_fixes:resolute:1 \
+  --require-overlay-release ubuntu_fixes:noble:1 \
+  --require-overlay-release ubuntu_fixes:jammy:1 \
+  --require-overlay-release ubuntu_fixes:focal:1 \
+  --require-overlay-release debian_fixes:trixie:1 \
+  --require-overlay-release debian_fixes:bookworm:1 \
+  --require-overlay-max-age-days 2 \
   || degrade "the published map does not carry the vendor fix-status overlay rows"
 
 # 8) Periodic git clone maintenance. The advisory-database and cvelistV5
