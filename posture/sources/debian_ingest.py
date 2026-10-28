@@ -34,7 +34,7 @@ debian_fixes overlay — never defects / verdicts / territory.
 Scope is EXPLICIT and has NO default: a caller must pass releases +
 packages (the editorial choice of which release×package sheets belong on the
 PUBLIC spine is deferred to the operator — there is no CI default wired in
-spine.yml yet). The tick iterates the full cross-product, one bulk_extract
+the daily job yet). The tick iterates the full cross-product, one bulk_extract
 slice per (release, package).
 
 Real ingestion runs ONLY in CI — never from a local machine (the no-local-

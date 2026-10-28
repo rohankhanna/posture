@@ -431,7 +431,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     if version < 3:
         # v2 -> v3: discovery candidates become idempotent on url.
-        #   `posture discover` runs DAILY in CI (spine.yml) and re-surfaces the
+        #   `posture discover` runs DAILY in the daily job and re-surfaces the
         #   static AGGREGATORS every run; a bare INSERT accumulated duplicate
         #   rows that then bloated the exported spine (candidates ARE part of
         #   the signed spine export). Dedup any existing dups first — keep the
