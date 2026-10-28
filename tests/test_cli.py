@@ -6,6 +6,7 @@ parser routes the right flags to the right function.
 from __future__ import annotations
 
 from posture.cli import build_parser, _cmd_spine, _cmd_refresh
+from posture.cli import _cmd_purge
 
 
 def _parse(*argv):
@@ -67,3 +68,10 @@ def test_cmd_demo_runs_end_to_end_installs_policy(tmp_path):
     rows = conn.execute(
         "SELECT version FROM policy_versions").fetchall()
     assert len(rows) >= 1
+
+
+def test_purge_routes():
+    args = _parse("purge", "--max-age-days", "365", "--dry-run")
+    assert args.func is _cmd_purge
+    assert args.max_age_days == 365
+    assert args.dry_run is True
