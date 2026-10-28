@@ -37,8 +37,11 @@ dist/
 # --- Claude Code session state (local only; never committed) ---
 .claude/
 
-# --- IMPORTANT: spine/ is NOT ignored ---------------------------------------
-# spine/ is the committed, cosign-signed output — the whole point of the CI-spine.
+# --- spine/ is ignored ------------------------------------------------------
+# The published map is a build artifact, not source. It is built and signed on
+# the serving host and served from there; the repository does not carry it.
+# Tracking it here put three gigabytes of generated catalog into every clone
+# and into the published history, for an artifact nothing regenerated.
 # Do NOT add it here.
 # feedback system integration
 feedback
