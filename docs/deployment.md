@@ -334,6 +334,7 @@ The variables the daily job reads:
 | `POSTURE_DISK_WARN_GB` | free-space warning threshold | `5` |
 | `POSTURE_DISK_CRIT_GB` | free-space threshold that refuses to build | `2` |
 | `POSTURE_GC_INTERVAL_DAYS` | days between the source-clone maintenance pass | `7` |
+| `POSTURE_UBUNTU_TRACKER_DIR` | the ubuntu-cve-tracker checkout the Ubuntu git source reads | `$POSTURE_STATE_DIR/ubuntu-cve-tracker` |
 | `POSTURE_SIGN_KEY` | the manifest signing key; set to the contract's `sign_key` path (`/etc/posture/signing_key.pem`) when the manifest is signed; when unset the manifest is unsigned | unset |
 | `NVD_API_KEY` | the NVD request credential; it travels in a request header, never in a query string | unset |
 

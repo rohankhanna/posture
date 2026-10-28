@@ -24,6 +24,10 @@ EXPORT_DIR="${POSTURE_EXPORT_DIR:-/var/lib/posture}"
 CVELIST_DIR="${POSTURE_CVELIST_DIR:-$STATE_DIR/cvelist}"
 GHSA_DIR="${POSTURE_GHSA_DIR:-$STATE_DIR/ghsa}"
 DB_PATH="${POSTURE_DB_PATH:-$STATE_DIR/posture.db}"
+# The ubuntu-cve-tracker checkout the git source reads. It lives in the state
+# directory (not in the code checkout) so a deployment that replaces the tree
+# never disturbs it, and so the daily job only ever pulls it.
+UBUNTU_TRACKER_DIR="${POSTURE_UBUNTU_TRACKER_DIR:-$STATE_DIR/ubuntu-cve-tracker}"
 BACKFILL_CAP="${POSTURE_BACKFILL_CAP:-5000}"
 OSV_CAP="${POSTURE_OSV_CAP:-5000}"
 REFRESH_CAP="${POSTURE_REFRESH_CAP:-200}"
@@ -147,10 +151,21 @@ posture ingest apple --db "$DB_PATH" || \
 #     the public-spine editorial choice.
 set +e
 posture ingest ubuntu \
+  --source git --tracker-dir "$UBUNTU_TRACKER_DIR" \
   --release resolute --release noble --release jammy --release focal \
   --package linux --package linux-nvidia --db "$DB_PATH"
 if [ $? -ne 0 ]; then
-  degrade "ubuntu ingest failed; last-known-good retained, spine continues"
+  # The git source could not be refreshed (the upstream clone/pull failed).
+  # Fall back to the paginated bulk-CVE-JSON feed, which is rate-fragile but
+  # still authoritative; the fail-fast circuit breaker bounds how long it can
+  # spend before it gives up, so a degraded upstream cannot stall the build.
+  degrade "ubuntu git-source ingest failed; falling back to the paginated HTTP feed"
+  posture ingest ubuntu \
+    --release resolute --release noble --release jammy --release focal \
+    --package linux --package linux-nvidia --db "$DB_PATH"
+  if [ $? -ne 0 ]; then
+    degrade "ubuntu ingest failed; last-known-good retained, spine continues"
+  fi
 fi
 posture ingest debian --release trixie --release bookworm \
   --package linux --db "$DB_PATH"

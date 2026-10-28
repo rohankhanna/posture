@@ -79,6 +79,12 @@ TIMEOUT = 600  # a full clone can be large; a pull is fast
 # contains triage scripts, supported-package lists, and other non-CVE files.
 _CVE_FILENAME = re.compile(r"^CVE-\d{4}-\d+$", re.I)
 
+# The state directories the tracker keeps its CVE files in: active (still
+# open), retired (resolved) and ignored (explicitly ignored).  The
+# published bulk-CVE JSON feed spans all three, so the git source reads all
+# three too — the resolved CVEs in retired are the bulk of the rows.
+_TRACKER_STATE_DIRS = ("active", "retired", "ignored")
+
 # A Patches_ header introduces a package section.
 #   Patches_linux:
 #   Patches_linux-nvidia-6.17:
@@ -246,39 +252,52 @@ def _scan_tracker_dir(
         p: {r: {} for r in releases} for p in packages
     }
 
-    active_dir = Path(tracker_dir) / "active"
-    if not active_dir.is_dir():
+    # The tracker keeps each CVE file in one of three state directories:
+    # active (still open), retired (resolved) and ignored
+    # (explicitly ignored). The published bulk-CVE JSON feed covers ALL of
+    # them, and the resolved CVEs are the bulk of the rows, so the git
+    # source must read all three: reading only active would publish a
+    # far smaller overlay than the HTTP feed and silently drop the
+    # fix-status row of every already-resolved CVE.
+    scan_dirs = [d for d in (Path(tracker_dir) / name
+                              for name in _TRACKER_STATE_DIRS) if d.is_dir()]
+    if not scan_dirs:
         # Some checkouts may have a flat layout; try the directory itself.
-        active_dir = Path(tracker_dir)
+        scan_dirs = [Path(tracker_dir)]
 
-    for entry in sorted(active_dir.iterdir()):
-        if not entry.is_file():
-            continue
-        if not _CVE_FILENAME.match(entry.name):
-            continue
+    for scan_dir in scan_dirs:
+        # A lazy scandir keeps the scan memory-flat: the tracker holds tens
+        # of thousands of CVE files and materialising every path at once
+        # would cost more than the rows it produces.
+        with os.scandir(scan_dir) as entries:
+            for entry in entries:
+                if not entry.is_file():
+                    continue
+                if not _CVE_FILENAME.match(entry.name):
+                    continue
 
-        content = entry.read_text(errors="replace")
-        parsed = parse_cve_file(content)
-        if not parsed:
-            continue
+                content = Path(entry.path).read_text(errors="replace")
+                parsed = parse_cve_file(content)
+                if not parsed:
+                    continue
 
-        # Extract the CVE id from the Candidate: line (authoritative).
-        cve_id: str | None = None
-        for line in content.splitlines():
-            cm = _CANDIDATE.match(line)
-            if cm:
-                cve_id = cm.group(1)
-                break
-        if not cve_id:
-            # Fall back to the filename if no Candidate line is present.
-            cve_id = entry.name
+                # Extract the CVE id from the Candidate: line (authoritative).
+                cve_id: str | None = None
+                for line in content.splitlines():
+                    cm = _CANDIDATE.match(line)
+                    if cm:
+                        cve_id = cm.group(1)
+                        break
+                if not cve_id:
+                    # Fall back to the filename if no Candidate line is present.
+                    cve_id = entry.name
 
-        for (release, pkg), (status, fixed_in) in parsed.items():
-            if pkg not in pkg_set:
-                continue
-            if release.lower() not in rel_set:
-                continue
-            result[pkg][release][cve_id] = (status, fixed_in)
+                for (release, pkg), (status, fixed_in) in parsed.items():
+                    if pkg not in pkg_set:
+                        continue
+                    if release.lower() not in rel_set:
+                        continue
+                    result[pkg][release][cve_id] = (status, fixed_in)
 
     return result
 

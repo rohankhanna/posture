@@ -47,6 +47,7 @@ from posture.sources import ubuntu_ingest as _ui
 import posture.sources.ubuntu_tracker as _ut
 
 FIXTURE_DIR = Path(__file__).resolve().parent.parent / "posture" / "fixtures" / "ubuntu_cve_tracker"
+STATES_FIXTURE_DIR = Path(__file__).resolve().parent.parent / "posture" / "fixtures" / "ubuntu_cve_tracker_states"
 JSON_FIXTURE = Path(__file__).resolve().parent.parent / "posture" / "fixtures" / "ubuntu_tracker" / "cves.json"
 
 
@@ -350,3 +351,40 @@ def test_git_ingest_spine_export_import_roundtrip(conn, monkeypatch, tmp_path):
     shard_names = {p.relative_to(out / "spine").as_posix()
                    for p in (out / "spine").rglob("*.jsonl")}
     assert not any("verdict" in n or "device" in n for n in shard_names)
+
+
+# ---------------------------------------------------------------------------
+# 15. Every tracker state directory is read, not just `active`
+# ---------------------------------------------------------------------------
+
+def _fake_clone_states(dest_dir=None, repo_url=None, timeout=600):
+    """Point the clone seam at the fixture that carries all three state dirs."""
+    return str(STATES_FIXTURE_DIR), "fixture"
+
+
+def test_git_ingest_reads_every_tracker_state_directory(conn, monkeypatch):
+    # The tracker keeps a CVE file in `active` (open), `retired` (resolved) or
+    # `ignored` (explicitly ignored). The published bulk-CVE JSON feed spans
+    # all three, and the resolved CVEs are the bulk of the rows, so a scan that
+    # read only `active` would publish a far smaller overlay than the HTTP
+    # feed and silently drop the fix-status row of every resolved CVE.
+    monkeypatch.setattr(_ugi, "clone_or_pull_tracker", _fake_clone_states)
+    stats = _ugi.ubuntu_git_ingest_tick(
+        conn, releases=["noble", "jammy", "focal"], packages=["linux"], now="t1")
+    assert stats["error"] is None
+    assert stats["fetched"] is True
+    # active/ -> noble, retired/ -> jammy, ignored/ -> focal: one sheet each.
+    assert stats["sheets"] == 3
+    noble = store.ubuntu_fixes_for_release_package(conn, "noble", "linux")
+    jammy = store.ubuntu_fixes_for_release_package(conn, "jammy", "linux")
+    focal = store.ubuntu_fixes_for_release_package(conn, "focal", "linux")
+    assert [r["cve_id"] for r in noble] == ["CVE-2026-99911"]
+    assert [r["cve_id"] for r in jammy] == ["CVE-2024-99912"]
+    assert [r["cve_id"] for r in focal] == ["CVE-2023-99913"]
+    # The status word and the note survive verbatim from each state dir.
+    assert noble[0]["status"] == "released"
+    assert noble[0]["fixed_in"] == "5.15.0-25.25"
+    assert jammy[0]["status"] == "released"
+    assert jammy[0]["fixed_in"] == "5.15.0-1011.109"
+    assert focal[0]["status"] == "ignored"
+    assert focal[0]["fixed_in"] == "end of standard support"
