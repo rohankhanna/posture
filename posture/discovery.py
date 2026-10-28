@@ -64,7 +64,7 @@ def horizon_scan(conn: sqlite3.Connection | None = None) -> list[Candidate]:
     """Return the candidate sources to surface for human review — the DELTA
     against what's already recorded, not the whole registry.
 
-    Offline by default (this is what CI runs daily via spine.yml): an
+    Offline by default (this is what the daily job runs): an
     aggregator is surfaced only if its url is not already in the candidates
     table (any status — so a human's adopted/rejected decision stops it
     resurfacing). No network, no LLM. When the static AGGREGATORS list is

@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://github.com/rohankhanna/posture/actions/workflows/spine.yml"><img src="https://github.com/rohankhanna/posture/actions/workflows/spine.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/rohankhanna/posture/actions/workflows/ci.yml"><img src="https://github.com/rohankhanna/posture/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT">
   <img src="https://img.shields.io/badge/status-experimental-orange.svg" alt="experimental">
@@ -395,37 +395,37 @@ absolute. (See
 
 ## Consuming the signed catalog
 
-CI publishes a **cosign-signed manifest** for the exported catalog
-(`spine/manifest.json`), not a signed git repository. Consuming it is a two-step
-process, and each step answers a different question:
+The publisher hosts a **signed manifest** for the exported catalog
+(`manifest.json` beside `state.sig`), not a signed git repository. Consuming it
+is a two-step process, and each step answers a different question:
 
-**1. Verify the manifest signature externally.** posture does **not** verify the
-cosign signature itself — this is your **trust anchor**, so it is yours to perform.
-It answers: *did this catalog come from this project's CI, and not from someone who
-pushed to the repo or tampered with the commit?*
+**1. Verify the manifest signature.** The manifest is signed with an ed25519
+private key that never leaves the publishing host; the matching public key is the
+**trust anchor**, and a consumer obtains it out of band (from the publisher, or
+from whoever vouches for it). It answers: *did this catalog come from the
+publisher's own build, and not from someone who swapped a file or edited a
+commit?*
 
 ```bash
-cosign verify-blob \
-  --certificate spine/state.crt \
-  --signature spine/state.sig \
-  --certificate-identity "https://github.com/rohankhanna/posture/.github/workflows/spine.yml@refs/heads/main" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  spine/manifest.json
+posture spine verify --from <catalog-dir> \
+  --verify-sig --signature-key <the publisher's public key> \
+  --max-age-days 2
 ```
 
-Pin `--certificate-identity` to this project's workflow ref and
-`--certificate-oidc-issuer` to GitHub Actions' token endpoint — this establishes
-*whose* identity is allowed to sign, not merely that some valid certificate signed.
-Confirm the identity string against a checked-in certificate before relying on it.
+The signature is over the manifest's content, not over a commit, so it survives
+a history rewrite: it proves the shards came from the publisher's build. The
+`--max-age-days` bound is the second half of the answer — a map nobody is
+rebuilding is an intact map whose data has quietly gone stale, and only the
+timestamp tells you that.
 
-**Why this step is necessary:** without it, `git pull` gives you bytes that anyone
-with write access (or anyone who compromised a commit) could have replaced. The
-cosign keyless signature is bound to this specific GitHub workflow via OIDC, so a
-valid signature proves the manifest was produced by *this* CI job, not by a pushed
-commit. This is the layer that survives a git history rewrite — the signature is
-over the content, not the commit.
+**Why this step is necessary:** without it, a fetch gives you bytes that anyone
+who could write to the published directory could have replaced. A valid
+signature proves the manifest was produced by the publisher's own signing key,
+not by a substituted file. This is the layer that survives a history rewrite —
+the signature is over the content, not the commit.
 
-**2. Import the catalog.** This answers a different question: *since CI signed the
+**2. Import the catalog.** This answers a different question: *since the manifest
+is signed,
 manifest, have the catalog's shard files been corrupted or tampered with on disk or
 in transit?* `posture spine import` recomputes every shard's sha256 and asserts it
 matches the now-verified manifest before loading anything:
@@ -451,9 +451,10 @@ observer still requires you to supply `kev`/`kev_path` in the device YAML**, and
 configuration/exposure/inventory/trust are driven entirely by evidence you supply.
 Wiring more of the catalog into local assessment is ongoing work.
 
-The CI workflow itself uses cosign **keyless** signing via GitHub OIDC (no key
-material to manage). GPG-signed git *commits* (the history layer) are deferred — the
-sigstore manifest signature (the non-negotiable layer) ships first.
+The publisher signs with the **built-in ed25519 path** below: a private key that
+never leaves the host, and a public key distributed to consumers out of band.
+GPG-signed git *commits* (the history layer) are deferred — the manifest
+signature (the non-negotiable layer) ships first.
 
 **Self-hosted / VPS alternative (built-in ed25519).** For the VPS spine endpoint
 or any environment where cosign is not installed, posture also ships a built-in
@@ -461,8 +462,6 @@ ed25519 signing path using the `cryptography` library (already a dependency):
 
 ```bash
 # Generate a keypair (once):
-posture spine export --sign-key signing_key.pem   # first run: generates key? no —
-# Use the library API:
 python -c "from posture.export import generate_signing_keypair; \
            generate_signing_keypair('signing_key.pem', 'signing_pub.pem')"
 
@@ -628,22 +627,30 @@ Other event kinds (rate-limit, feed-relocated, format-change, …) are surfaced
 as context (posture has adapted to them per their `interpretation`) but do not
 by themselves force the fallback. `--no-source-history` opts out of the signal.
 
-### CI ingestion (the recommended publication path)
+### Ingestion and publication (the serving host's daily job)
 
-`.github/workflows/spine.yml` runs on ephemeral GitHub-hosted runners every 6 h
-(off-zero cron, with a skip-if-running guard so a busy run is skipped, not queued):
-`stream` → `backfill` → `ingest ghsa/osv/kev/apple` → `refresh --no-devices` →
+The map is built and published by a **daily job on the serving host**
+(a systemd timer → `scripts/vps_spine.sh`), not by this repository's
+continuous-integration workflow: `stream` → `backfill` → `ingest
+ghsa/nvd-cpe/osv/kev/apple/ubuntu/debian/epss` → `refresh --no-devices` →
 DB-only course-correction (`posture monitor run`, `posture repair reconcile`,
-`posture discover`) → `spine export` → cosign-sign `manifest.json` → commit `spine/`.
+`posture discover`) → bounded-growth purge → `spine export` → sign
+`manifest.json` → publish atomically. Clients pull the published map from the
+host; the repository carries the engine, not the catalog it produces.
 
-**`--no-devices` is the contract:** CI runs catalog enrichment only — no fleet, no
-verdicts, no device data. The committed `spine/` is data-only.
+**`--no-devices` is the contract:** the daily job runs catalog enrichment only —
+no fleet, no verdicts, no device data. The published map is data-only, and the
+map/territory split is what keeps a device's assessment off the wire.
 
-A **credentialed lane** is scaffolded as a dormant second CI job for future
-gated-vendor sources (SAP/Snyk/Tenable/Qualys/Cisco/VMware, to be wired as
-credentials are obtained). It is dormant — no credentialed observers are wired and
-no credentialed-only records exist yet. When wired, it would push to a separate
-*private* repo, never into this repo's history.
+The repository's own workflow is a **test run** (the canonical verification
+path). It neither ingests nor publishes: the catalog is a build artifact of the
+host, not source, and committing it would put a gigabyte of generated data in
+every clone for no reader's benefit.
+
+No **credentialed lane** is wired: no credentialed observers (SAP/Snyk/Tenable/
+Qualys/Cisco/VMware) are configured, and no credentialed-only records exist yet.
+When they are, their output belongs on a private publication path, never in the
+public map.
 
 ### Optional local MITRE stream
 

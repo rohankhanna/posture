@@ -30,7 +30,7 @@ wrong/stale host fails LOUDLY (error + no-op, no-wipe) — safe to wire.
 
 Cadence: EPSS scores update once DAILY, so a CI step should ingest on a DAILY
 cadence (not hourly) to avoid rewriting the ~270k-row shard needlessly. The
-spine.yml step is NOT wired here — the operator chooses the cadence.
+the daily job's step is NOT wired here — the operator chooses the cadence.
 
 Real ingestion runs ONLY in CI — never from a local machine (the no-local-
 feeding rule). Tests monkeypatch curl_get_bytes (the binding the tick routes

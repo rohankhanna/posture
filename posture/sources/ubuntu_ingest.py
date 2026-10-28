@@ -43,8 +43,8 @@ never defects / verdicts / territory.
 
 Scope is EXPLICIT and has NO default: a caller must pass releases +
 packages (the editorial choice of which release x package sheets belong on
-the PUBLIC spine is deferred to the operator — there is no CI default wired in
-spine.yml yet). The tick fetches EVERY package's full CVE set first; if ANY
+the PUBLIC spine is deferred to the operator — there is no default wired into
+the daily job yet). The tick fetches EVERY package's full CVE set first; if ANY
 package fetch fails, it returns error and writes nothing (no-wipe at the
 tick granularity — the overlay keeps its last-known-good; never a partial
 DELETE without the re-INSERT), mirroring the debian tick's one-bulk-fetch

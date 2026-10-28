@@ -1573,7 +1573,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--fetch", action="store_true",
                     help="live: fetch each new aggregator page (opt-in; default is an "
                          "offline delta vs already-recorded candidates). The daily "
-                         "cadence runs in CI (spine.yml), not locally.")
+                         "cadence runs in the daily job, not locally.")
     sp.set_defaults(func=_cmd_discover)
 
     # -- the growing vocabulary ------------------------------------------------

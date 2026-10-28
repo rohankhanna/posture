@@ -339,15 +339,20 @@ single-repo topology). The split into separate repositories happens when size,
 scope, or operational concerns demand it. The two communication channels
 (library import + signed git bus) are stable across the split.
 
-## CI ingestion
+## Ingestion and publication
 
-The `.github/workflows/spine.yml` workflow runs on ephemeral GitHub-hosted
-runners every 6 hours: stream → backfill → ingest (GHSA/OSV/KEV/Apple) →
-refresh (no devices) → course-correction → export → cosign-sign → commit
-`spine/`.
+The map is built and published by the **daily job on the serving host** (a
+systemd timer → `scripts/vps_spine.sh`): stream → backfill → ingest
+(GHSA/NVD-CPE/OSV/KEV/Apple/Ubuntu/Debian/EPSS) → refresh (no devices) →
+course-correction → bounded-growth purge → export → sign → publish atomically.
+Clients pull the published map from the host.
 
-`--no-devices` is the contract: CI runs catalog enrichment only — no fleet, no
-verdicts, no device data. The committed `spine/` is data-only.
+`--no-devices` is the contract: the daily job runs catalog enrichment only — no
+fleet, no verdicts, no device data. The published map is data-only.
+
+The repository's own workflow is a test run (the canonical verification path).
+The catalog is a build artifact of the host, not source, so it is not committed:
+tracking it put a gigabyte of generated data in every clone.
 
 A credentialed lane for gated commercial sources is scaffolded in CI but
 dormant — no credentialed observers are wired and no credentialed-only records
