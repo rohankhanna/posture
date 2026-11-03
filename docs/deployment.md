@@ -334,9 +334,35 @@ The variables the daily job reads:
 | `POSTURE_DISK_WARN_GB` | free-space warning threshold | `5` |
 | `POSTURE_DISK_CRIT_GB` | free-space threshold that refuses to build | `2` |
 | `POSTURE_GC_INTERVAL_DAYS` | days between the source-clone maintenance pass | `7` |
+| `POSTURE_NVD_CPE_SCOPE_FILE` | the file naming the NVD CPE heads the published map must carry affected ranges for (one per line; `#` comments and blank lines ignored) | unset |
 | `POSTURE_UBUNTU_TRACKER_DIR` | the ubuntu-cve-tracker checkout the Ubuntu git source reads | `$POSTURE_STATE_DIR/ubuntu-cve-tracker` |
 | `POSTURE_SIGN_KEY` | the manifest signing key; set to the contract's `sign_key` path (`/etc/posture/signing_key.pem`) when the manifest is signed; when unset the manifest is unsigned | unset |
 | `NVD_API_KEY` | the NVD request credential; it travels in a request header, never in a query string | unset |
+
+### The NVD enrichment scope
+
+The published map can only decide a defect that carries affected version
+ranges, and those ranges come from NVD. The daily job therefore asks NVD for
+every CVE that touches a CPE head, and the heads it asks for decide which
+defects in the map are decidable. A defect with no ranges is invisible to a
+client: it cannot be placed against a device, so it is not reported.
+
+The scope therefore has to name the device classes the map exists to serve.
+The heads that name one operator's own hardware are operator configuration,
+not repository content, so they live in a file on the serving host that
+`POSTURE_NVD_CPE_SCOPE_FILE` points at:
+
+```bash
+sudo install -m 0640 -o root -g posture /dev/null /etc/posture/nvd-cpe-scope.txt
+sudoedit /etc/posture/nvd-cpe-scope.txt   # one CPE 2.3 head per line
+```
+
+The repository's daily script carries the generic platform heads; the file
+adds the operator's own. A head that NVD lists beyond the ingest's
+per-head ceiling is skipped whole rather than half-written, so a scope head
+that grows too large stops being refreshed until the ceiling is raised —
+the no-wipe ingest keeps the rows it already enriched, so the map stays
+serving and only the head stops advancing.
 
 ## Step 5 — enable the timers
 

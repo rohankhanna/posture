@@ -24,6 +24,11 @@ EXPORT_DIR="${POSTURE_EXPORT_DIR:-/var/lib/posture}"
 CVELIST_DIR="${POSTURE_CVELIST_DIR:-$STATE_DIR/cvelist}"
 GHSA_DIR="${POSTURE_GHSA_DIR:-$STATE_DIR/ghsa}"
 DB_PATH="${POSTURE_DB_PATH:-$STATE_DIR/posture.db}"
+# The NVD CPE heads the published map must carry affected ranges for. The
+# heads that name one operator's own hardware live in a scope file on the
+# serving host, not in this repository, so the published tree stays generic
+# and the scope stays private.
+NVD_CPE_SCOPE_FILE="${POSTURE_NVD_CPE_SCOPE_FILE:-}"
 # The ubuntu-cve-tracker checkout the git source reads. It lives in the state
 # directory (not in the code checkout) so a deployment that replaces the tree
 # never disturbs it, and so the daily job only ever pulls it.
@@ -129,9 +134,7 @@ posture ingest nvd-cpe \
   --cpe 'cpe:2.3:a:nvidia:cuda_toolkit' \
   --cpe 'cpe:2.3:o:canonical:ubuntu_linux' \
   --cpe 'cpe:2.3:o:linux:linux_kernel' \
-  --cpe 'cpe:2.3:h:nvidia:gb10' \
-  --cpe 'cpe:2.3:h:mediatek:mt7925' \
-  --cpe 'cpe:2.3:h:realtek:rtl8127' \
+  --cpe-file "$NVD_CPE_SCOPE_FILE" \
   --db "$DB_PATH" || \
   degrade "nvd-cpe ingest incomplete; last-known-good retained, spine continues"
 posture ingest osv --cap "$OSV_CAP" --db "$DB_PATH" || \

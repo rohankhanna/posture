@@ -1292,12 +1292,45 @@ def _cmd_ingest_osv(args) -> int:
     return 0
 
 
+def _read_cpe_file(path: str) -> list[str]:
+    """CPE 2.3 heads from a file: one per line, blank lines and #
+    comments ignored. The file is how an operator names the device classes
+    the published map must carry ranges for, without putting that list in
+    the repository (the list describes the operator's own fleet).
+    """
+    heads: list[str] = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.split("#", 1)[0].strip()
+            if line:
+                heads.append(line)
+    return heads
+
+
 def _cmd_ingest_nvd_cpe(args) -> int:
     policy = _load_policy(args.policy)
+    cpes = list(args.cpe or [])
+    if args.cpe_file:
+        try:
+            cpes.extend(_read_cpe_file(args.cpe_file))
+        except OSError as exc:
+            print(f"ingest nvd-cpe: cannot read --cpe-file "
+                  f"{args.cpe_file}: {exc}")
+            return 1
+    # A head can be named by both the option and the file; query it once.
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for cpe in cpes:
+        if cpe and cpe not in seen:
+            seen.add(cpe)
+            ordered.append(cpe)
+    if not ordered:
+        print("ingest nvd-cpe: no CPE head to query (pass --cpe or --cpe-file)")
+        return 1
     with _open_db(args.db) as conn:
         _install_policy_if_needed(conn, policy)
         stats = _refresh.nvd_cpe_ingest_tick(
-            conn, cpes=args.cpe, policy_version=policy.version,
+            conn, cpes=ordered, policy_version=policy.version,
             now=_engine._now(), cap=args.cap)
         conn.commit()
     if stats["errors"]:
@@ -1774,8 +1807,10 @@ def build_parser() -> argparse.ArgumentParser:
     spe = psub.add_parser("epss", help="FIRST.org EPSS exploitability-likelihood overlay (CVE-keyed; daily full refresh; fills the NVD-degradation gap; complementary to kev)")
     db_arg(spe); pol_arg(spe); spe.set_defaults(func=_cmd_ingest_epss)
     spn = psub.add_parser("nvd-cpe", help="NVD CPE-head ingestion: query NVD by one or more CPE heads and upsert every matching CVE into the catalog")
-    spn.add_argument("--cpe", action="append", required=True,
+    spn.add_argument("--cpe", action="append", default=None,
                     help="CPE 2.3 head to query (e.g. cpe:2.3:o:linux:linux_kernel); repeatable")
+    spn.add_argument("--cpe-file", dest="cpe_file", default=None,
+                    help="file naming CPE 2.3 heads, one per line (blank lines and # comments ignored); these heads are queried in addition to --cpe")
     spn.add_argument("--cap", type=int, default=None,
                     help="max total rows to upsert this tick (default: no cap)")
     db_arg(spn); pol_arg(spn); spn.set_defaults(func=_cmd_ingest_nvd_cpe)

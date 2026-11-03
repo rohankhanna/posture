@@ -12,6 +12,7 @@ import pytest
 from posture import refresh, store
 from posture.sources import nvd_cve
 from posture.sources.nvd_cve import _cpe_head
+from posture.cli import build_parser, _cmd_ingest_nvd_cpe
 
 
 @pytest.fixture
@@ -121,3 +122,97 @@ def test_nvd_cpe_ingest_cap_limits_total_upserts(conn, monkeypatch):
         cap=2)
     assert stats["upserted"] == 2
     assert len(store.catalog_all(conn)) == 2
+
+
+# ---------------------------------------------------------------------------
+# The CPE scope file: an operator names the device classes the published map
+# must carry ranges for, without putting that list in the repository.
+# ---------------------------------------------------------------------------
+
+def _capture_heads(monkeypatch):
+    """Capture the heads the CLI hands to the tick, without any network."""
+    seen: list[list[str]] = []
+
+    def fake_tick(conn, cpes, policy_version="", now=None, cap=None):
+        seen.append(list(cpes))
+        return {"heads": list(cpes), "upserted": 0, "skipped": 0,
+                "incomplete": 0, "errors": [], "results": []}
+
+    monkeypatch.setattr(refresh, "nvd_cpe_ingest_tick", fake_tick)
+    return seen
+
+
+def test_nvd_cpe_scope_file_supplies_heads_alongside_the_option(tmp_path,
+                                                                 monkeypatch):
+    scope = tmp_path / "scope.txt"
+    scope.write_text(
+        "# the operator's device classes\n"
+        "\n"
+        "cpe:2.3:o:google:android:13\n"
+        "cpe:2.3:h:lenovo:thinkpad_t480:-   # a hardware head\n"
+        "\n",
+        encoding="utf-8")
+    seen = _capture_heads(monkeypatch)
+    args = build_parser().parse_args([
+        "ingest", "nvd-cpe",
+        "--cpe", "cpe:2.3:o:linux:linux_kernel",
+        "--cpe-file", str(scope),
+        "--db", str(tmp_path / "p.db"),
+    ])
+    assert args.func is _cmd_ingest_nvd_cpe
+    assert _cmd_ingest_nvd_cpe(args) == 0
+    assert seen == [[
+        "cpe:2.3:o:linux:linux_kernel",
+        "cpe:2.3:o:google:android:13",
+        "cpe:2.3:h:lenovo:thinkpad_t480:-",
+    ]]
+
+
+def test_nvd_cpe_scope_file_head_named_twice_is_queried_once(tmp_path,
+                                                             monkeypatch):
+    scope = tmp_path / "scope.txt"
+    scope.write_text("cpe:2.3:o:linux:linux_kernel\n", encoding="utf-8")
+    seen = _capture_heads(monkeypatch)
+    args = build_parser().parse_args([
+        "ingest", "nvd-cpe",
+        "--cpe", "cpe:2.3:o:linux:linux_kernel",
+        "--cpe-file", str(scope),
+        "--db", str(tmp_path / "p.db"),
+    ])
+    assert _cmd_ingest_nvd_cpe(args) == 0
+    assert seen == [["cpe:2.3:o:linux:linux_kernel"]]
+
+
+def test_nvd_cpe_missing_scope_file_fails_loudly(tmp_path, monkeypatch):
+    seen = _capture_heads(monkeypatch)
+    args = build_parser().parse_args([
+        "ingest", "nvd-cpe",
+        "--cpe", "cpe:2.3:o:linux:linux_kernel",
+        "--cpe-file", str(tmp_path / "absent.txt"),
+        "--db", str(tmp_path / "p.db"),
+    ])
+    assert _cmd_ingest_nvd_cpe(args) == 1
+    assert seen == []          # nothing was queried
+
+
+def test_nvd_cpe_with_no_head_at_all_fails_loudly(tmp_path, monkeypatch):
+    seen = _capture_heads(monkeypatch)
+    args = build_parser().parse_args([
+        "ingest", "nvd-cpe", "--db", str(tmp_path / "p.db"),
+    ])
+    assert _cmd_ingest_nvd_cpe(args) == 1
+    assert seen == []
+
+
+def test_nvd_cpe_empty_scope_file_option_is_ignored(tmp_path, monkeypatch):
+    # The daily job passes the scope file unconditionally; when the operator
+    # has not configured one the option is empty and must change nothing.
+    seen = _capture_heads(monkeypatch)
+    args = build_parser().parse_args([
+        "ingest", "nvd-cpe",
+        "--cpe", "cpe:2.3:o:linux:linux_kernel",
+        "--cpe-file", "",
+        "--db", str(tmp_path / "p.db"),
+    ])
+    assert _cmd_ingest_nvd_cpe(args) == 0
+    assert seen == [["cpe:2.3:o:linux:linux_kernel"]]
