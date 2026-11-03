@@ -107,6 +107,13 @@ def _enriched_record(cve: dict, policy_version: str, fetched_at: str) -> dict:
     }
 
 
+# How often the enrichment writes become durable. A commit per row costs a
+# filesystem sync per defect, which is what made a whole CPE head take
+# hours; a batch keeps the write path affordable without changing what is
+# written (the ingest is additive and never deletes).
+_COMMIT_EVERY_ROWS = 500
+
+
 def nvd_cpe_ingest_tick(conn, cpes: list[str], policy_version: str = "",
                         now: str | None = None, cap: int | None = None) -> dict:
     """Ingest NVD rows for one or more CPE heads into the catalog.
@@ -162,8 +169,12 @@ def nvd_cpe_ingest_tick(conn, cpes: list[str], policy_version: str = "",
             _store.upsert_defect(conn, row)
             _store.set_enrich_state(conn, row["id"], "nvd")
             _store.mark_seen(conn, [row["id"]])
-            conn.commit()
             stats["upserted"] += 1
+            if stats["upserted"] % _COMMIT_EVERY_ROWS == 0:
+                conn.commit()
+        # One commit per head: the head's rows become durable together, so a
+        # crash mid-head leaves the previous state rather than half a head.
+        conn.commit()
     return stats
 
 def _device_cpe_matchers(device: dict) -> list[dict]:
@@ -254,7 +265,11 @@ def refresh_tick(
         _store.set_enrich_state(conn, rec["id"], "nvd")
         enriched.append((rec["id"], cve))
         stats["enriched"] += 1
-        conn.commit()
+        if stats["enriched"] % _COMMIT_EVERY_ROWS == 0:
+            conn.commit()
+    # The re-decide pass below commits the enrichment with it; committing
+    # here too keeps the enriched rows durable even when there is no fleet.
+    conn.commit()
 
     # Per-CVE re-decide against the fleet, upserted one row at a time (no-wipe).
     for cid, cve in enriched:
