@@ -38,6 +38,14 @@ from ._net import curl_get
 NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 PAGE_SIZE = 500          # small pages = reliable on anonymous NVD (Forebode rule)
 MAX_RESULTS = 20000      # runaway net, NOT a completeness ceiling
+# A CPE-head page carries 500 CVEs with their full CPE data, which is a much
+# larger response than a single-CVE query. The default 60s ceiling truncates
+# the larger heads, and a truncated body parses as nothing.
+HEAD_PAGE_TIMEOUT = 120
+# One bad page must not cost a whole head: an incomplete fetch skips the head
+# whole, so a single transient failure silently stops that head advancing.
+HEAD_PAGE_RETRIES = 2
+HEAD_RETRY_BACKOFF = 5
 FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "nvd_sample.json"
 # Per-CVE NVD rate limit: 0.6s with an API key, 6s anonymous (50/30s vs 5/30s).
 CVE_THROTTLE_KEYED = 0.6
@@ -307,17 +315,31 @@ def nvd_query_cpe(cpe: str, throttle: bool = True) -> tuple[list[dict], bool, st
             "startIndex": start,
         }
         url = NVD_URL + "?" + urllib.parse.urlencode(params)
-        data, code, _body = curl_get(url, headers=headers)
+        data, code, _body = curl_get(url, headers=headers,
+                                      max_time=HEAD_PAGE_TIMEOUT)
         if data is None:
             if code == 404:
                 # NVD sometimes 404s on a transient rate-limit masquerade; one
                 # retry distinguishes that from a genuinely absent CPE head.
                 time.sleep(10)
-                data, code, _ = curl_get(url, headers=headers)
+                data, code, _ = curl_get(url, headers=headers,
+                                          max_time=HEAD_PAGE_TIMEOUT)
                 if data is None and code == 404:
                     return [], True, f"{label}: absent (404 twice)"
             if data is None:
-                return out, False, f"{label}: incomplete (http {code or 'timeout'})"
+                # A transient failure on one page of a many-page head used to
+                # cost the whole head, because an incomplete fetch skips the
+                # head whole and the rows it had already gathered are thrown
+                # away with it. Retry the page instead: the rows gathered so
+                # far are kept and the head continues from where it was.
+                for _attempt in range(HEAD_PAGE_RETRIES):
+                    time.sleep(HEAD_RETRY_BACKOFF)
+                    data, code, _ = curl_get(url, headers=headers,
+                                              max_time=HEAD_PAGE_TIMEOUT)
+                    if data is not None:
+                        break
+                if data is None:
+                    return out, False, f"{label}: incomplete (http {code or 'timeout'})"
         vulns = data.get("vulnerabilities") or []
         total = data.get("totalResults", 0)
         if not vulns and start == 0:

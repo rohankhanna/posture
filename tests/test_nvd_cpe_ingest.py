@@ -216,3 +216,71 @@ def test_nvd_cpe_empty_scope_file_option_is_ignored(tmp_path, monkeypatch):
     ])
     assert _cmd_ingest_nvd_cpe(args) == 0
     assert seen == [["cpe:2.3:o:linux:linux_kernel"]]
+
+
+def test_nvd_query_cpe_retries_a_transient_page_failure(monkeypatch):
+    """One bad page must not cost the whole head.
+
+    An incomplete fetch skips the head whole, so a transient failure on a
+    single page of a many-page head used to stop that head advancing for the
+    night and mark the run degraded. The page is retried and the head
+    continues from the rows it had already gathered.
+    """
+    calls = {"n": 0}
+
+    def fake_curl_get(url, headers=None, max_time=60, extra=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # A truncated body: the status says 200, the payload is not JSON.
+            return (None, 200, "<html>gateway</html>")
+        return ({"vulnerabilities": [], "totalResults": 0}, 200, "{}")
+
+    monkeypatch.setattr(nvd_cve, "curl_get", fake_curl_get)
+    monkeypatch.setattr(nvd_cve.time, "sleep", lambda *_a: None)
+
+    vulns, complete, _reason = nvd_cve.nvd_query_cpe(
+        "cpe:2.3:o:linux:linux_kernel", throttle=False)
+    assert complete is True
+    assert calls["n"] == 2
+
+
+def test_nvd_query_cpe_gives_up_after_the_retries(monkeypatch):
+    """A page that keeps failing still leaves the head incomplete.
+
+    The retry buys a transient failure its second chance; it does not turn a
+    head that genuinely cannot be fetched into a complete one, because an
+    incomplete head must never read as a clean one.
+    """
+    calls = {"n": 0}
+
+    def fake_curl_get(url, headers=None, max_time=60, extra=None):
+        calls["n"] += 1
+        return (None, 200, "<html>gateway</html>")
+
+    monkeypatch.setattr(nvd_cve, "curl_get", fake_curl_get)
+    monkeypatch.setattr(nvd_cve.time, "sleep", lambda *_a: None)
+
+    vulns, complete, reason = nvd_cve.nvd_query_cpe(
+        "cpe:2.3:o:linux:linux_kernel", throttle=False)
+    assert complete is False
+    assert "incomplete" in reason
+    assert calls["n"] == 1 + nvd_cve.HEAD_PAGE_RETRIES
+
+
+def test_nvd_query_cpe_gives_a_head_page_its_own_timeout(monkeypatch):
+    """A head page is a much larger response than a single-CVE query.
+
+    The default ceiling truncates the larger heads, and a truncated body
+    parses as nothing at all, which reads as an incomplete head.
+    """
+    captured = {}
+
+    def fake_curl_get(url, headers=None, max_time=60, extra=None):
+        captured["max_time"] = max_time
+        return ({"vulnerabilities": [], "totalResults": 0}, 200, "{}")
+
+    monkeypatch.setattr(nvd_cve, "curl_get", fake_curl_get)
+
+    nvd_cve.nvd_query_cpe("cpe:2.3:o:linux:linux_kernel", throttle=False)
+    assert captured["max_time"] == nvd_cve.HEAD_PAGE_TIMEOUT
+    assert nvd_cve.HEAD_PAGE_TIMEOUT > 60
