@@ -146,10 +146,10 @@ def test_nvd_cpe_scope_file_supplies_heads_alongside_the_option(tmp_path,
                                                                  monkeypatch):
     scope = tmp_path / "scope.txt"
     scope.write_text(
-        "# the operator's device classes\n"
+        "# the device classes an operator adds\n"
         "\n"
-        "cpe:2.3:o:google:android:13\n"
-        "cpe:2.3:h:lenovo:thinkpad_t480:-   # a hardware head\n"
+        "cpe:2.3:o:example:example_os:13\n"
+        "cpe:2.3:h:example:example_hw:-   # a hardware head\n"
         "\n",
         encoding="utf-8")
     seen = _capture_heads(monkeypatch)
@@ -163,8 +163,8 @@ def test_nvd_cpe_scope_file_supplies_heads_alongside_the_option(tmp_path,
     assert _cmd_ingest_nvd_cpe(args) == 0
     assert seen == [[
         "cpe:2.3:o:linux:linux_kernel",
-        "cpe:2.3:o:google:android:13",
-        "cpe:2.3:h:lenovo:thinkpad_t480:-",
+        "cpe:2.3:o:example:example_os:13",
+        "cpe:2.3:h:example:example_hw:-",
     ]]
 
 

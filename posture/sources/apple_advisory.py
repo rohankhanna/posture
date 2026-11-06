@@ -106,8 +106,8 @@ PRODUCTS = {"iphone_os": "iOS", "ipados": "iPadOS", "macos": "macOS"}
 _CVE_ID = re.compile(r"^CVE-\d{4}-\d+$", re.I)
 
 # Index rows on the security-releases page (100100). iOS/iPadOS share a joint
-# row ("iOS 26.5.2 and iPadOS 26.5.2"); macOS rows carry a marketing name before
-# the version ("macOS Tahoe 26.5.2", "macOS Big Sur 11.7.10" — name is one or two
+# row ("iOS 18.4 and iPadOS 18.4"); macOS rows carry a marketing name before
+# the version ("macOS Sequoia 15.4", "macOS Big Sur 11.7.10" — name is one or two
 # words). Each captures the advisory URL + the fix version. (Donor verbatim.)
 _INDEX_ROW_IOS = re.compile(
     r'href="(https://support\.apple\.com/[^"]+)"[^>]*>\s*'
@@ -123,7 +123,7 @@ _CVE = re.compile(r"CVE-\d{4}-\d{4,}")
 _SCRIPT_STYLE = re.compile(r"<(script|style)\b.*?</\1>", re.IGNORECASE | re.DOTALL)
 # Apple's advisory pages carry the product + version in an og:title meta:
 # "About the security content of iOS 17.1 and iPadOS 17.1 - Apple Support".
-# macOS: "About the security content of macOS Tahoe 26.5.2 - Apple Support"
+# macOS: "About the security content of macOS Sequoia 15.4 - Apple Support"
 # (older: "OS X El Capitan 10.11.6"). A non-matching product's advisory (Safari
 # for iOS backfill, iOS for macOS backfill) gives no fix version -> skipped, so
 # one product's backfill never contaminates the other's fixed-version table.
@@ -131,7 +131,7 @@ _OG_TITLE = re.compile(r'<meta\s+property="og:title"\s+content="([^"]*)"',
                        re.IGNORECASE)
 _IOS_VER = re.compile(r"\biOS\s+([0-9][0-9.]*)")
 # macOS / OS X: a marketing name (one or two words) sits between the product
-# token and the numeric version. "macOS Tahoe 26.5.2", "macOS Big Sur 11.7.10",
+# token and the numeric version. "macOS Sequoia 15.4", "macOS Big Sur 11.7.10",
 # "OS X El Capitan 10.11.6", "OS X Mountain Lion 10.8.5".
 _MACOS_VER = re.compile(
     r"\b(?:macOS|OS\s+X)\s+[A-Za-z]+(?:\s+[A-Za-z]+)?\s+([0-9][0-9.]*)",
