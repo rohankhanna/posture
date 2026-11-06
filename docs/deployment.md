@@ -577,7 +577,80 @@ posture spine verify --from /var/lib/posture --verify-sig --signature-key /etc/p
   --require-epss-score-band 0.99:100
 ```
 
-## Step 8 — check the tree before you deploy it
+## Step 8 — serve the published map
+
+The published map is a directory of JSONL shards plus a manifest, and a client
+pulls it over HTTPS. The server that serves it is not this repository's
+business, but the map is useless without it, and the two things that make it
+break are quiet: a web server that stops answering, and a certificate that
+stops being renewed. Both were true here for months, and nothing in the
+deployment tracked either.
+
+Serve the directory, and serve the signature next to the manifest:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name spine.example.com;
+    ssl_certificate     /etc/letsencrypt/live/spine.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/spine.example.com/privkey.pem;
+    location /posture-spine/ {
+        alias /var/lib/posture/spine/;
+        autoindex on;
+    }
+}
+```
+
+**The ACME challenge has to be served over HTTPS as well as HTTP.** The
+certificate authority validates by fetching the challenge file, and a port-80
+block that redirects everything to HTTPS sends it to the HTTPS block instead.
+If the challenge location exists only in the port-80 block, the request falls
+through to the site's root location, which on a host whose root proxies to
+something that is not running answers `502`, and the renewal fails with a
+502 for a reason that has nothing to do with the certificate:
+
+```nginx
+    # in BOTH the port-80 and the HTTPS server blocks
+    location /.well-known/acme-challenge/ {
+        root /var/www/letsencrypt;
+        default_type "text/plain";
+    }
+```
+
+**Renew through the webroot, not through the standalone authenticator.** The
+standalone authenticator binds port 80 for the challenge, which a host already
+running a web server cannot spare. Every renewal then fails with "Could not
+bind TCP port 80 because it is already in use", twice a day, until the
+certificate expires — and then the map is served over an expired certificate
+and every client that validates properly refuses to fetch it. Renew with
+`certbot certonly --webroot -w <webroot> -d <host> --cert-name <host>
+--reuse-key`, where `<webroot>` is the directory the challenge location above
+serves from.
+
+`--reuse-key` matters when the clients pin the server's public key: a
+renewal that issues a new key breaks every pinned client, and the pin is
+what makes a pinned certificate a transport guarantee rather than a hope.
+Check the key survived the renewal by comparing the served certificate's
+public key with the pin:
+
+```bash
+echo | openssl s_client -connect spine.example.com:443 -servername spine.example.com 2>/dev/null \
+  | openssl x509 -pubkey -noout \
+  | openssl pkey -pubin -outform der \
+  | openssl dgst -sha256 -binary | openssl enc -base64
+```
+
+Check that the renewal will actually happen, rather than assuming it:
+
+```bash
+certbot renew --dry-run
+```
+
+A renewal that is failing does not stop the service and does not raise
+anything on its own. It just runs twice a day, fails, and eventually serves
+an expired certificate. `certbot renew --dry-run` is the check.
+
+## Step 9 — check the tree before you deploy it
 
 Run the repository's own checks on the tree you are about to put on the
 host. The deployment-line gate is the one that matters most here: it proves
