@@ -141,6 +141,18 @@ posture ingest osv --cap "$OSV_CAP" --db "$DB_PATH" || \
   degrade "osv ingest incomplete; last-known-good retained, spine continues"
 posture ingest kev --db "$DB_PATH" || \
   degrade "kev ingest incomplete; last-known-good retained, spine continues"
+
+#     The exploitability-probability overlay. FIRST.org publishes one daily
+#     CSV of CVE exploitability likelihood, and it is the signal two things
+#     downstream are written against: the contract requires the overlay to be
+#     days old at most, and the bounded-growth purge below keeps or drops a
+#     defect by its percentile. A job that stops refreshing it leaves the
+#     map's exploitability view frozen while the rest of the map moves, so
+#     this step belongs before the purge and not after it. Best-effort: a
+#     transient feed outage must NOT block the daily spine build; the no-wipe
+#     ingest retains last-known-good and the run is marked degraded.
+posture ingest epss --db "$DB_PATH" || \
+  degrade "epss ingest incomplete; last-known-good retained, spine continues"
 posture ingest apple --db "$DB_PATH" || \
   degrade "apple ingest incomplete; last-known-good retained, spine continues"
 
