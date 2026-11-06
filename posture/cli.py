@@ -1379,6 +1379,8 @@ def _cmd_refresh(args) -> int:
     if stats.get("vendor_overrides"):
         print(f"  vendor overrides: {stats['vendor_overrides']} verdict(s) "
               f"(ubuntu/debian/apple cleared NVD false alarms this tick)")
+    if stats.get("aborted"):
+        print(f"  ABORTED: {stats['aborted']}")
     if stats["errors"]:
         print(f"  errors ({len(stats['errors'])}):")
         for e in stats["errors"][:10]:
@@ -1387,7 +1389,12 @@ def _cmd_refresh(args) -> int:
     line = _attr.attribution_for("nvd")
     if line:
         print(f"  {line}")
-    return 0
+    # An aborted tick is a failure, not a quiet no-op: the upstream refused
+    # us, or the tick ran out of its budget, so the catalog may be short of
+    # what it should carry. The caller decides what to do about it (the daily
+    # job marks the run degraded and exits non-zero); this command must not
+    # report success for a tick that stopped early.
+    return 1 if stats.get("aborted") else 0
 
 
 def _cmd_enrich_llm(args) -> int:

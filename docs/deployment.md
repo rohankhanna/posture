@@ -403,6 +403,19 @@ the pass actually ran on a clone and did not fail, so a failed `git gc` is
 retried on the next daily build instead of waiting a full
 `POSTURE_GC_INTERVAL_DAYS` with the clones still bloated.
 
+The catalog refresh is the one step that makes many separate requests: it
+fetches each pending skeleton from NVD one CVE at a time, and each fetch is
+its own request with its own timeout. A tick that keeps going against an
+upstream that is down would burn a timeout per skeleton and grind for hours,
+until the unit's `TimeoutStartSec` killed the whole build with the publish
+never reached — so the tick carries a circuit breaker. It stops on sustained
+failure, and it stops on a wall-clock budget whatever the failure pattern
+looks like, because an upstream that fails intermittently never trips a
+consecutive-failure counter. Either way the tick is no-wipe: the skeletons it
+did not reach stay pending and the next build retries them. A stopped tick
+reports itself and exits non-zero, so the build marks the step degraded
+rather than claiming a catalog it did not refresh.
+
 ## Step 7 — verify the published map
 
 The publish step writes the map to a staging directory, checks it against its

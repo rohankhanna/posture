@@ -35,6 +35,7 @@ wherever NVD data surfaces (the CLI output; see attribution.NVD_ATTRIBUTION).
 from __future__ import annotations
 
 import datetime as _dt
+import time
 
 from . import store as _store
 from .axis import Axis
@@ -51,6 +52,28 @@ from .sources.nvd_cve import (
 # to cap: un-enriched ids stay pending for the next tick, no loss. Full re-pull
 # is the rare reconciliation (assess), not this loop.
 DEFAULT_CAP = 200
+# Fail-fast circuit breaker for the per-CVE NVD refresh. This tick fetches one
+# CVE at a time, and each fetch is its own request against an upstream that
+# rate-limits and times out. With the daily job's cap of 2000 pending
+# skeletons, an upstream that is down costs 2000 fetches, each burning that
+# request's own timeout, and the tick grinds for hours until the systemd unit's
+# TimeoutStartSec kills the whole daily spine build with the export step never
+# reached. The ubuntu ingest has carried a breaker for exactly this reason; the
+# per-CVE path had none.
+#
+# The breaker tracks two signals:
+#   - consecutive incomplete fetches: the upstream is refusing us, rather than
+#     the particular CVE being genuinely absent. An absent CVE is a COMPLETE
+#     result, so it does not count against the breaker.
+#   - a wall-clock budget: a backstop that stops the tick whatever the
+#     pattern, so a slow-but-answering upstream cannot hold the job hostage
+#     either. An intermittent upstream that fails one fetch in eight never
+#     trips the consecutive counter and would otherwise grind for hours.
+#
+# The tick stays no-wipe: an aborted tick enriches nothing further, the
+# skeletons stay pending, and the next tick retries them.
+MAX_CONSECUTIVE_FAIL = 8      # consecutive incomplete fetches -> stop the tick
+REFRESH_MAX_SECONDS = 3600    # wall-clock budget (1h); a healthy full run is ~40min
 # Skeletons NVD hasn't enriched after this many days stop retrying (NVD lag is
 # real but not infinite). They stay in the catalog as mitre skeletons; the TTL
 # only retires the *retry*, never deletes the row.
@@ -237,7 +260,8 @@ def refresh_tick(
     stats = {"enriched": 0, "absent": 0, "incomplete": 0, "ttl_retired": 0,
              "verdicts_upserted": 0, "vendor_overrides": 0,
              "devices": len(devices),
-             "pending_before": 0, "pending_after": 0, "errors": []}
+             "pending_before": 0, "pending_after": 0, "errors": [],
+             "aborted": ""}
 
     pending = _store.pending_enrichment_ids(conn, limit=cap)
     stats["pending_before"] = len(pending)
@@ -245,15 +269,41 @@ def refresh_tick(
     stats["ttl_retired"] = stats["pending_before"] - len(pending)
 
     enriched: list[tuple[str, dict]] = []  # (cve_id, nvd_cve_obj) for re-decide
+    consecutive_fail = 0
+    tick_start = time.monotonic()
     for cid in pending:
+        # The wall-clock backstop. A tick that has spent its budget stops
+        # here: what is left stays pending and the next tick picks it up.
+        if time.monotonic() - tick_start > REFRESH_MAX_SECONDS:
+            stats["aborted"] = (
+                f"wall-clock budget of {REFRESH_MAX_SECONDS}s exhausted after "
+                f"{stats['enriched']} enrichment/enrichments; the remaining "
+                f"skeleton(s) stay pending"
+            )
+            break
         try:
             cve, complete, reason = nvd_query_cve(cid) if live else (None, True, "offline")
         except Exception as exc:  # a single CVE's fetch error must not sink the tick
             stats["errors"].append(f"{cid}: {exc}")
+            consecutive_fail += 1
+            if consecutive_fail >= MAX_CONSECUTIVE_FAIL:
+                stats["aborted"] = (
+                    f"upstream degraded: {consecutive_fail} consecutive failed fetches "
+                    f"(last: {exc}); the remaining skeleton(s) stay pending"
+                )
+                break
             continue
         if not complete:
             stats["incomplete"] += 1
+            consecutive_fail += 1
+            if consecutive_fail >= MAX_CONSECUTIVE_FAIL:
+                stats["aborted"] = (
+                    f"upstream degraded: {consecutive_fail} consecutive incomplete "
+                    f"fetches (last: {reason}); the remaining skeleton(s) stay pending"
+                )
+                break
             continue  # no-wipe: leave pending, retry next tick
+        consecutive_fail = 0
         if cve is None:
             stats["absent"] += 1
             continue  # NVD proved absent (404 twice / zero) — leave skeleton pending

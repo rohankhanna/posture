@@ -338,3 +338,55 @@ def test_refresh_no_devices_enriches_catalog_zero_verdicts(conn, monkeypatch):
     assert stats["verdicts_upserted"] == 0
     assert stats["vendor_overrides"] == 0
     assert conn.execute("SELECT count(*) FROM verdicts").fetchone()[0] == 0
+
+def test_refresh_breaks_out_when_the_upstream_refuses_us(conn, monkeypatch):
+    """A tick must not grind through every pending skeleton against a dead upstream.
+
+    Each fetch is its own request and each burns that request's own timeout,
+    so a tick that keeps going against an upstream that is down runs for
+    hours and takes the daily spine build down with it. The tick stops on
+    sustained failure and leaves the skeletons pending for the next tick.
+    """
+    for i in range(refresh.MAX_CONSECUTIVE_FAIL + 4):
+        _skeleton(conn, cve_id=f"CVE-2026-{i}")
+    calls = {"n": 0}
+
+    def fake_query(cid, throttle=True):
+        calls["n"] += 1
+        return (None, False, "upstream timeout")
+
+    monkeypatch.setattr(_refresh, "nvd_query_cve", fake_query)
+
+    stats = refresh.refresh_tick(conn, [], policy_version="v", cap=50, live=True)
+
+    assert stats["aborted"], "the tick must say it stopped early"
+    assert "upstream degraded" in stats["aborted"]
+    assert calls["n"] == refresh.MAX_CONSECUTIVE_FAIL
+    # No-wipe: nothing was enriched, and every skeleton is still pending.
+    assert stats["enriched"] == 0
+    assert stats["pending_after"] == refresh.MAX_CONSECUTIVE_FAIL + 4
+
+
+def test_refresh_stops_at_its_wall_clock_budget(conn, monkeypatch):
+    """An upstream that answers slowly must not hold the job hostage either.
+
+    A failure pattern that never trips the consecutive counter still grinds,
+    so the tick also carries a wall-clock budget.
+    """
+    for i in range(5):
+        _skeleton(conn, cve_id=f"CVE-2026-{i}")
+    clock = {"t": 0.0}
+
+    monkeypatch.setattr(_refresh.time, "monotonic", lambda: clock["t"])
+
+    def fake_query(cid, throttle=True):
+        # Each fetch answers, but the clock has moved past the budget.
+        clock["t"] += refresh.REFRESH_MAX_SECONDS + 1
+        return (None, True, "absent")
+
+    monkeypatch.setattr(_refresh, "nvd_query_cve", fake_query)
+
+    stats = refresh.refresh_tick(conn, [], policy_version="v", cap=50, live=True)
+
+    assert stats["aborted"], "the tick must say it stopped early"
+    assert "budget" in stats["aborted"]

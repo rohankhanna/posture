@@ -75,3 +75,27 @@ def test_purge_routes():
     assert args.func is _cmd_purge
     assert args.max_age_days == 365
     assert args.dry_run is True
+
+
+def test_cmd_refresh_exits_non_zero_when_the_tick_aborted(tmp_path, monkeypatch):
+    """An aborted refresh is a failure, not a quiet no-op.
+
+    The daily job runs the refresh behind `|| degrade ...`, so the command has
+    to report the abort through its exit status. Reporting success for a tick
+    that stopped early would tell the job the catalog was refreshed when it
+    was not.
+    """
+    from posture import refresh as refresh_mod
+    from posture.cli import build_parser, _cmd_refresh
+
+    def fake_tick(conn, devices, **kwargs):
+        return {"enriched": 0, "absent": 0, "incomplete": 8, "ttl_retired": 0,
+                "verdicts_upserted": 0, "vendor_overrides": 0, "devices": 0,
+                "pending_before": 8, "pending_after": 8, "errors": [],
+                "aborted": "upstream degraded: 8 consecutive incomplete fetches"}
+
+    monkeypatch.setattr(refresh_mod, "refresh_tick", fake_tick)
+
+    db = tmp_path / "refresh.db"
+    args = build_parser().parse_args(["refresh", "--no-devices", "--db", str(db)])
+    assert _cmd_refresh(args) == 1
