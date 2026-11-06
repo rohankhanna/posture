@@ -698,14 +698,14 @@ the NVD pass:
 ```yaml
 id: ubuntu-host
 os: linux
-patch_level: "6.18"
+patch_level: "6.12"
 matchers:
-  - { type: nvd_cpe, cpe: "cpe:2.3:o:canonical:ubuntu_linux", version: "6.18" }
+  - { type: nvd_cpe, cpe: "cpe:2.3:o:canonical:ubuntu_linux", version: "6.12" }
 cve_candidates: ["CVE-2026-99901", "CVE-2026-99903"]   # from a prior NVD pass / OS pkg list
-ubuntu_release: noble
-ubuntu_packages: ["linux-nvidia-6.17"]
-# debian host: debian_release: trixie, debian_packages: [linux]
-# apple host:  apple_product: iphone_os, os_version: "26.5.2"
+ubuntu_release: jammy
+ubuntu_packages: ["linux-generic"]
+# debian host: debian_release: bookworm, debian_packages: [linux]
+# apple host:  apple_product: iphone_os, os_version: "18.0"
 ```
 
 A device of the wrong distro gets an honest no-op from each vendor observer (zero
